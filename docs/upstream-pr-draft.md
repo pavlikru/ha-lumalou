@@ -12,6 +12,9 @@ Proposed title: `feat: add strict response sessions and schedule codecs`
 - add byte-preserving codecs for weekly times, alarms, seven daily routines and
   routine task status;
 - expose all 28 source-backed read-only queries in Python and JavaScript;
+- add strict Python/JavaScript SET models for playlist, clock and routine
+  music/rewards without inferring their standalone response layouts;
+- add JavaScript parity for weekly schedules, alarms and seven daily routines;
 - correct opcode `0x68` from a setter name to the source-backed request name;
 - add shared literal read vectors and synthetic schedule vectors.
 
@@ -31,10 +34,10 @@ layouts. The pull request does not claim hardware-certified backup or restore.
 - Base: `9fa5ecfc7f6e82ec02e13d01f00fca7be6852567`.
 - Source bundle SHA-256:
   `30bef51fe4ed6728ccd4a811b7f855368cc587d804a578660da368c2ece70b09`.
-- Local commits: `bb59b87`, `cdc6f4b` on
+- Local commits: `bb59b87`, `cdc6f4b`, `4b9ae91` on
   `feat/strict-readback-schedules`.
-- The final 313-test suite passes on Python 3.10, 3.11 and 3.12.
-- JavaScript typecheck, 9 tests and production build pass.
+- The final 360-test suite passes on Python 3.10, 3.11 and 3.12.
+- JavaScript typecheck, 20 tests and production/declaration build pass.
 - Code generation is deterministic and `git diff --check` passes.
 
 ## Review focus

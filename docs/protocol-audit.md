@@ -347,12 +347,14 @@ observed response opcode as ambiguous until a clean reconnect. Exhaustive route
 tests cover all 65,536 two-byte prefixes, including unsolicited responses before
 and during a request.
 
-The candidate passes **313 Python tests** on Python 3.10, 3.11 and 3.12. The
-generated JavaScript contract passes type checking, **9 tests**, and a production
-build. All 28 source-backed read-only query opcodes are exposed with literal
-request/response vectors. This is development evidence only: no commit was
-pushed, no pull request or release exists, playlist and clock response layouts
-remain raw, and no setter has hardware acceptance.
+The candidate passes **360 Python tests** on Python 3.10, 3.11 and 3.12. The
+generated JavaScript contract passes type checking, **20 tests**, and a
+production/declaration build. All 28 source-backed read-only query opcodes are
+exposed with literal request/response vectors. Strict playlist, clock and routine
+music/reward SET models reject truncation/coercion; JavaScript has parity for the
+schedule codecs. This is development evidence only: no commit was pushed, no
+pull request or release exists, playlist and clock response layouts remain raw,
+and no setter has hardware acceptance.
 The HA manifest therefore remains pinned to released `lumalou==0.1.0`.
 
 ### Automatable once the upstream contract is released

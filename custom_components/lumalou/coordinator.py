@@ -35,6 +35,8 @@ from .models import (
     ProfileRecord,
     ProfileValidationError,
     RevisionConflictError,
+    export_profile_payload,
+    import_profile_payload,
     validate_integer,
     validate_profile,
 )
@@ -491,6 +493,10 @@ class LumalouCoordinator:
             raise ProfileValidationError("Invalid light state")
         changes = {}
         if brightness is not None:
+            # Schema v2 can preserve an observed/source-supported zero, but the
+            # HA control path does not write it until its on/off side effect is
+            # accepted on hardware.
+            validate_integer(brightness, 1, 9, "brightness")
             changes["brightness"] = brightness
         if color is not None:
             changes["color"] = color
@@ -578,11 +584,7 @@ class LumalouCoordinator:
             record = self.profile_record
             return {
                 "current_revision": record.revision,
-                "profile": {
-                    "schema_version": 1,
-                    "scope": "supported_subset",
-                    "profile": deepcopy(record.desired_profile),
-                },
+                "profile": export_profile_payload(record.desired_profile),
             }
 
     async def async_import_profile(
@@ -593,16 +595,9 @@ class LumalouCoordinator:
         confirmed: bool = False,
     ) -> None:
         """Import a validated backup only; never read/restore the device first."""
-        if (
-            not confirmed
-            or not isinstance(payload, dict)
-            or set(payload) != {"schema_version", "scope", "profile"}
-            or type(payload["schema_version"]) is not int
-            or payload["schema_version"] != 1
-            or payload["scope"] != "supported_subset"
-        ):
+        if not confirmed:
             raise ProfileValidationError("Confirm a supported subset profile import")
-        desired = validate_profile(payload["profile"])
+        desired = import_profile_payload(payload)
         validate_integer(expected_revision, 0, 2**63 - 1, "expected revision")
         async with self._operation():
             old = self.profile_record

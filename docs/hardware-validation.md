@@ -17,7 +17,7 @@ The integration itself was not installed or connected.
 | Light/audio controls | Not tested on hardware | Setter side effects unknown |
 | Browser schedule readback | Partially observed | Both 14-byte week blocks were all zero; 4-byte alarm block was inactive |
 | Browser seven-routine readback | Partially observed | Seven distinct 14-byte day responses and a 7-byte task-status response were all zero |
-| Full schedules and seven routines in Python | Blocked on release and hardware proof | A local upstream candidate has strict codecs and 313 passing tests; released upstream 0.1.0 still lacks them |
+| Full schedules and seven routines in Python | Blocked on release and hardware proof | A local upstream candidate has strict Python/JavaScript codecs and 360 passing Python tests; released upstream 0.1.0 still lacks them |
 | Ten Lumalou power cycles | Not run | Acceptance test |
 | 72-hour soak | Not run | Acceptance test |
 

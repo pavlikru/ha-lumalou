@@ -8,12 +8,12 @@ or a release claim.
 | --- | --- | --- |
 | HA Bluetooth discovery and one config entry per device | Config flow, address unique ID, explicit GLD09 label gate, passive HA callbacks, mocked duplicate/offline tests | Implemented in development; confirm the target label, advertisement and adapter |
 | Serialized, cancellation-safe BLE lifecycle | Coordinator lock/generation, bounded teardown, no independent scanner, mocked stale/cancel tests | Implemented against released client limitations; verify on target HA |
-| Desired profile separate from observed state | Immutable revision record and private per-entry Store | Implemented for the supported subset only |
-| Durable revisions, previous value, CAS import | Atomic Store write plus independent readback, strict expected revision and fail-closed export after corrupt load | Implemented; corrupted-store recovery UX remains open |
-| Fresh complete readback | Released `lumalou==0.1.0` exposes only unsafe partial behavior; unpublished upstream branch adds strict envelopes and schedule codecs | Blocked on upstream review/release, remaining typed blocks, and hardware evidence |
-| Full persistent profile | Current HA model covers light brightness/color/duration, volume, playlist duration/order | Incomplete: clock, alarm/status, routine reward and seven-day blocks are not yet wired into HA |
-| Seven daily routines and weekly schedules | Unpublished upstream codecs pass synthetic tests | Not yet consumed by HA or accepted on hardware |
-| Manual import and restore | Strict subset JSON import/export exists; restore action rejects execution | Full import preview/readback/restore remains incomplete |
+| Desired profile separate from observed state | Immutable revision record, schema-v2 logical model and private per-entry Store | Full structure exists; partial intent remains explicitly incomplete |
+| Durable revisions, previous value, CAS import | Atomic Store write plus independent readback, strict expected revision, fail-closed export, and backed-up v1→v2 migration | Implemented; corrupted-store recovery UX remains open |
+| Fresh complete readback | Released `lumalou==0.1.0` exposes only unsafe partial behavior; unpublished upstream branch adds strict envelopes, schedule codecs and SET models | Blocked on upstream review/release, standalone response layouts, and hardware evidence |
+| Full persistent profile | Schema v2 validates every source-backed persistent field/block without BLE codecs or invented defaults | Structurally modeled; fresh population, UI editing and verified application remain incomplete |
+| Seven daily routines and weekly schedules | HA model preserves seven exact 12-slot routines; unpublished upstream Python/JS codecs pass exhaustive synthetic tests | Not yet wired into flows/coordinator or accepted on hardware |
+| Manual import and restore | Versioned schema-v1/v2 JSON import/export exists; structural completeness gate is separate; restore action rejects execution | Import preview, fresh device import and verified restore remain incomplete |
 | Automatic restore after power loss | Option is visible but cannot be enabled | Deliberately blocked until manual restore is freshly verified on hardware |
 | Native controls and offline editing | Light, media player, light/playlist duration selects, maintenance switch, buttons and subset profile edits | Schedule/routine/clock editors and complete offline profile editing remain incomplete |
 | Clock sync | Explicit HA-timezone action with weekday conversion and trust threshold | Mocked; DST/timezone and simultaneous reboot need hardware acceptance |
@@ -26,8 +26,9 @@ or a release claim.
 ## Current local branches
 
 - HA integration: `feat/lumalou-integration`.
-- Upstream protocol candidate: `cdc6f4b` on
-  `feat/strict-readback-schedules` (all 28 source-backed queries are exposed).
+- Upstream protocol candidate: `4b9ae91` on
+  `feat/strict-readback-schedules` (all 28 source-backed queries, strict SET
+  models and Python/JavaScript schedule codecs are exposed).
 
 Neither branch has been pushed. The target Home Assistant configuration and the
 device have not been modified by these development commits.
