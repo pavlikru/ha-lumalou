@@ -41,12 +41,7 @@ jobs:
           fi
 
       - name: Build HACS archive
-        working-directory: custom_components/lumalou
-        run: |
-          set -euo pipefail
-          zip -r "$RUNNER_TEMP/lumalou.zip" \
-            . \
-            -x '*/__pycache__/*' '__pycache__/*' '*.pyc'
+        run: python scripts/build_hacs_zip.py "$RUNNER_TEMP/lumalou.zip"
 
       - name: Verify HACS archive layout
         shell: bash
@@ -67,7 +62,7 @@ jobs:
             exit 1
           fi
 
-          if grep -Eq '(^|/)__pycache__/|\.pyc$' <<<"$listing"; then
+          if grep -Eq '(^|/)__pycache__/|\.(pyc|pyo)$' <<<"$listing"; then
             echo "Archive contains cache or bytecode files." >&2
             exit 1
           fi

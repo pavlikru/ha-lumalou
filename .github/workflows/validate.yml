@@ -58,7 +58,29 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
       - name: Build HACS archive
-        run: python -m zipfile -c lumalou.zip custom_components/lumalou
+        run: python scripts/build_hacs_zip.py lumalou.zip
+      - name: Verify HACS archive layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          listing="$(unzip -Z1 lumalou.zip)"
+
+          for required in manifest.json __init__.py brand/icon.png; do
+            if ! grep -Fxq "$required" <<<"$listing"; then
+              echo "Missing $required at the archive root." >&2
+              exit 1
+            fi
+          done
+
+          if grep -q '^custom_components/' <<<"$listing"; then
+            echo "Archive must not contain a custom_components/ prefix." >&2
+            exit 1
+          fi
+
+          if grep -Eq '(^|/)__pycache__/|\.(pyc|pyo)$' <<<"$listing"; then
+            echo "Archive contains cache or bytecode files." >&2
+            exit 1
+          fi
       - name: Upload archive
         uses: actions/upload-artifact@v7
         with:
