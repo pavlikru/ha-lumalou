@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from datetime import time
 from typing import Any, override
@@ -9,7 +10,7 @@ from typing import Any, override
 import voluptuous as vol
 from home_assistant_bluetooth import BluetoothServiceInfoBleak
 from homeassistant import config_entries
-from homeassistant.config_entries import ConfigFlowResult
+from homeassistant.config_entries import ConfigFlowResult, FlowType
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
@@ -20,6 +21,7 @@ from .models import (
     DAYS,
     ProfileValidationError,
     RevisionConflictError,
+    import_profile_payload,
     validate_profile,
 )
 
@@ -29,6 +31,7 @@ MANUFACTURER_ID = 950
 MANUFACTURER_PREFIX = b"MB"
 MAX_ROUTINE_TASKS = 12
 MAX_PLAYLIST_SONGS = 12
+CONF_PROFILE_JSON = "profile_json"
 
 _ALARM_OPTIONS = [str(value) for value in range(11)]
 _ALARM_SOUND_OPTIONS = [str(value) for value in range(16)]
@@ -179,6 +182,21 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }
         )
 
+    @override
+    async def async_on_create_entry(self, result: ConfigFlowResult) -> ConfigFlowResult:
+        """Open the private-profile choice only after the entry exists.
+
+        A profile belongs to the entry-private Store, never to config entry
+        data or options.  Options flows need the entry id, so they can only be
+        created once Home Assistant has added the entry.
+        """
+        entry = result["result"]
+        options_result = await self.hass.config_entries.options.async_init(
+            entry.entry_id
+        )
+        result["next_flow"] = (FlowType.OPTIONS_FLOW, options_result["flow_id"])
+        return result
+
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -212,6 +230,10 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
         self._editor: str | None = None
         self._routine_day: str | None = None
         self._copied_days: list[str] = []
+        self._import_payload: dict[str, Any] | None = None
+        self._import_profile: dict[str, Any] | None = None
+        self._import_revision: int | None = None
+        self._import_removed_fields: list[str] = []
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -220,6 +242,11 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
         # Keep compatibility with the original single-step options submission.
         if user_input is not None and CONF_AUTO_RESTORE in user_input:
             return await self.async_step_behavior(user_input)
+        if self._has_no_desired_profile():
+            return self.async_show_menu(
+                step_id="init",
+                menu_options=("create", "import_profile", "read_profile", "behavior"),
+            )
         return self.async_show_menu(
             step_id="init",
             menu_options=(
@@ -230,8 +257,110 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
                 "routine_settings",
                 "schedule",
                 "routine",
+                "import_profile",
+                "read_profile",
             ),
         )
+
+    async def async_step_create(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose an offline editor for a new, initially empty profile."""
+        return self.async_show_menu(
+            step_id="create",
+            menu_options=(
+                "basic",
+                "playlist",
+                "clock_settings",
+                "routine_settings",
+                "schedule",
+                "routine",
+            ),
+        )
+
+    async def async_step_import_profile(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Validate an exported profile before showing an explicit preview."""
+        if user_input is not None:
+            try:
+                raw_payload = json.loads(user_input[CONF_PROFILE_JSON])
+                if not isinstance(raw_payload, dict):
+                    raise ValueError("Profile export must be a JSON object")
+                # The export action includes the revision alongside the actual
+                # schema envelope. The current entry's captured revision is
+                # deliberately used for CAS instead of trusting this backup's
+                # revision from another device or point in time.
+                if set(raw_payload) == {"current_revision", "profile"} and isinstance(
+                    raw_payload["profile"], dict
+                ):
+                    raw_payload = raw_payload["profile"]
+                desired = import_profile_payload(raw_payload)
+                record = self._profile_record()
+                if record is None:
+                    return self.async_abort(reason="entry_not_loaded")
+            except (
+                KeyError,
+                TypeError,
+                ValueError,
+            ):
+                return self.async_show_form(
+                    step_id="import_profile",
+                    data_schema=self._import_schema(),
+                    errors={"base": "invalid_profile_import"},
+                )
+            self._import_payload = deepcopy(raw_payload)
+            self._import_profile = deepcopy(desired)
+            self._import_revision = record.revision
+            self._import_removed_fields = sorted(
+                set(record.desired_profile) - set(desired)
+            )
+            return await self.async_step_import_profile_confirm()
+
+        return self.async_show_form(
+            step_id="import_profile", data_schema=self._import_schema()
+        )
+
+    async def async_step_import_profile_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Save a previously previewed import using the captured CAS revision."""
+        if (
+            self._import_payload is None
+            or self._import_profile is None
+            or self._import_revision is None
+        ):
+            return self.async_abort(reason="profile_import_unavailable")
+
+        if user_input is not None:
+            if not user_input["confirm"]:
+                return self._import_confirm_form(
+                    errors={"confirm": "confirmation_required"}
+                )
+            coordinator = self._coordinator()
+            if coordinator is None:
+                return self.async_abort(reason="entry_not_loaded")
+            try:
+                await coordinator.async_import_profile(
+                    deepcopy(self._import_payload),
+                    self._import_revision,
+                    confirmed=True,
+                )
+            except RevisionConflictError:
+                return self._import_confirm_form(errors={"base": "revision_conflict"})
+            except HomeAssistantError, ProfileValidationError:
+                return self._import_confirm_form(
+                    errors={"base": "profile_import_failed"}
+                )
+            return self.async_create_entry(data=dict(self.config_entry.options))
+
+        return self._import_confirm_form()
+
+    async def async_step_read_profile(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Never claim an unimplemented device readback capability."""
+        return self.async_abort(reason="profile_readback_unavailable")
 
     async def async_step_behavior(
         self, user_input: dict[str, Any] | None = None
@@ -407,10 +536,62 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
                     "sleepy_times": deepcopy(sleepy_times),
                 }
             )
-            return await self.async_step_schedule_alarm()
+            return await self.async_step_schedule_copy()
 
         return self.async_show_form(
             step_id="schedule", data_schema=self._schedule_schema()
+        )
+
+    async def async_step_schedule_copy(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Optionally copy each weekly time to selected days."""
+        if not self._ensure_profile_draft("schedule"):
+            return self.async_abort(reason="profile_editor_unavailable")
+        assert self._draft_profile is not None
+
+        if user_input is not None:
+            try:
+                ready_source = user_input["ready_to_rise_copy_from"]
+                sleepy_source = user_input["sleepy_copy_from"]
+                ready_targets = self._schedule_copy_targets(
+                    user_input.get("ready_to_rise_copy_to", []), ready_source
+                )
+                sleepy_targets = self._schedule_copy_targets(
+                    user_input.get("sleepy_copy_to", []), sleepy_source
+                )
+                ready_to_rise = deepcopy(self._draft_profile["ready_to_rise"])
+                sleepy_times = deepcopy(self._draft_profile["sleepy_times"])
+                for day in ready_targets:
+                    ready_to_rise["times"][day] = deepcopy(
+                        ready_to_rise["times"][ready_source]
+                    )
+                for day in sleepy_targets:
+                    sleepy_times[day] = deepcopy(sleepy_times[sleepy_source])
+                validate_profile(
+                    {
+                        "ready_to_rise": ready_to_rise,
+                        "sleepy_times": sleepy_times,
+                    }
+                )
+            except KeyError, ProfileValidationError, TypeError, ValueError:
+                return self.async_show_form(
+                    step_id="schedule_copy",
+                    data_schema=self._schedule_copy_schema(),
+                    errors={"base": "invalid_schedule_copy"},
+                )
+            self._draft_profile["ready_to_rise"] = ready_to_rise
+            self._draft_profile["sleepy_times"] = sleepy_times
+            self._changes.update(
+                {
+                    "ready_to_rise": deepcopy(ready_to_rise),
+                    "sleepy_times": deepcopy(sleepy_times),
+                }
+            )
+            return await self.async_step_schedule_alarm()
+
+        return self.async_show_form(
+            step_id="schedule_copy", data_schema=self._schedule_copy_schema()
         )
 
     async def async_step_schedule_alarm(
@@ -666,14 +847,74 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
         """Capture one detached profile revision for this flow."""
         if self._draft_profile is not None:
             return self._editor == editor
-        try:
-            record = self.config_entry.runtime_data.coordinator.profile_record
-        except AttributeError, RuntimeError:
+        record = self._profile_record()
+        if record is None:
             return False
         self._draft_profile = deepcopy(record.desired_profile)
         self._expected_revision = record.revision
         self._editor = editor
         return True
+
+    def _has_no_desired_profile(self) -> bool:
+        """Return whether this entry needs its first profile-source choice.
+
+        An unloaded entry cannot safely expose a stored profile.  Treat it as
+        requiring a source choice; actions that need the private Store then
+        clearly abort instead of inventing default values.
+        """
+        record = self._profile_record()
+        return record is None or not record.desired_profile
+
+    def _profile_record(self) -> Any | None:
+        """Get the loaded immutable profile record without touching Bluetooth."""
+        coordinator = self._coordinator()
+        if coordinator is None:
+            return None
+        try:
+            return coordinator.profile_record
+        except AttributeError, RuntimeError:
+            return None
+
+    def _coordinator(self) -> Any | None:
+        """Return the loaded coordinator, never creating one from a flow."""
+        try:
+            return self.config_entry.runtime_data.coordinator
+        except AttributeError, RuntimeError:
+            return None
+
+    def _import_schema(self) -> vol.Schema:
+        """Request an export envelope as multiline JSON, not entry options."""
+        return vol.Schema(
+            {
+                vol.Required(CONF_PROFILE_JSON): selector.TextSelector(
+                    selector.TextSelectorConfig(multiline=True)
+                )
+            }
+        )
+
+    def _import_confirm_form(
+        self, errors: dict[str, str] | None = None
+    ) -> ConfigFlowResult:
+        """Show the validated import preview before the only Store mutation."""
+        assert self._import_payload is not None
+        assert self._import_profile is not None
+        assert self._import_revision is not None
+        return self.async_show_form(
+            step_id="import_profile_confirm",
+            data_schema=vol.Schema(
+                {vol.Required("confirm", default=False): selector.BooleanSelector()}
+            ),
+            errors=errors,
+            description_placeholders={
+                "schema_version": str(self._import_payload["schema_version"]),
+                "scope": str(self._import_payload["scope"]),
+                "field_count": str(len(self._import_profile)),
+                "revision": str(self._import_revision),
+                "removed_count": str(len(self._import_removed_fields)),
+                "removed_fields": ", ".join(self._import_removed_fields) or "—",
+            },
+            last_step=True,
+        )
 
     def _schedule_schema(self) -> vol.Schema:
         """Return native controls for both seven-day time blocks."""
@@ -723,6 +964,28 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
                 )
             )
         )
+        return vol.Schema(fields)
+
+    def _schedule_copy_schema(self) -> vol.Schema:
+        """Return source and multi-day target pickers for weekly times."""
+        fields: dict[vol.Marker, Any] = {}
+        for prefix in ("ready_to_rise", "sleepy"):
+            fields[vol.Required(f"{prefix}_copy_from", default=DAYS[0])] = (
+                selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=list(DAYS), translation_key="weekday"
+                    )
+                )
+            )
+            fields[vol.Optional(f"{prefix}_copy_to", default=[])] = (
+                selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=list(DAYS),
+                        multiple=True,
+                        translation_key="weekday",
+                    )
+                )
+            )
         return vol.Schema(fields)
 
     def _basic_schema(self) -> vol.Schema:
@@ -882,6 +1145,19 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
             )
             for day in DAYS
         }
+
+    @staticmethod
+    def _schedule_copy_targets(value: Any, source: str) -> list[str]:
+        """Validate and normalize selected copy targets, excluding the source."""
+        if source not in DAYS or not isinstance(value, list):
+            raise ValueError("Unsupported schedule copy selection")
+        targets: list[str] = []
+        for day in value:
+            if day not in DAYS:
+                raise ValueError("Unsupported schedule copy target")
+            if day != source and day not in targets:
+                targets.append(day)
+        return targets
 
     def _routine_from_input(self, user_input: dict[str, Any]) -> dict[str, Any]:
         """Build twelve strict slots while retaining unknown task-zero rows."""

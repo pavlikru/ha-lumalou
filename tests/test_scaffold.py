@@ -61,7 +61,7 @@ def test_local_brand_icons_match_home_assistant_dimensions() -> None:
 
 
 def test_profile_storage_repair_translations_are_shipped() -> None:
-    """Keep the non-fixable profile recovery issue understandable in both locales."""
+    """Keep the profile recovery issue and fix flow translated in both locales."""
     for path in (
         STRINGS_PATH,
         TRANSLATIONS_PATH / "en.json",
@@ -72,3 +72,7 @@ def test_profile_storage_repair_translations_are_shipped() -> None:
         ]
         assert issue["title"]
         assert issue["description"]
+        fix_flow = issue["fix_flow"]
+        assert fix_flow["step"]["import_profile"]["data"]["profile_json"]
+        assert fix_flow["step"]["confirm"]["data"]["confirm"]
+        assert fix_flow["error"]["invalid_profile"]

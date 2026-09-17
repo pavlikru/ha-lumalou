@@ -28,6 +28,7 @@ from .const import (
     FORBIDDEN_OPCODES,
     GLOBAL_STATE_FIELDS,
     RECOVERY_COOLDOWN,
+    RECOVERY_MAX_COOLDOWN,
     RESPONSE_TIMEOUT,
     SUPPORTED_PRODUCT_CODE,
 )
@@ -109,6 +110,7 @@ class LumalouCoordinator:
         self._background_tasks: set[asyncio.Task[Any]] = set()
         self._recovery_task: asyncio.Task[Any] | None = None
         self._next_recovery_at = 0.0
+        self._recovery_failures = 0
         self._unsubscribers: list[Callable[[], None]] = []
         self._callbacks_started = False
         self._stopped = False
@@ -279,6 +281,8 @@ class LumalouCoordinator:
             return
         self.present = False
         self._cancel_recovery()
+        self._recovery_failures = 0
+        self._next_recovery_at = 0.0
         client = self._invalidate()
         if client is not None:
             self._create_background_task(
@@ -326,17 +330,31 @@ class LumalouCoordinator:
         return task
 
     async def _async_background_refresh(self) -> None:
-        """Rate-limit reconnect attempts and perform only a state read."""
-        delay = self._next_recovery_at - asyncio.get_running_loop().time()
-        if delay > 0:
-            await asyncio.sleep(delay)
-        if self._stopped or not self.present or self.profile_record.maintenance:
+        """Retry read-only recovery with one bounded exponential-backoff loop."""
+        while True:
+            delay = self._next_recovery_at - asyncio.get_running_loop().time()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            if self._stopped or not self.present or self.profile_record.maintenance:
+                return
+            try:
+                await self.async_request_refresh()
+            except HomeAssistantError:
+                self._recovery_failures += 1
+                exponent = min(self._recovery_failures - 1, 10)
+                cooldown = min(RECOVERY_COOLDOWN * 2**exponent, RECOVERY_MAX_COOLDOWN)
+                self._next_recovery_at = asyncio.get_running_loop().time() + cooldown
+                _LOGGER.debug(
+                    "Background Lumalou refresh failed; retrying in %s seconds",
+                    cooldown,
+                    exc_info=True,
+                )
+                continue
+            self._recovery_failures = 0
+            self._next_recovery_at = (
+                asyncio.get_running_loop().time() + RECOVERY_COOLDOWN
+            )
             return
-        self._next_recovery_at = asyncio.get_running_loop().time() + RECOVERY_COOLDOWN
-        try:
-            await self.async_request_refresh()
-        except HomeAssistantError:
-            _LOGGER.debug("Background Lumalou refresh failed", exc_info=True)
 
     async def _async_close_detached(self, client: SafeLumalouClient) -> None:
         """Close a detached session after any active serialized operation."""
@@ -646,8 +664,13 @@ class LumalouCoordinator:
         async with self._operation():
             await self._save(replace(self.profile_record, maintenance=enabled))
             if enabled:
+                self._cancel_recovery()
+                self._recovery_failures = 0
+                self._next_recovery_at = 0.0
                 await self._disconnect()
             else:
+                self._recovery_failures = 0
+                self._next_recovery_at = 0.0
                 self._schedule_recovery()
 
     async def async_export_profile(self) -> dict[str, Any]:
@@ -690,6 +713,37 @@ class LumalouCoordinator:
                     last_error=None,
                 )
             )
+
+    async def async_recover_profile(
+        self, payload: dict[str, Any], *, confirmed: bool = False
+    ) -> None:
+        """Replace unreadable storage only from a confirmed validated backup."""
+        if not confirmed:
+            raise ProfileValidationError("Confirm saved profile recovery")
+        desired = import_profile_payload(payload)
+        recovered = ProfileRecord(
+            revision=1,
+            desired_profile=desired,
+            pending=True,
+            sync_status="pending",
+        )
+        async with self._profile_edit_operation():
+            if self._storage_healthy:
+                raise HomeAssistantError("Saved profile does not require recovery")
+            try:
+                await self._store.async_recover(recovered)
+            except asyncio.CancelledError:
+                # ProfileStore propagates caller cancellation only after the
+                # backup, commit, and independent readback have completed.
+                self._profile_record = deepcopy(recovered)
+                self._storage_healthy = True
+                self._profile_loaded = True
+                self._notify()
+                raise
+            self._profile_record = deepcopy(recovered)
+            self._storage_healthy = True
+            self._profile_loaded = True
+            self._notify()
 
     async def async_restore_profile(self) -> None:
         """Do not present unproven setter behaviour as safe restoration."""

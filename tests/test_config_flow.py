@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Generator
 from copy import deepcopy
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -16,6 +18,7 @@ from homeassistant.config_entries import (
     SOURCE_BLUETOOTH,
     SOURCE_RECONFIGURE,
     SOURCE_USER,
+    FlowType,
 )
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
@@ -33,6 +36,7 @@ from custom_components.lumalou.models import (
     LumalouRuntimeData,
     ProfileRecord,
     RevisionConflictError,
+    export_profile_payload,
 )
 
 ADDRESS = "AA:BB:CC:DD:EE:01"
@@ -99,15 +103,19 @@ def profile_entry(
     *,
     revision: int = 7,
     save: AsyncMock | None = None,
+    desired_profile: dict[str, Any] | None = None,
 ) -> tuple[MockConfigEntry, SimpleNamespace]:
     """Add a loaded-looking entry backed by an isolated coordinator mock."""
     coordinator = SimpleNamespace(
         profile_record=ProfileRecord(
             revision=revision,
-            desired_profile=editable_profile(),
+            desired_profile=desired_profile
+            if desired_profile is not None
+            else editable_profile(),
             sync_status="saved",
         ),
         async_edit_profile=save or AsyncMock(),
+        async_import_profile=AsyncMock(),
     )
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -127,6 +135,10 @@ async def start_editor(
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "init"
+    if section not in result["menu_options"] and "create" in result["menu_options"]:
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], user_input={"next_step_id": "create"}
+        )
     return await hass.config_entries.options.async_configure(
         result["flow_id"], user_input={"next_step_id": section}
     )
@@ -158,6 +170,262 @@ async def test_bluetooth_discovery_confirm(hass: HomeAssistant) -> None:
     }
     assert result["options"] == {CONF_AUTO_RESTORE: False}
     setup.assert_awaited_once()
+
+
+async def test_new_entry_opens_profile_source_options_flow(
+    hass: HomeAssistant,
+) -> None:
+    """First-run profile selection begins only after HA has created the entry."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": SOURCE_BLUETOOTH},
+        data=service_info(),
+    )
+    with patch("custom_components.lumalou.async_setup_entry", return_value=True):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input={CONF_PRODUCT_CODE: SUPPORTED_PRODUCT_CODE},
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["next_flow"][0] is FlowType.OPTIONS_FLOW
+    options_flow_id = result["next_flow"][1]
+    assert hass.config_entries.options.async_get(options_flow_id)
+    assert result["data"] == {
+        CONF_ADDRESS: ADDRESS,
+        CONF_PRODUCT_CODE: SUPPORTED_PRODUCT_CODE,
+    }
+    assert result["options"] == {CONF_AUTO_RESTORE: False}
+
+
+async def test_empty_profile_offers_source_choices_without_creating_defaults(
+    hass: HomeAssistant,
+) -> None:
+    """An empty private Store offers Create, Import, and unavailable Read."""
+    entry, coordinator = profile_entry(hass, desired_profile={})
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "init"
+    assert {"create", "import_profile", "read_profile"} <= set(result["menu_options"])
+    assert entry.data == {CONF_ADDRESS: ADDRESS}
+    assert entry.options == {CONF_AUTO_RESTORE: False}
+    coordinator.async_edit_profile.assert_not_awaited()
+
+
+async def test_existing_profile_options_keeps_import_and_read_available(
+    hass: HomeAssistant,
+) -> None:
+    """A normal Configure flow can replace a saved export or show Read status."""
+    entry, _ = profile_entry(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+
+    assert result["type"] is FlowResultType.MENU
+    assert {"import_profile", "read_profile"} <= set(result["menu_options"])
+
+
+async def test_first_run_create_routes_to_offline_editor(hass: HomeAssistant) -> None:
+    """Create only opens the normal private-profile editor tree."""
+    entry, coordinator = profile_entry(hass, desired_profile={})
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"next_step_id": "create"}
+    )
+
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "create"
+    assert "basic" in result["menu_options"]
+    coordinator.async_edit_profile.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "schema_version": 1,
+            "scope": "supported_subset",
+            "profile": {
+                "brightness": 1,
+                "color": 2,
+                "light_duration": 3,
+                "volume": 4,
+                "playlist_duration": 5,
+                "playlist": [1, 2],
+            },
+        },
+        {
+            "schema_version": 2,
+            "scope": "persistent_profile",
+            "profile": editable_profile(),
+        },
+    ],
+)
+async def test_first_run_import_previews_then_saves_with_cas(
+    hass: HomeAssistant, payload: dict[str, Any]
+) -> None:
+    """Both exported schemas stay offline until an explicit CAS confirmation."""
+    save = AsyncMock()
+    entry, coordinator = profile_entry(hass, save=save, desired_profile={})
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    original_options = dict(entry.options)
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"next_step_id": "import_profile"}
+    )
+    assert result["step_id"] == "import_profile"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"profile_json": json.dumps(payload)}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "import_profile_confirm"
+    assert result["description_placeholders"] == {
+        "schema_version": str(payload["schema_version"]),
+        "scope": str(payload["scope"]),
+        "field_count": str(len(payload["profile"])),
+        "revision": "7",
+        "removed_count": "0",
+        "removed_fields": "—",
+    }
+    coordinator.async_import_profile.assert_not_awaited()
+    assert entry.options == original_options
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"confirm": True}
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    coordinator.async_import_profile.assert_awaited_once_with(
+        payload, 7, confirmed=True
+    )
+    assert entry.options == original_options
+
+
+async def test_cancelled_first_run_import_leaves_store_and_entry_unchanged(
+    hass: HomeAssistant,
+) -> None:
+    """Closing the preview cannot create a profile or change entry options."""
+    save = AsyncMock()
+    entry, coordinator = profile_entry(hass, save=save, desired_profile={})
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    original_options = dict(entry.options)
+    payload = export_profile_payload(editable_profile())
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"next_step_id": "import_profile"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"profile_json": json.dumps(payload)}
+    )
+    assert result["step_id"] == "import_profile_confirm"
+    hass.config_entries.options.async_abort(result["flow_id"])
+
+    coordinator.async_import_profile.assert_not_awaited()
+    assert entry.options == original_options
+    assert entry.data == {CONF_ADDRESS: ADDRESS}
+
+
+async def test_import_accepts_complete_export_action_response(
+    hass: HomeAssistant,
+) -> None:
+    """The UI accepts the same complete export JSON accepted by Repairs."""
+    entry, coordinator = profile_entry(hass, desired_profile={})
+    envelope = export_profile_payload(editable_profile())
+    response = {"current_revision": 2, "profile": envelope}
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"next_step_id": "import_profile"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"profile_json": json.dumps(response)}
+    )
+
+    assert result["step_id"] == "import_profile_confirm"
+    assert result["description_placeholders"]["revision"] == "7"
+    await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"confirm": True}
+    )
+    coordinator.async_import_profile.assert_awaited_once_with(
+        envelope, 7, confirmed=True
+    )
+
+
+async def test_existing_full_profile_import_previews_removals_and_cas_conflict(
+    hass: HomeAssistant,
+) -> None:
+    """A subset replacement names removed fields and cannot overwrite a new revision."""
+    current = editable_profile()
+    entry, coordinator = profile_entry(hass, desired_profile=current)
+    coordinator.async_import_profile.side_effect = RevisionConflictError(
+        "Synthetic concurrent edit"
+    )
+    payload = {
+        "schema_version": 1,
+        "scope": "supported_subset",
+        "profile": {"volume": 1},
+    }
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"next_step_id": "import_profile"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"profile_json": json.dumps(payload)}
+    )
+
+    removed = sorted(set(current) - {"volume"})
+    assert result["description_placeholders"]["removed_count"] == str(len(removed))
+    assert result["description_placeholders"]["removed_fields"] == ", ".join(removed)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"confirm": True}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "revision_conflict"}
+    coordinator.async_import_profile.assert_awaited_once_with(
+        payload, 7, confirmed=True
+    )
+
+
+async def test_first_run_import_aborts_when_entry_is_unloaded(
+    hass: HomeAssistant,
+) -> None:
+    """Profile source UI never fabricates a Store while its entry is unloaded."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=ADDRESS,
+        data={CONF_ADDRESS: ADDRESS},
+        options={CONF_AUTO_RESTORE: False},
+    )
+    entry.add_to_hass(hass)
+    payload = export_profile_payload(editable_profile())
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"next_step_id": "import_profile"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"profile_json": json.dumps(payload)}
+    )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "entry_not_loaded"
+    assert entry.data == {CONF_ADDRESS: ADDRESS}
+    assert entry.options == {CONF_AUTO_RESTORE: False}
+
+
+async def test_first_run_read_aborts_without_device_access(hass: HomeAssistant) -> None:
+    """The Read choice accurately exposes the unimplemented strict readback."""
+    entry, coordinator = profile_entry(hass, desired_profile={})
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"next_step_id": "read_profile"}
+    )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "profile_readback_unavailable"
+    coordinator.async_edit_profile.assert_not_awaited()
 
 
 async def test_product_code_must_be_confirmed_from_label(
@@ -349,9 +617,20 @@ async def test_schedule_draft_saves_only_at_final_confirmation(
         result["flow_id"], user_input=schedule_input
     )
 
-    assert result["step_id"] == "schedule_alarm"
+    assert result["step_id"] == "schedule_copy"
     coordinator.async_edit_profile.assert_not_awaited()
     assert entry.options == original_options
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={
+            "ready_to_rise_copy_from": "sunday",
+            "ready_to_rise_copy_to": [],
+            "sleepy_copy_from": "sunday",
+            "sleepy_copy_to": [],
+        },
+    )
+    assert result["step_id"] == "schedule_alarm"
 
     alarm_input = {f"alarm_{day}": "9" for day in DAYS}
     alarm_input.update({"alarm_sunday": "0", "alarm_sound": "15"})
@@ -399,6 +678,16 @@ async def test_cancel_discards_schedule_draft(hass: HomeAssistant) -> None:
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], user_input=schedule_input
     )
+    assert result["step_id"] == "schedule_copy"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={
+            "ready_to_rise_copy_from": "sunday",
+            "ready_to_rise_copy_to": [],
+            "sleepy_copy_from": "sunday",
+            "sleepy_copy_to": [],
+        },
+    )
     assert result["step_id"] == "schedule_alarm"
     hass.config_entries.options.async_abort(result["flow_id"])
 
@@ -422,6 +711,15 @@ async def test_schedule_confirmation_rejects_revision_conflict(
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], user_input=schedule_input
     )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={
+            "ready_to_rise_copy_from": "sunday",
+            "ready_to_rise_copy_to": [],
+            "sleepy_copy_from": "sunday",
+            "sleepy_copy_to": [],
+        },
+    )
     alarm_input = {f"alarm_{day}": "9" for day in DAYS}
     alarm_input["alarm_sound"] = "0"
     result = await hass.config_entries.options.async_configure(
@@ -436,6 +734,69 @@ async def test_schedule_confirmation_rejects_revision_conflict(
     assert result["errors"] == {"base": "revision_conflict"}
     coordinator.async_edit_profile.assert_awaited_once()
     assert entry.options == {CONF_AUTO_RESTORE: False}
+
+
+async def test_schedule_copy_applies_each_time_to_selected_days_only(
+    hass: HomeAssistant,
+) -> None:
+    """Ready and Sleepy copies preserve midnight, null, and unselected days."""
+    entry, coordinator = profile_entry(hass)
+    result = await start_editor(hass, entry, "schedule")
+    schedule_input = {"ready_to_rise_enabled": True}
+    for day in DAYS:
+        schedule_input[f"ready_to_rise_{day}_has_time"] = True
+        schedule_input[f"ready_to_rise_{day}_time"] = "08:15:00"
+        schedule_input[f"sleepy_{day}_has_time"] = True
+        schedule_input[f"sleepy_{day}_time"] = "23:00:00"
+    schedule_input["ready_to_rise_sunday_time"] = "00:00:00"
+    schedule_input["sleepy_tuesday_has_time"] = False
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input=schedule_input
+    )
+
+    assert result["step_id"] == "schedule_copy"
+    ready_target_selector = result["data_schema"].schema["ready_to_rise_copy_to"]
+    assert ready_target_selector.config["multiple"] is True
+    assert ready_target_selector.config["options"] == list(DAYS)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={
+            "ready_to_rise_copy_from": "sunday",
+            "ready_to_rise_copy_to": ["monday", "thursday", "sunday"],
+            "sleepy_copy_from": "tuesday",
+            "sleepy_copy_to": ["wednesday"],
+        },
+    )
+
+    assert result["step_id"] == "schedule_alarm"
+    alarm_input = {f"alarm_{day}": "9" for day in DAYS}
+    alarm_input["alarm_sound"] = "0"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input=alarm_input
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"confirm": True}
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    changes = coordinator.async_edit_profile.await_args.args[0]
+    ready = changes["ready_to_rise"]["times"]
+    sleepy = changes["sleepy_times"]
+    assert (
+        ready["sunday"]
+        == ready["monday"]
+        == ready["thursday"]
+        == {
+            "hour": 0,
+            "minute": 0,
+        }
+    )
+    assert ready["monday"] is not ready["sunday"]
+    assert ready["tuesday"] == {"hour": 8, "minute": 15}
+    assert sleepy["tuesday"] is None
+    assert sleepy["wednesday"] is None
+    assert sleepy["thursday"] == {"hour": 23, "minute": 0}
 
 
 async def test_routine_copy_is_independent_and_preserves_task_zero(

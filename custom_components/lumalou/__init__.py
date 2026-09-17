@@ -34,7 +34,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: LumalouConfigEntry) -> b
             hass,
             DOMAIN,
             issue_id,
-            is_fixable=False,
+            data={"entry_id": entry.entry_id},
+            is_fixable=True,
             severity=ir.IssueSeverity.ERROR,
             translation_key=ISSUE_ID_PROFILE_STORAGE,
         )

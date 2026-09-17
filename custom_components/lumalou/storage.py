@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -39,6 +40,28 @@ def _create_migration_backup(path: str, version: int, expected: dict) -> None:
     except FileExistsError:
         if backup.read_bytes() != contents:
             raise ValueError("Conflicting profile migration backup") from None
+        return
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(contents)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        backup.unlink(missing_ok=True)
+        raise
+
+
+def _create_recovery_backup(path: str) -> None:
+    """Preserve unreadable profile bytes before a confirmed user recovery."""
+    source = Path(path)
+    contents = source.read_bytes()
+    digest = hashlib.sha256(contents).hexdigest()[:16]
+    backup = Path(f"{path}.corrupt.{digest}.backup")
+    try:
+        descriptor = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        if backup.read_bytes() != contents:
+            raise ValueError("Conflicting profile recovery backup") from None
         return
     try:
         with os.fdopen(descriptor, "wb") as handle:
@@ -146,6 +169,30 @@ class ProfileStore:
             if cancelled:
                 raise asyncio.CancelledError
 
+    async def async_recover(self, record: ProfileRecord) -> None:
+        """Back up unreadable bytes, then publish an explicitly imported profile."""
+        data = record.to_dict()
+        ProfileRecord.from_dict(data)
+        async with self._lock:
+            recovery = asyncio.create_task(self._async_recover(data))
+            cancelled = False
+            while True:
+                try:
+                    await asyncio.shield(recovery)
+                    break
+                except asyncio.CancelledError as err:
+                    if recovery.cancelled():
+                        raise ProfileStorageError(
+                            "Profile recovery was cancelled before verification"
+                        ) from err
+                    cancelled = True
+                except (OSError, ValueError, TypeError, AttributeError) as err:
+                    raise ProfileStorageError(
+                        "Profile recovery could not be verified"
+                    ) from err
+            if cancelled:
+                raise asyncio.CancelledError
+
     async def _async_commit(self, data: dict) -> None:
         """Write and independently verify one document while caller owns the lock."""
         try:
@@ -169,5 +216,12 @@ class ProfileStore:
         """Back up a validated legacy document, then durably publish its upgrade."""
         await self.hass.async_add_executor_job(
             _create_migration_backup, self._store.path, version, document
+        )
+        await self._async_commit(data)
+
+    async def _async_recover(self, data: dict) -> None:
+        """Preserve the bad source before replacing it with validated intent."""
+        await self.hass.async_add_executor_job(
+            _create_recovery_backup, self._store.path
         )
         await self._async_commit(data)
