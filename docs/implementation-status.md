@@ -19,7 +19,7 @@ or a release claim.
 | Clock sync | Explicit HA-timezone action with weekday conversion and trust threshold | Mocked; DST/timezone and simultaneous reboot need hardware acceptance |
 | Diagnostics and privacy | Redacted diagnostics plus offline revision/pending/sync/error entities; no addresses/raw payloads/session material | Implemented subset; Repair flow and verified-restore timestamps remain open |
 | Apple Home | Standard light and generic media-player entities documented for HomeKit Bridge | Code path implemented; pairing/control must be verified on target HA and Apple Home |
-| HACS packaging and CI | HACS metadata plus lint/type/test/hassfest/HACS/artifact jobs | Local checks pass; public CI and clean HACS installation require push/release |
+| HACS packaging and CI | HACS metadata plus lint/type/test/hassfest/HACS/artifact jobs; a tag workflow reruns validation, rejects placeholder/mismatched versions, and publishes only prereleases | Local checks pass; public CI and clean HACS installation require push/release |
 | Hardware acceptance | Read-only browser lengths/state recorded without identifiers | Product label, firmware, HA Bluetooth backend, writes, power cycles and soak are missing |
 | Public release | Local feature branches and commits exist; nothing pushed | Requires user authorization, upstream release, prerelease artifact, and acceptance report |
 
