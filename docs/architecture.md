@@ -45,7 +45,9 @@ custom_components/lumalou/
 
 Standard Home Assistant entities are preferred over custom actions. This also
 lets HomeKit Bridge expose the light and the supported subset of audio control
-without adding Apple-specific transport code.
+without adding Apple-specific transport code. The HomeKit path is implemented,
+but pairing and control on the target Home Assistant/Apple Home are not yet
+verified.
 
 ## State ownership
 
@@ -65,6 +67,12 @@ A persistent edit follows: validate → build revision → atomically save → v
 the on-disk envelope → publish desired revision → attempt BLE apply → obtain a
 fresh callback. Offline edits remain pending. Play, stop, light off, clock sync,
 and other transient commands are not queued for replay.
+
+The options-flow profile editors are offline editors: saving one updates the
+private Store and does not write the device. Only currently supported live
+entity commands (light, audio playback/volume, durations, maintenance, refresh,
+and clock sync) are sent to BLE, subject to the same fresh-state and hardware
+validation limits below.
 
 ## Current recovery boundary
 

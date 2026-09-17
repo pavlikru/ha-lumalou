@@ -25,7 +25,9 @@ library and needs no cloud account.
 - persistent revisioned desired-profile storage for supported fields;
 - maintenance mode, clock sync, manual refresh, profile import/export actions;
 - diagnostics allowlist, English/Russian translations, and HACS metadata;
-- standard `light` and `media_player` entities usable by HomeKit Bridge.
+- standard `light` and `media_player` entities usable by HomeKit Bridge. The
+  path is implemented, but pairing and control on the target HA/Apple Home are
+  not yet verified.
 
 The component deliberately does not claim complete restoration or automatically
 write a profile on discovery. A write completion is not treated as verification,
@@ -39,12 +41,26 @@ brightness-capable light. HomeKit maps a generic `media_player` to switches, so
 Apple Home gets audio on/off rather than the HA source/volume UI. The integration
 does not mislabel the toy as a TV or receiver to work around that limitation.
 
-## Installation
+## Installation and recovery
 
-The repository is packaged in the HACS custom-integration shape, but clean HACS
-installation and target hardware operation are not yet accepted. For an agreed
-development test, add it as a custom Integration repository, restart Home
-Assistant if requested, then add Lumalou from **Settings → Devices & services**.
+The repository is packaged in the HACS custom-integration shape, but it has no
+accepted public release yet. The HACS custom-repository URL procedure is
+therefore future guidance, not an install method for this preview. For an
+agreed development test, copy `custom_components/lumalou/` into the same path
+on Home Assistant, restart Home Assistant if requested, then add Lumalou from
+**Settings → Devices & services**.
+
+For an update, back up Home Assistant first, replace only the integration
+directory with the selected release, and restart Home Assistant. To roll back,
+restore the previous integration directory and restart; do not mix versions of
+the integration and its pinned upstream dependency. To remove it, delete the
+config entry first, export the private profile if it may be needed, restart,
+then remove the integration directory. The profile Store is entry-scoped and
+is not automatically reused by a new entry.
+
+Use Home Assistant's built-in backup before installation, update, rollback, or
+removal. Keep the backup and exported profile private; never publish BLE
+addresses, raw payloads, or family schedules.
 
 Do not install this preview on a working nursery device without a backup and an
 agreed hardware-test window. See the [Russian installation and Apple Home
