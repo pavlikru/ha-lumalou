@@ -9,7 +9,13 @@ uv run ruff check .
 uv run ruff format --check .
 uv run pytest
 uv run pre-commit run --all-files
+python scripts/build_hacs_zip.py /tmp/lumalou.zip
 ```
+
+The archive builder is shared by validation and release workflows. It places
+`manifest.json` at the ZIP root, excludes Python caches, sorts entries, and uses
+fixed metadata so identical source produces identical archive bytes. Until
+hardware acceptance, the tag workflow intentionally creates prereleases only.
 
 The pinned test target is Home Assistant 2026.9.2. A passing mocked suite proves
 the Home Assistant adapter behavior only; it does not prove BLE advertising,
