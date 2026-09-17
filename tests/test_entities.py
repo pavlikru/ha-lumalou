@@ -141,6 +141,13 @@ async def test_light_scale_effects_and_commands():
     coordinator.async_set_light.assert_awaited_with(False)
 
 
+def test_light_preserves_observed_zero_brightness():
+    """An off device value must remain zero, not be fabricated as one."""
+    entry, _coordinator = make_entry({"lightStatus": 0, "lightBrightness": 0})
+
+    assert LumalouLight(entry).brightness == 0
+
+
 @pytest.mark.asyncio
 async def test_media_controls_and_exact_features():
     entry, coordinator = make_entry(

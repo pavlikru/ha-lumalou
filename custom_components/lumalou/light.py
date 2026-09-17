@@ -43,7 +43,9 @@ class LumalouLight(LumalouEntity, LightEntity):
     @property
     def brightness(self) -> int | None:
         value = self.snapshot_value("lightBrightness")
-        return None if value is None else max(1, min(255, round(int(value) * 255 / 9)))
+        # The device reports zero while the light is off. Zero is a valid HA
+        # brightness value; preserve it instead of fabricating brightness 1.
+        return None if value is None else max(0, min(255, round(int(value) * 255 / 9)))
 
     @property
     def effect(self) -> str | None:
