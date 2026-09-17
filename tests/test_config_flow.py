@@ -584,3 +584,301 @@ async def test_routine_invalid_and_overlength_input_rejected(
             },
         )
     coordinator.async_edit_profile.assert_not_awaited()
+
+
+async def test_basic_editor_saves_only_confirmed_private_values(
+    hass: HomeAssistant,
+) -> None:
+    """Light and audio values stay in a draft until one final CAS save."""
+    entry, coordinator = profile_entry(hass)
+    result = await start_editor(hass, entry, "basic")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={
+            "brightness": "9",
+            "color": "0",
+            "light_duration": "5",
+            "volume": "7",
+            "playlist_duration": "6",
+        },
+    )
+
+    assert result["step_id"] == "basic_confirm"
+    coordinator.async_edit_profile.assert_not_awaited()
+
+    with patch.object(hass.config_entries, "async_schedule_reload") as schedule_reload:
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], user_input={"confirm": True}
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    changes, expected_revision = coordinator.async_edit_profile.await_args.args
+    assert expected_revision == 7
+    assert changes == {
+        "brightness": 9,
+        "color": 0,
+        "light_duration": 5,
+        "volume": 7,
+        "playlist_duration": 6,
+    }
+    schedule_reload.assert_not_called()
+
+
+async def test_playlist_fixed_rows_preserve_order_duplicates_and_clear(
+    hass: HomeAssistant,
+) -> None:
+    """Playlist rows are positional so duplicate songs are not collapsed."""
+    entry, coordinator = profile_entry(hass)
+    result = await start_editor(hass, entry, "playlist")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={"song_1": "18", "song_2": "2", "song_3": "2", "song_4": "1"},
+    )
+    assert result["step_id"] == "playlist_confirm"
+    coordinator.async_edit_profile.assert_not_awaited()
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"confirm": True}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert coordinator.async_edit_profile.await_args.args[0] == {
+        "playlist": [18, 2, 2, 1]
+    }
+
+    entry, coordinator = profile_entry(hass)
+    result = await start_editor(hass, entry, "playlist")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"confirm": True}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert coordinator.async_edit_profile.await_args.args[0] == {"playlist": []}
+
+
+async def test_absent_clock_and_routine_blocks_are_new_drafts_until_confirmed(
+    hass: HomeAssistant,
+) -> None:
+    """Absent blocks are not fabricated merely by opening their editors."""
+    entry, coordinator = profile_entry(hass)
+    result = await start_editor(hass, entry, "clock_settings")
+    coordinator.async_edit_profile.assert_not_awaited()
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={
+            "clock_display": True,
+            "clock_brightness": "9",
+            "clock_format": "1",
+        },
+    )
+    assert result["step_id"] == "clock_settings_confirm"
+    coordinator.async_edit_profile.assert_not_awaited()
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"confirm": True}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert coordinator.async_edit_profile.await_args.args[0] == {
+        "clock_settings": {"display": True, "brightness": 9, "format": 1}
+    }
+
+    entry, coordinator = profile_entry(hass)
+    result = await start_editor(hass, entry, "routine_settings")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={
+            "routine_enabled": True,
+            "routine_music": 255,
+            "routine_volume": 0,
+            "task_reward_sfx": "15",
+            "routine_reward_sfx": "0",
+        },
+    )
+    assert result["step_id"] == "routine_settings_confirm"
+    coordinator.async_edit_profile.assert_not_awaited()
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"confirm": True}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert coordinator.async_edit_profile.await_args.args[0] == {
+        "routine_settings": {
+            "enabled": True,
+            "music": 255,
+            "volume": 0,
+            "task_reward_sfx": 15,
+            "routine_reward_sfx": 0,
+        }
+    }
+
+
+async def test_routine_settings_rejects_non_byte_values(
+    hass: HomeAssistant,
+) -> None:
+    """Raw routine music and volume remain bounded whole bytes."""
+    entry, coordinator = profile_entry(hass)
+    result = await start_editor(hass, entry, "routine_settings")
+    with pytest.raises(InvalidData):
+        await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={
+                "routine_enabled": False,
+                "routine_music": 256,
+                "routine_volume": 0,
+                "task_reward_sfx": "0",
+                "routine_reward_sfx": "0",
+            },
+        )
+    coordinator.async_edit_profile.assert_not_awaited()
+
+
+async def test_new_profile_editors_abort_without_runtime_data(
+    hass: HomeAssistant,
+) -> None:
+    """An unloaded entry cannot expose a profile draft."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=ADDRESS,
+        data={CONF_ADDRESS: ADDRESS},
+        options={CONF_AUTO_RESTORE: False},
+    )
+    entry.add_to_hass(hass)
+
+    for section in ("basic", "playlist", "clock_settings", "routine_settings"):
+        result = await start_editor(hass, entry, section)
+        assert result["type"] is FlowResultType.ABORT
+        assert result["reason"] == "profile_editor_unavailable"
+
+
+@pytest.mark.parametrize(
+    ("section", "step", "user_input", "error"),
+    [
+        (
+            "basic",
+            "async_step_basic",
+            {
+                "brightness": "10",
+                "color": "0",
+                "light_duration": "0",
+                "volume": "0",
+                "playlist_duration": "0",
+            },
+            "invalid_basic",
+        ),
+        ("playlist", "async_step_playlist", {"song_1": "19"}, "invalid_playlist"),
+        (
+            "clock_settings",
+            "async_step_clock_settings",
+            {
+                "clock_display": 0,
+                "clock_brightness": "0",
+                "clock_format": "0",
+            },
+            "invalid_clock_settings",
+        ),
+        (
+            "routine_settings",
+            "async_step_routine_settings",
+            {
+                "routine_enabled": False,
+                "routine_music": 0,
+                "routine_volume": 0,
+                "task_reward_sfx": "16",
+                "routine_reward_sfx": "0",
+            },
+            "invalid_routine_settings",
+        ),
+    ],
+)
+async def test_new_editor_invalid_payloads_return_validation_form(
+    hass: HomeAssistant,
+    section: str,
+    step: str,
+    user_input: dict[str, object],
+    error: str,
+) -> None:
+    """Model validation retains an unsaved draft when a native value is invalid."""
+    entry, coordinator = profile_entry(hass)
+    result = await start_editor(hass, entry, section)
+    flow = hass.config_entries.options._progress[result["flow_id"]]
+
+    result = await getattr(flow, step)(user_input)
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == section
+    assert result["errors"] == {"base": error}
+    coordinator.async_edit_profile.assert_not_awaited()
+
+
+async def test_routine_settings_rejects_fractional_byte_in_validation_branch(
+    hass: HomeAssistant,
+) -> None:
+    """The number selector cannot silently truncate a fractional raw byte."""
+    entry, coordinator = profile_entry(hass)
+    result = await start_editor(hass, entry, "routine_settings")
+    flow = hass.config_entries.options._progress[result["flow_id"]]
+
+    result = await flow.async_step_routine_settings(
+        {
+            "routine_enabled": False,
+            "routine_music": 1.5,
+            "routine_volume": 0,
+            "task_reward_sfx": "0",
+            "routine_reward_sfx": "0",
+        }
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "invalid_routine_settings"}
+    coordinator.async_edit_profile.assert_not_awaited()
+
+
+@pytest.mark.parametrize("invalid_row", ("song_13", "unknown_song"))
+async def test_playlist_schema_rejects_unknown_rows(
+    hass: HomeAssistant, invalid_row: str
+) -> None:
+    """The fixed playlist UI exposes exactly twelve validated rows."""
+    entry, coordinator = profile_entry(hass)
+    result = await start_editor(hass, entry, "playlist")
+
+    with pytest.raises(InvalidData):
+        await hass.config_entries.options.async_configure(
+            result["flow_id"], user_input={"song_1": "1", invalid_row: "2"}
+        )
+
+    coordinator.async_edit_profile.assert_not_awaited()
+
+
+async def test_basic_confirmation_retains_draft_after_cas_conflict(
+    hass: HomeAssistant,
+) -> None:
+    """A stale basic editor does not overwrite a newer private profile revision."""
+    save = AsyncMock(side_effect=RevisionConflictError("stale"))
+    entry, coordinator = profile_entry(hass, save=save)
+    result = await start_editor(hass, entry, "basic")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={
+            "brightness": "0",
+            "color": "0",
+            "light_duration": "0",
+            "volume": "0",
+            "playlist_duration": "0",
+        },
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"confirm": True}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "basic_confirm"
+    assert result["errors"] == {"base": "revision_conflict"}
+    coordinator.async_edit_profile.assert_awaited_once_with(
+        {
+            "brightness": 0,
+            "color": 0,
+            "light_duration": 0,
+            "volume": 0,
+            "playlist_duration": 0,
+        },
+        7,
+    )

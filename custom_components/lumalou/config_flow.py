@@ -28,10 +28,16 @@ DEFAULT_AUTO_RESTORE = False
 MANUFACTURER_ID = 950
 MANUFACTURER_PREFIX = b"MB"
 MAX_ROUTINE_TASKS = 12
+MAX_PLAYLIST_SONGS = 12
 
 _ALARM_OPTIONS = [str(value) for value in range(11)]
 _ALARM_SOUND_OPTIONS = [str(value) for value in range(16)]
 _ROUTINE_TASK_OPTIONS = [str(value) for value in range(1, 12)]
+_BASIC_VALUE_OPTIONS = [str(value) for value in range(10)]
+_LIGHT_DURATION_OPTIONS = [str(value) for value in range(6)]
+_PLAYLIST_DURATION_OPTIONS = [str(value) for value in range(7)]
+_SONG_OPTIONS = [str(value) for value in range(1, 19)]
+_CLOCK_FORMAT_OPTIONS = ["0", "1"]
 
 
 def _is_supported(info: BluetoothServiceInfoBleak) -> bool:
@@ -210,12 +216,21 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Choose the behavior, schedule, or routine editor."""
+        """Choose the behavior or one private profile editor."""
         # Keep compatibility with the original single-step options submission.
         if user_input is not None and CONF_AUTO_RESTORE in user_input:
             return await self.async_step_behavior(user_input)
         return self.async_show_menu(
-            step_id="init", menu_options=("behavior", "schedule", "routine")
+            step_id="init",
+            menu_options=(
+                "behavior",
+                "basic",
+                "playlist",
+                "clock_settings",
+                "routine_settings",
+                "schedule",
+                "routine",
+            ),
         )
 
     async def async_step_behavior(
@@ -233,6 +248,128 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
 
         return self.async_show_form(
             step_id="behavior", data_schema=self._options_schema(), last_step=True
+        )
+
+    async def async_step_basic(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Edit private light and audio values as one draft."""
+        if not self._ensure_profile_draft("basic"):
+            return self.async_abort(reason="profile_editor_unavailable")
+        assert self._draft_profile is not None
+
+        if user_input is not None:
+            try:
+                basic = {
+                    "brightness": int(user_input["brightness"]),
+                    "color": int(user_input["color"]),
+                    "light_duration": int(user_input["light_duration"]),
+                    "volume": int(user_input["volume"]),
+                    "playlist_duration": int(user_input["playlist_duration"]),
+                }
+                validate_profile(basic)
+            except KeyError, ProfileValidationError, TypeError, ValueError:
+                return self.async_show_form(
+                    step_id="basic",
+                    data_schema=self._basic_schema(),
+                    errors={"base": "invalid_basic"},
+                )
+            self._draft_profile.update(basic)
+            self._changes.update(deepcopy(basic))
+            return await self.async_step_confirm()
+
+        return self.async_show_form(step_id="basic", data_schema=self._basic_schema())
+
+    async def async_step_playlist(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Edit an ordered, duplicate-preserving private playlist draft."""
+        if not self._ensure_profile_draft("playlist"):
+            return self.async_abort(reason="profile_editor_unavailable")
+        assert self._draft_profile is not None
+
+        if user_input is not None:
+            try:
+                playlist = [
+                    int(user_input[f"song_{index}"])
+                    for index in range(1, MAX_PLAYLIST_SONGS + 1)
+                    if f"song_{index}" in user_input
+                ]
+                validate_profile({"playlist": playlist})
+            except ProfileValidationError, TypeError, ValueError:
+                return self.async_show_form(
+                    step_id="playlist",
+                    data_schema=self._playlist_schema(),
+                    errors={"base": "invalid_playlist"},
+                )
+            self._draft_profile["playlist"] = playlist
+            self._changes["playlist"] = deepcopy(playlist)
+            return await self.async_step_confirm()
+
+        return self.async_show_form(
+            step_id="playlist", data_schema=self._playlist_schema()
+        )
+
+    async def async_step_clock_settings(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Edit a complete private clock settings block."""
+        if not self._ensure_profile_draft("clock_settings"):
+            return self.async_abort(reason="profile_editor_unavailable")
+        assert self._draft_profile is not None
+
+        if user_input is not None:
+            try:
+                clock_settings = {
+                    "display": user_input["clock_display"],
+                    "brightness": int(user_input["clock_brightness"]),
+                    "format": int(user_input["clock_format"]),
+                }
+                validate_profile({"clock_settings": clock_settings})
+            except KeyError, ProfileValidationError, TypeError, ValueError:
+                return self.async_show_form(
+                    step_id="clock_settings",
+                    data_schema=self._clock_settings_schema(),
+                    errors={"base": "invalid_clock_settings"},
+                )
+            self._draft_profile["clock_settings"] = clock_settings
+            self._changes["clock_settings"] = deepcopy(clock_settings)
+            return await self.async_step_confirm()
+
+        return self.async_show_form(
+            step_id="clock_settings", data_schema=self._clock_settings_schema()
+        )
+
+    async def async_step_routine_settings(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Edit a complete private routine settings block."""
+        if not self._ensure_profile_draft("routine_settings"):
+            return self.async_abort(reason="profile_editor_unavailable")
+        assert self._draft_profile is not None
+
+        if user_input is not None:
+            try:
+                routine_settings = {
+                    "enabled": user_input["routine_enabled"],
+                    "music": self._integer_input(user_input["routine_music"]),
+                    "volume": self._integer_input(user_input["routine_volume"]),
+                    "task_reward_sfx": int(user_input["task_reward_sfx"]),
+                    "routine_reward_sfx": int(user_input["routine_reward_sfx"]),
+                }
+                validate_profile({"routine_settings": routine_settings})
+            except KeyError, ProfileValidationError, TypeError, ValueError:
+                return self.async_show_form(
+                    step_id="routine_settings",
+                    data_schema=self._routine_settings_schema(),
+                    errors={"base": "invalid_routine_settings"},
+                )
+            self._draft_profile["routine_settings"] = routine_settings
+            self._changes["routine_settings"] = deepcopy(routine_settings)
+            return await self.async_step_confirm()
+
+        return self.async_show_form(
+            step_id="routine_settings", data_schema=self._routine_settings_schema()
         )
 
     async def async_step_schedule(
@@ -415,6 +552,30 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
         """Submit the shared confirmation step for routines."""
         return await self.async_step_confirm(user_input)
 
+    async def async_step_basic_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Submit the shared confirmation step for light and audio values."""
+        return await self.async_step_confirm(user_input)
+
+    async def async_step_playlist_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Submit the shared confirmation step for a playlist."""
+        return await self.async_step_confirm(user_input)
+
+    async def async_step_clock_settings_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Submit the shared confirmation step for clock settings."""
+        return await self.async_step_confirm(user_input)
+
+    async def async_step_routine_settings_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Submit the shared confirmation step for routine settings."""
+        return await self.async_step_confirm(user_input)
+
     def _confirm_form(self, errors: dict[str, str] | None = None) -> ConfigFlowResult:
         """Build the final confirmation form and summary values."""
         assert self._draft_profile is not None
@@ -438,7 +599,7 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
                     "alarm_sound": str(alarm["sound"] + 1),
                 }
             )
-        else:
+        elif self._editor == "routine":
             assert self._routine_day is not None
             routine = self._draft_profile["routines"][self._routine_day]
             placeholders.update(
@@ -455,6 +616,41 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
                         )
                     ),
                 }
+            )
+        elif self._editor == "basic":
+            placeholders.update(
+                {
+                    name: str(self._draft_profile[name])
+                    for name in (
+                        "brightness",
+                        "color",
+                        "light_duration",
+                        "volume",
+                        "playlist_duration",
+                    )
+                }
+            )
+        elif self._editor == "playlist":
+            playlist = self._draft_profile["playlist"]
+            placeholders.update(
+                {
+                    "song_count": str(len(playlist)),
+                    "songs": ", ".join(map(str, playlist)) or "—",
+                }
+            )
+        elif self._editor == "clock_settings":
+            clock = self._draft_profile["clock_settings"]
+            placeholders.update(
+                {
+                    "display": str(clock["display"]),
+                    "brightness": str(clock["brightness"]),
+                    "format": str(clock["format"]),
+                }
+            )
+        elif self._editor == "routine_settings":
+            routine_settings = self._draft_profile["routine_settings"]
+            placeholders.update(
+                {name: str(value) for name, value in routine_settings.items()}
             )
         return self.async_show_form(
             step_id=f"{self._editor}_confirm",
@@ -528,6 +724,99 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
             )
         )
         return vol.Schema(fields)
+
+    def _basic_schema(self) -> vol.Schema:
+        """Return native selectors for private light and audio values."""
+        assert self._draft_profile is not None
+        fields: dict[vol.Marker, Any] = {}
+        for name, options in (
+            ("brightness", _BASIC_VALUE_OPTIONS),
+            ("color", _BASIC_VALUE_OPTIONS),
+            ("light_duration", _LIGHT_DURATION_OPTIONS),
+            ("volume", _BASIC_VALUE_OPTIONS),
+            ("playlist_duration", _PLAYLIST_DURATION_OPTIONS),
+        ):
+            marker = vol.Required(name, default=str(self._draft_profile.get(name, 0)))
+            fields[marker] = selector.SelectSelector(
+                selector.SelectSelectorConfig(options=options)
+            )
+        return vol.Schema(fields)
+
+    def _playlist_schema(self) -> vol.Schema:
+        """Return twelve fixed ordered playlist rows, including empty rows."""
+        assert self._draft_profile is not None
+        playlist = self._draft_profile.get("playlist", [])
+        suggested_values = {
+            f"song_{index}": str(song) for index, song in enumerate(playlist, start=1)
+        }
+        fields: dict[vol.Marker, Any] = {}
+        for index in range(1, MAX_PLAYLIST_SONGS + 1):
+            fields[vol.Optional(f"song_{index}")] = selector.SelectSelector(
+                selector.SelectSelectorConfig(options=_SONG_OPTIONS)
+            )
+        return self.add_suggested_values_to_schema(vol.Schema(fields), suggested_values)
+
+    def _clock_settings_schema(self) -> vol.Schema:
+        """Return native controls for one complete clock settings block."""
+        assert self._draft_profile is not None
+        clock = self._draft_profile.get(
+            "clock_settings", {"display": False, "brightness": 0, "format": 0}
+        )
+        return vol.Schema(
+            {
+                vol.Required("clock_display", default=clock["display"]): (
+                    selector.BooleanSelector()
+                ),
+                vol.Required("clock_brightness", default=str(clock["brightness"])): (
+                    selector.SelectSelector(
+                        selector.SelectSelectorConfig(options=_BASIC_VALUE_OPTIONS)
+                    )
+                ),
+                vol.Required("clock_format", default=str(clock["format"])): (
+                    selector.SelectSelector(
+                        selector.SelectSelectorConfig(options=_CLOCK_FORMAT_OPTIONS)
+                    )
+                ),
+            }
+        )
+
+    def _routine_settings_schema(self) -> vol.Schema:
+        """Return native controls for one complete routine settings block."""
+        assert self._draft_profile is not None
+        routine_settings = self._draft_profile.get(
+            "routine_settings",
+            {
+                "enabled": False,
+                "music": 0,
+                "volume": 0,
+                "task_reward_sfx": 0,
+                "routine_reward_sfx": 0,
+            },
+        )
+        return vol.Schema(
+            {
+                vol.Required("routine_enabled", default=routine_settings["enabled"]): (
+                    selector.BooleanSelector()
+                ),
+                vol.Required("routine_music", default=routine_settings["music"]): (
+                    self._byte_selector()
+                ),
+                vol.Required("routine_volume", default=routine_settings["volume"]): (
+                    self._byte_selector()
+                ),
+                vol.Required(
+                    "task_reward_sfx", default=str(routine_settings["task_reward_sfx"])
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(options=_ALARM_SOUND_OPTIONS)
+                ),
+                vol.Required(
+                    "routine_reward_sfx",
+                    default=str(routine_settings["routine_reward_sfx"]),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(options=_ALARM_SOUND_OPTIONS)
+                ),
+            }
+        )
 
     def _routine_day_schema(self) -> vol.Schema:
         """Return a translated day picker."""
@@ -639,6 +928,25 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
         routines = self._current_routines()
         routines[day] = routine
         return routines
+
+    @staticmethod
+    def _byte_selector() -> selector.NumberSelector:
+        """Return an integer byte selector instead of a guessed music enum."""
+        return selector.NumberSelector(
+            selector.NumberSelectorConfig(
+                min=0,
+                max=255,
+                step=1,
+                mode=selector.NumberSelectorMode.BOX,
+            )
+        )
+
+    @staticmethod
+    def _integer_input(value: Any) -> int:
+        """Accept selector floats only when they exactly represent an integer."""
+        if type(value) not in (int, float) or int(value) != value:
+            raise ValueError("Value must be an integer")
+        return int(value)
 
     @staticmethod
     def _parse_time(value: Any) -> dict[str, int]:
