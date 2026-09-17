@@ -1,12 +1,13 @@
 # Lumalou protocol audit
 
-Audit date: 2026-09-16 (America/Argentina/Buenos_Aires).
+Audit date: 2026-09-17 (America/Argentina/Buenos_Aires).
 
-Status: source audit and isolated synthetic checks only. No Lumalou or Home
-Assistant installation was contacted. This document does **not** establish that
-the integration is installable, functional, or ready for automatic restoration.
-The library is an independent MIT-licensed reverse-engineering project, not a
-Mattel library. Its documented model is GLD09; GWM53 compatibility is unverified.
+Status: source audit, isolated synthetic checks, and the limited read-only
+browser observations recorded below. The integration did not contact a Lumalou
+or Home Assistant installation. This document does **not** establish that the
+integration is installable, functional, or ready for automatic restoration. The
+library is an independent MIT-licensed reverse-engineering project, not a Mattel
+library. Its documented model is GLD09; GWM53 compatibility is unverified.
 
 ## Pinned evidence
 
@@ -158,6 +159,18 @@ Important representation limits:
   apply playlist response data;
 - its `GLOBAL_STATE` parser silently zero-pads short data, so it cannot provide
   strict restore verification.
+
+The deployment was revalidated independently on 2026-09-17. It still served
+`index-CP__DzxD.js`, 201852 bytes, with SHA-256
+`30bef51fe4ed6728ccd4a811b7f855368cc587d804a578660da368c2ece70b09`;
+upstream `main` still resolved to `9fa5ecfc7f6e82ec02e13d01f00fca7be6852567`.
+The bundle's RX handler still typed-decodes only `GLOBAL_STATE`. Its UI response
+consumer handles routine responses `0x2B`–`0x2F`, `0x90`, `0x91`, task status
+`0x94`, schedule responses `0x22` and `0x23`, and alarm response `0x27`. Although
+the opcode and request maps name `CURRENT_PLAYLIST` (`0x19`),
+`ROUTINE_MUSIC_STATUS` (`0x93`), and `CLOCK_SETTINGS` (`0x99`), no dedicated
+response parser or consumer for those three responses exists in this deployed
+bundle. Their response layouts therefore remain unproven.
 
 These codecs belong in upstream `lumalou`, with strict parsers and shared golden
 vectors. The HA integration must consume a reviewed, exactly pinned release; it
