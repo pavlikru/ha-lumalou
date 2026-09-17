@@ -2,12 +2,14 @@
 
 import asyncio
 import json
+import stat
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from custom_components.lumalou.const import PROFILE_SCHEMA_VERSION
 from custom_components.lumalou.models import ProfileRecord, ProfileValidationError
 from custom_components.lumalou.storage import ProfileStorageError, ProfileStore
 
@@ -24,7 +26,9 @@ def storage(tmp_path):
     path = tmp_path / key
 
     async def write(data):
-        path.write_text(json.dumps({"version": 1, "key": key, "data": data}))
+        path.write_text(
+            json.dumps({"version": PROFILE_SCHEMA_VERSION, "key": key, "data": data})
+        )
 
     backend = SimpleNamespace(
         path=str(path), key=key, async_save=AsyncMock(side_effect=write)
@@ -33,7 +37,9 @@ def storage(tmp_path):
         "custom_components.lumalou.storage.Store", return_value=backend
     ) as factory:
         adapter = ProfileStore(hass, "synthetic-entry")
-    factory.assert_called_once_with(hass, 1, key, private=True, atomic_writes=True)
+    factory.assert_called_once_with(
+        hass, PROFILE_SCHEMA_VERSION, key, private=True, atomic_writes=True
+    )
     return adapter, backend, path
 
 
@@ -51,15 +57,111 @@ async def test_missing_then_saved_profile_survives_new_adapter(storage):
     assert await reopened.async_load() == record
 
 
+def v1_record() -> dict:
+    """Return a complete v1 record whose profile is intentionally partial."""
+    return {
+        "schema_version": 1,
+        "revision": 4,
+        "desired_profile": {"volume": 3, "playlist": [2, 1]},
+        "previous": {"revision": 3, "profile": {"volume": 2}},
+        "verified_revision": 2,
+        "pending": True,
+        "sync_status": "pending",
+        "last_error": "offline",
+        "maintenance": True,
+    }
+
+
+async def test_v1_is_backed_up_migrated_and_verified_without_defaults(storage):
+    adapter, backend, path = storage
+    original = {"version": 1, "key": backend.key, "data": v1_record()}
+    original_text = json.dumps(original, indent=2)
+    path.write_text(original_text)
+
+    migrated = await adapter.async_load()
+
+    assert migrated == ProfileRecord(
+        revision=4,
+        desired_profile={"volume": 3, "playlist": [2, 1]},
+        previous={"revision": 3, "profile": {"volume": 2}},
+        verified_revision=2,
+        pending=True,
+        sync_status="pending",
+        last_error="offline",
+        maintenance=True,
+    )
+    assert json.loads(path.read_text()) == {
+        "version": PROFILE_SCHEMA_VERSION,
+        "key": backend.key,
+        "data": migrated.to_dict(),
+    }
+    backup = path.with_name(f"{path.name}.v1.backup")
+    assert backup.read_text() == original_text
+    assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+    backend.async_save.assert_awaited_once_with(migrated.to_dict())
+
+
+async def test_v1_migration_write_failure_preserves_source_and_backup(storage):
+    adapter, backend, path = storage
+    original = {"version": 1, "key": backend.key, "data": v1_record()}
+    source = json.dumps(original)
+    path.write_text(source)
+    backend.async_save.side_effect = OSError("disk full")
+
+    with pytest.raises(ProfileStorageError):
+        await adapter.async_load()
+
+    assert path.read_text() == source
+    assert path.with_name(f"{path.name}.v1.backup").read_text() == source
+
+
+async def test_conflicting_migration_backup_fails_closed(storage):
+    adapter, backend, path = storage
+    original = {"version": 1, "key": backend.key, "data": v1_record()}
+    source = json.dumps(original)
+    path.write_text(source)
+    backup = path.with_name(f"{path.name}.v1.backup")
+    backup.write_text("different source")
+
+    with pytest.raises(ProfileStorageError, match="migration"):
+        await adapter.async_load()
+
+    assert path.read_text() == source
+    assert backup.read_text() == "different source"
+    backend.async_save.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("outer_version", "inner_version"), [(1, 2), (2, 1), (3, 3), (True, 1)]
+)
+async def test_schema_downgrade_future_and_cross_version_records_rejected(
+    storage, outer_version, inner_version
+):
+    adapter, backend, path = storage
+    data = v1_record()
+    data["schema_version"] = inner_version
+    document = {"version": outer_version, "key": backend.key, "data": data}
+    source = json.dumps(document)
+    path.write_text(source)
+
+    with pytest.raises(ProfileStorageError):
+        await adapter.async_load()
+
+    assert path.read_text() == source
+    assert not path.with_name(f"{path.name}.v1.backup").exists()
+    backend.async_save.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     "document",
     [
         "not JSON",
         "[]",
         "{}",
-        '{"version":2,"key":"lumalou.synthetic-entry.profile","data":{}}',
-        '{"version":1,"key":"other-entry","data":{}}',
         '{"version":1,"key":"lumalou.synthetic-entry.profile","data":{}}',
+        '{"version":3,"key":"lumalou.synthetic-entry.profile","data":{}}',
+        '{"version":2,"key":"other-entry","data":{}}',
+        '{"version":2,"key":"lumalou.synthetic-entry.profile","data":{}}',
     ],
 )
 async def test_corrupt_file_is_preserved(storage, document):
@@ -109,9 +211,9 @@ async def test_write_failure_propagates_without_publishing_success(storage, fail
 @pytest.mark.parametrize(
     "readback",
     [
-        {"version": 2},
-        {"version": 1, "key": "wrong"},
-        {"version": 1, "key": "lumalou.synthetic-entry.profile", "data": {}},
+        {"version": 3},
+        {"version": 2, "key": "wrong"},
+        {"version": 2, "key": "lumalou.synthetic-entry.profile", "data": {}},
         [],
     ],
 )
@@ -149,7 +251,9 @@ async def test_cancelled_save_holds_lock_until_commit_finishes(tmp_path):
         if data["revision"] == 1:
             started.set()
             await release.wait()
-        path.write_text(json.dumps({"version": 1, "key": key, "data": data}))
+        path.write_text(
+            json.dumps({"version": PROFILE_SCHEMA_VERSION, "key": key, "data": data})
+        )
 
     backend = SimpleNamespace(
         path=str(path), key=key, async_save=AsyncMock(side_effect=write)

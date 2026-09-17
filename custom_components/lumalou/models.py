@@ -1,7 +1,8 @@
-"""Validated persistent subset; never a claim of a complete device backup."""
+"""Strict logical model for persistent settings, independent of BLE codecs."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -12,12 +13,41 @@ if TYPE_CHECKING:
     from .coordinator import LumalouCoordinator
 
 PROFILE_RANGES = {
-    "brightness": (1, 9),
+    "brightness": (0, 9),
     "color": (0, 9),
     "light_duration": (0, 5),
     "volume": (0, 9),
     "playlist_duration": (0, 6),
 }
+V1_PROFILE_RANGES = {**PROFILE_RANGES, "brightness": (1, 9)}
+V1_PROFILE_FIELDS = frozenset(
+    {"brightness", "color", "light_duration", "volume", "playlist_duration", "playlist"}
+)
+DAYS = (
+    "sunday",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+)
+FULL_PROFILE_FIELDS = frozenset(
+    {
+        *PROFILE_RANGES,
+        "playlist",
+        "clock_settings",
+        "routine_settings",
+        "ready_to_rise",
+        "sleepy_times",
+        "alarm",
+        "routines",
+    }
+)
+# Intentionally absent: current date/time, light/audio on/off, current song,
+# timer remainder, nap state/alarm, executing alarm, current routine step, and
+# task status. Those are transient or lack a persistent setter/readback contract.
+# The `alarm` block is only the established seven alarm nibbles plus sound nibble.
 SYNC_STATUSES = frozenset({"empty", "saved", "pending", "applying", "partial", "error"})
 
 
@@ -36,20 +66,205 @@ def validate_integer(value: Any, minimum: int, maximum: int, name: str) -> int:
     return value
 
 
-def validate_profile(value: Any) -> dict[str, Any]:
-    """Copy a strict, explicitly supported subset; absent fields remain absent."""
-    if not isinstance(value, dict) or set(value) - {*PROFILE_RANGES, "playlist"}:
+def _strict_mapping(value: Any, fields: set[str] | frozenset[str], name: str) -> dict:
+    """Require a JSON object with exactly the documented fields."""
+    if not isinstance(value, dict) or set(value) != set(fields):
+        raise ProfileValidationError(f"Invalid {name}")
+    return value
+
+
+def _boolean(value: Any, name: str) -> bool:
+    if type(value) is not bool:
+        raise ProfileValidationError(f"Invalid {name}")
+    return value
+
+
+def _time(value: Any, name: str) -> dict[str, int] | None:
+    """Validate a time; null is the proven no-scheduled-time wire sentinel."""
+    if value is None:
+        return None
+    data = _strict_mapping(value, {"hour", "minute"}, name)
+    return {
+        "hour": validate_integer(data["hour"], 0, 23, f"{name} hour"),
+        "minute": validate_integer(data["minute"], 0, 59, f"{name} minute"),
+    }
+
+
+def _week(value: Any, name: str) -> dict[str, dict[str, int] | None]:
+    data = _strict_mapping(value, set(DAYS), name)
+    return {day: _time(data[day], f"{name} {day}") for day in DAYS}
+
+
+def _playlist(value: Any) -> list[int]:
+    if not isinstance(value, list) or len(value) > 12:
+        raise ProfileValidationError("Playlist must contain at most 12 songs")
+    return [validate_integer(song, 1, 18, "song") for song in value]
+
+
+def _clock_settings(value: Any) -> dict[str, Any]:
+    data = _strict_mapping(value, {"display", "brightness", "format"}, "clock settings")
+    return {
+        "display": _boolean(data["display"], "clock display"),
+        "brightness": validate_integer(data["brightness"], 0, 9, "clock brightness"),
+        "format": validate_integer(data["format"], 0, 1, "clock format"),
+    }
+
+
+def _routine_settings(value: Any) -> dict[str, Any]:
+    fields = {
+        "enabled",
+        "music",
+        "volume",
+        "task_reward_sfx",
+        "routine_reward_sfx",
+    }
+    data = _strict_mapping(value, fields, "routine settings")
+    return {
+        "enabled": _boolean(data["enabled"], "routine mode"),
+        # The audited setter carries a full music byte, not a known enum.
+        "music": validate_integer(data["music"], 0, 255, "routine music"),
+        # The setter carries one byte. No narrower hardware/UI range is proven.
+        "volume": validate_integer(data["volume"], 0, 255, "routine volume"),
+        "task_reward_sfx": validate_integer(
+            data["task_reward_sfx"], 0, 15, "task reward sound"
+        ),
+        "routine_reward_sfx": validate_integer(
+            data["routine_reward_sfx"], 0, 15, "routine reward sound"
+        ),
+    }
+
+
+def _ready_to_rise(value: Any) -> dict[str, Any]:
+    data = _strict_mapping(value, {"enabled", "times"}, "ready-to-rise settings")
+    return {
+        "enabled": _boolean(data["enabled"], "ready-to-rise status"),
+        "times": _week(data["times"], "ready-to-rise times"),
+    }
+
+
+def _alarm(value: Any) -> dict[str, Any]:
+    data = _strict_mapping(value, {"days", "sound"}, "alarm block")
+    days = _strict_mapping(data["days"], set(DAYS), "alarm days")
+    return {
+        "days": {
+            day: validate_integer(days[day], 0, 10, f"{day} alarm") for day in DAYS
+        },
+        "sound": validate_integer(data["sound"], 0, 15, "alarm sound"),
+    }
+
+
+def _routine(value: Any, day: str) -> dict[str, Any]:
+    data = _strict_mapping(value, {"time", "slots"}, f"{day} routine")
+    slots = data["slots"]
+    if not isinstance(slots, list) or len(slots) != 12:
+        raise ProfileValidationError("A daily routine must contain exactly 12 slots")
+    validated_slots: list[dict[str, int] | None] = []
+    for index, slot in enumerate(slots):
+        if slot is None:
+            validated_slots.append(None)
+            continue
+        item = _strict_mapping(slot, {"step", "task"}, f"{day} slot {index}")
+        validated_slots.append(
+            {
+                "step": validate_integer(item["step"], 1, 12, "routine step"),
+                "task": validate_integer(item["task"], 0, 11, "routine task"),
+            }
+        )
+    return {
+        "time": _time(data["time"], f"{day} routine time"),
+        "slots": validated_slots,
+    }
+
+
+def _routines(value: Any) -> dict[str, dict[str, Any]]:
+    data = _strict_mapping(value, set(DAYS), "daily routines")
+    return {day: _routine(data[day], day) for day in DAYS}
+
+
+def _validate_v1_profile(value: Any) -> dict[str, Any]:
+    """Validate the exact v1 subset without inventing newly supported blocks."""
+    if not isinstance(value, dict) or set(value) - V1_PROFILE_FIELDS:
         raise ProfileValidationError("Unsupported profile fields")
     result = deepcopy(value)
     for name, item in result.items():
         if name == "playlist":
-            if not isinstance(item, list) or len(item) > 12:
-                raise ProfileValidationError("Playlist must contain at most 12 songs")
-            for song in item:
-                validate_integer(song, 1, 18, "song")
+            result[name] = _playlist(item)
+        else:
+            validate_integer(item, *V1_PROFILE_RANGES[name], name)
+    return result
+
+
+def validate_profile(value: Any) -> dict[str, Any]:
+    """Copy a strict v2 profile; absent top-level fields remain unknown."""
+    if not isinstance(value, dict) or set(value) - FULL_PROFILE_FIELDS:
+        raise ProfileValidationError("Unsupported profile fields")
+    result = deepcopy(value)
+    for name, item in result.items():
+        if name == "playlist":
+            result[name] = _playlist(item)
+        elif name == "clock_settings":
+            result[name] = _clock_settings(item)
+        elif name == "routine_settings":
+            result[name] = _routine_settings(item)
+        elif name == "ready_to_rise":
+            result[name] = _ready_to_rise(item)
+        elif name == "sleepy_times":
+            result[name] = _week(item, "sleepy times")
+        elif name == "alarm":
+            result[name] = _alarm(item)
+        elif name == "routines":
+            result[name] = _routines(item)
         else:
             validate_integer(item, *PROFILE_RANGES[name], name)
     return result
+
+
+def profile_is_complete(value: Any) -> bool:
+    """Return whether every persistent block is structurally present and valid."""
+    try:
+        result = validate_profile(value)
+    except ProfileValidationError:
+        return False
+    return set(result) == FULL_PROFILE_FIELDS
+
+
+def require_complete_profile(value: Any) -> dict[str, Any]:
+    """Require structural completeness; this does not prove restore safety."""
+    result = validate_profile(value)
+    if set(result) != FULL_PROFILE_FIELDS:
+        raise ProfileValidationError("Persistent profile is incomplete")
+    return result
+
+
+def export_profile_payload(value: Any) -> dict[str, Any]:
+    """Version an exported partial/full profile without relabelling v2 as v1."""
+    result = validate_profile(value)
+    if set(result) <= V1_PROFILE_FIELDS:
+        return {
+            "schema_version": 1,
+            "scope": "supported_subset",
+            "profile": result,
+        }
+    return {
+        "schema_version": PROFILE_SCHEMA_VERSION,
+        "scope": "persistent_profile",
+        "profile": result,
+    }
+
+
+def import_profile_payload(value: Any) -> dict[str, Any]:
+    """Validate both the legacy subset envelope and current profile envelope."""
+    data = _strict_mapping(
+        value, {"schema_version", "scope", "profile"}, "profile import"
+    )
+    version = data["schema_version"]
+    if type(version) is not int:
+        raise ProfileValidationError("Unsupported profile import schema")
+    if version == 1 and data["scope"] == "supported_subset":
+        return _validate_v1_profile(data["profile"])
+    if version == PROFILE_SCHEMA_VERSION and data["scope"] == "persistent_profile":
+        return validate_profile(data["profile"])
+    raise ProfileValidationError("Unsupported profile import schema")
 
 
 @dataclass(frozen=True)
@@ -73,32 +288,47 @@ class ProfileRecord:
     @classmethod
     def from_dict(cls, value: Any) -> ProfileRecord:
         """Reject unsupported schemas and corrupt synchronization metadata."""
-        if not isinstance(value, dict) or set(value) != set(cls.__dataclass_fields__):
-            raise ProfileValidationError("Invalid profile record")
-        if type(value["schema_version"]) is not int or value["schema_version"] != 1:
-            raise ProfileValidationError("Unsupported profile schema")
-        validate_integer(value["revision"], 0, 2**63 - 1, "revision")
-        verified = value["verified_revision"]
-        if verified is not None:
-            validate_integer(verified, 0, value["revision"], "verified revision")
-        if value["sync_status"] not in SYNC_STATUSES:
-            raise ProfileValidationError("Invalid synchronization status")
-        if any(type(value[key]) is not bool for key in ("maintenance", "pending")):
-            raise ProfileValidationError("Invalid boolean metadata")
-        if value["last_error"] is not None and not isinstance(value["last_error"], str):
-            raise ProfileValidationError("Invalid error metadata")
-        data = deepcopy(value)
-        data["desired_profile"] = validate_profile(data["desired_profile"])
-        previous = data["previous"]
-        if previous is not None:
-            if not isinstance(previous, dict) or set(previous) != {
-                "revision",
-                "profile",
-            }:
-                raise ProfileValidationError("Invalid previous revision")
-            validate_integer(previous["revision"], 0, data["revision"], "previous")
-            previous["profile"] = validate_profile(previous["profile"])
-        return cls(**data)
+        return cls(**_validate_record(value, PROFILE_SCHEMA_VERSION, validate_profile))
+
+
+def _validate_record(
+    value: Any, schema_version: int, profile_validator: Callable[[Any], dict[str, Any]]
+) -> dict[str, Any]:
+    """Validate record metadata while allowing an explicit profile schema."""
+    fields = set(ProfileRecord.__dataclass_fields__)
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ProfileValidationError("Invalid profile record")
+    if (
+        type(value["schema_version"]) is not int
+        or value["schema_version"] != schema_version
+    ):
+        raise ProfileValidationError("Unsupported profile schema")
+    validate_integer(value["revision"], 0, 2**63 - 1, "revision")
+    verified = value["verified_revision"]
+    if verified is not None:
+        validate_integer(verified, 0, value["revision"], "verified revision")
+    if value["sync_status"] not in SYNC_STATUSES:
+        raise ProfileValidationError("Invalid synchronization status")
+    if any(type(value[key]) is not bool for key in ("maintenance", "pending")):
+        raise ProfileValidationError("Invalid boolean metadata")
+    if value["last_error"] is not None and not isinstance(value["last_error"], str):
+        raise ProfileValidationError("Invalid error metadata")
+    data = deepcopy(value)
+    data["desired_profile"] = profile_validator(data["desired_profile"])
+    previous = data["previous"]
+    if previous is not None:
+        if not isinstance(previous, dict) or set(previous) != {"revision", "profile"}:
+            raise ProfileValidationError("Invalid previous revision")
+        validate_integer(previous["revision"], 0, data["revision"], "previous")
+        previous["profile"] = profile_validator(previous["profile"])
+    return data
+
+
+def migrate_v1_record(value: Any) -> ProfileRecord:
+    """Upgrade only validated v1 subset data and preserve all record metadata."""
+    data = _validate_record(value, 1, _validate_v1_profile)
+    data["schema_version"] = PROFILE_SCHEMA_VERSION
+    return ProfileRecord.from_dict(data)
 
 
 @dataclass

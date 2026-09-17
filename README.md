@@ -58,6 +58,8 @@ guide](docs/installation.ru.md).
   remains unverified.
 - [Implementation status](docs/implementation-status.md) maps the complete
   specification to current evidence and remaining release gates.
+- [Persistent profile schema](docs/profile-schema.md) defines the strict logical
+  model, partial-profile semantics and migration boundary.
 - [Architecture](docs/architecture.md) defines the Home Assistant/upstream
   boundary.
 - [Testing](docs/testing.md) explains mocked and hardware checks.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 
 from homeassistant.core import HomeAssistant
@@ -11,7 +12,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN, PROFILE_SCHEMA_VERSION
-from .models import ProfileRecord
+from .models import ProfileRecord, migrate_v1_record
 
 
 class ProfileStorageError(HomeAssistantError):
@@ -22,6 +23,29 @@ def _read_document(path: str) -> dict:
     """Read from disk, deliberately bypassing Store's memory cache."""
     with Path(path).open(encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def _create_migration_backup(path: str, version: int, expected: dict) -> None:
+    """Preserve the original bytes once before replacing a validated old schema."""
+    source = Path(path)
+    contents = source.read_bytes()
+    if json.loads(contents) != expected:
+        raise ValueError("Profile changed while preparing migration")
+    backup = Path(f"{path}.v{version}.backup")
+    try:
+        descriptor = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        if backup.read_bytes() != contents:
+            raise ValueError("Conflicting profile migration backup") from None
+        return
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(contents)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        backup.unlink(missing_ok=True)
+        raise
 
 
 class ProfileStore:
@@ -50,13 +74,46 @@ class ProfileStore:
             except (OSError, ValueError) as err:
                 raise ProfileStorageError("Cannot read saved profile") from err
             try:
-                if document["version"] != PROFILE_SCHEMA_VERSION:
+                if not isinstance(document, dict) or set(document) != {
+                    "version",
+                    "key",
+                    "data",
+                }:
+                    raise ValueError("Invalid storage document")
+                version = document["version"]
+                if (
+                    type(version) is not int
+                    or not 1 <= version <= PROFILE_SCHEMA_VERSION
+                ):
                     raise ValueError("Unsupported storage version")
                 if document["key"] != self._store.key:
                     raise ValueError("Storage key mismatch")
-                return ProfileRecord.from_dict(document["data"])
+                if version == PROFILE_SCHEMA_VERSION:
+                    return ProfileRecord.from_dict(document["data"])
+                record = migrate_v1_record(document["data"])
             except (KeyError, TypeError, ValueError) as err:
                 raise ProfileStorageError("Saved profile requires recovery") from err
+            migration = asyncio.create_task(
+                self._async_migrate(document, version, record.to_dict())
+            )
+            cancelled = False
+            while True:
+                try:
+                    await asyncio.shield(migration)
+                    break
+                except asyncio.CancelledError as err:
+                    if migration.cancelled():
+                        raise ProfileStorageError(
+                            "Profile migration was cancelled before verification"
+                        ) from err
+                    cancelled = True
+                except (OSError, ValueError, TypeError, AttributeError) as err:
+                    raise ProfileStorageError(
+                        "Profile migration could not be verified"
+                    ) from err
+            if cancelled:
+                raise asyncio.CancelledError
+            return record
 
     async def async_save(self, record: ProfileRecord) -> None:
         """Save durably without letting cancellation release the write lock early."""
@@ -96,3 +153,10 @@ class ProfileStore:
                 raise ValueError("Saved profile readback mismatch")
         except (OSError, ValueError, TypeError, AttributeError) as err:
             raise ProfileStorageError("Profile save could not be verified") from err
+
+    async def _async_migrate(self, document: dict, version: int, data: dict) -> None:
+        """Back up a validated legacy document, then durably publish its upgrade."""
+        await self.hass.async_add_executor_job(
+            _create_migration_backup, self._store.path, version, document
+        )
+        await self._async_commit(data)
