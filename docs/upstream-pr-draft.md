@@ -33,8 +33,7 @@ layouts. The pull request does not claim hardware-certified backup or restore.
   `30bef51fe4ed6728ccd4a811b7f855368cc587d804a578660da368c2ece70b09`.
 - Local commits: `bb59b87`, `cdc6f4b` on
   `feat/strict-readback-schedules`.
-- Python 3.10/3.11/3.12 matrix passed before the final query expansion; the
-  final suite passes 313 tests on Python 3.10.
+- The final 313-test suite passes on Python 3.10, 3.11 and 3.12.
 - JavaScript typecheck, 9 tests and production build pass.
 - Code generation is deterministic and `git diff --check` passes.
 

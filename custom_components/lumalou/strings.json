@@ -152,10 +152,27 @@
     },
     "light": {"light": {"name": "Light"}},
     "media_player": {"audio": {"name": "Audio"}},
-    "select": {"light_duration": {"name": "Light duration"}},
+    "binary_sensor": {"profile_pending": {"name": "Profile pending"}},
+    "select": {
+      "light_duration": {"name": "Light duration"},
+      "playlist_duration": {"name": "Playlist duration"}
+    },
     "sensor": {
       "connection": {"name": "Connection"},
-      "firmware": {"name": "Firmware"}
+      "firmware": {"name": "Firmware"},
+      "profile_revision": {"name": "Profile revision"},
+      "profile_sync_status": {
+        "name": "Profile sync status",
+        "state": {
+          "empty": "Empty",
+          "saved": "Saved",
+          "pending": "Pending",
+          "applying": "Applying",
+          "partial": "Partially applied",
+          "error": "Error"
+        }
+      },
+      "profile_last_error": {"name": "Profile last error"}
     },
     "switch": {"maintenance": {"name": "Maintenance"}}
   }

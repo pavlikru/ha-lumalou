@@ -246,8 +246,12 @@ unsafe upstream. `OTA_COMPLETE` (response 0x11) and `FIRMWARE_UPDATE` (mode 5)
 are names for interpretation, not permission to enter firmware mode. Unknown
 commands are denied by default. [Upstream blacklist and unsafe commands][spec].
 
-`send()` does not enforce this policy. An HA boundary must make raw dispatch
-inaccessible and test its allowlist; the underlying reusable enforcement belongs
+Released `send()` does not enforce this policy. The HA adapter now keeps raw
+dispatch private, checks application opcodes, and wraps the pinned client's
+transport so only factory read, RX subscribe, SESSION write and TX write exist.
+Tests reject handles, characteristic objects, DFU UUIDs and arbitrary GATT APIs
+before backend I/O. This version-specific private assignment hook must be
+re-audited on every upstream upgrade; reusable enforcement still belongs
 upstream. A colour/brightness setter must not be admitted to automatic restore
 until its activation side effects and idempotency are demonstrated on hardware.
 Do not replay global-on, Play/Off, Nap, routine start/control, or active-state
@@ -343,12 +347,12 @@ observed response opcode as ambiguous until a clean reconnect. Exhaustive route
 tests cover all 65,536 two-byte prefixes, including unsolicited responses before
 and during a request.
 
-The candidate passes **313 Python tests** and the generated JavaScript contract
-passes type checking, **9 tests**, and a production build. All 28 source-backed
-read-only query opcodes are exposed with literal request/response vectors. This
-is development evidence only: no commit was pushed, no pull request or release
-exists, playlist
-and clock response layouts remain raw, and no setter has hardware acceptance.
+The candidate passes **313 Python tests** on Python 3.10, 3.11 and 3.12. The
+generated JavaScript contract passes type checking, **9 tests**, and a production
+build. All 28 source-backed read-only query opcodes are exposed with literal
+request/response vectors. This is development evidence only: no commit was
+pushed, no pull request or release exists, playlist and clock response layouts
+remain raw, and no setter has hardware acceptance.
 The HA manifest therefore remains pinned to released `lumalou==0.1.0`.
 
 ### Automatable once the upstream contract is released

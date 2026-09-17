@@ -6,14 +6,16 @@ from typing import Any
 
 from homeassistant.components.select import SelectEntity
 
-from lumalou import LightDuration  # type: ignore[attr-defined]
+from lumalou import LightDuration, PlaylistDuration  # type: ignore[attr-defined]
 
 from .entity import LumalouEntity
 
 
 async def async_setup_entry(hass: Any, entry: Any, async_add_entities: Any) -> None:
     """Set up Lumalou selects."""
-    async_add_entities([LumalouLightDurationSelect(entry)])
+    async_add_entities(
+        [LumalouLightDurationSelect(entry), LumalouPlaylistDurationSelect(entry)]
+    )
 
 
 class LumalouLightDurationSelect(LumalouEntity, SelectEntity):
@@ -44,3 +46,32 @@ class LumalouLightDurationSelect(LumalouEntity, SelectEntity):
         if option not in self._options:
             raise ValueError(option)
         await self.coordinator.async_set_light_duration(int(LightDuration[option]))
+
+
+class LumalouPlaylistDurationSelect(LumalouEntity, SelectEntity):
+    """Select the persistent audio playlist timer."""
+
+    def __init__(self, entry: Any) -> None:
+        super().__init__(entry, "Playlist duration", "playlist_duration")
+        self._attr_translation_key = "playlist_duration"
+        self._options = [item.name for item in PlaylistDuration]
+
+    @property
+    def options(self) -> list[str]:
+        return self._options
+
+    @property
+    def current_option(self) -> str | None:
+        data = self.snapshot
+        value = data.get("playlistDuration") if data is not None else None
+        try:
+            return PlaylistDuration(int(value)).name if value is not None else None
+        except ValueError:
+            return None
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in self._options:
+            raise ValueError(option)
+        await self.coordinator.async_set_playlist_duration(
+            int(PlaylistDuration[option])
+        )

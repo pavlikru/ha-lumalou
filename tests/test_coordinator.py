@@ -160,6 +160,7 @@ async def test_offline_setup_preserves_pending_profile_without_ble(rig):
         lambda coordinator: coordinator.async_set_light(False),
         lambda coordinator: coordinator.async_set_volume(3),
         lambda coordinator: coordinator.async_set_light_duration(1),
+        lambda coordinator: coordinator.async_set_playlist_duration(1),
         lambda coordinator: coordinator.async_play(2),
         lambda coordinator: coordinator.async_stop_audio(),
         lambda coordinator: coordinator.async_sync_clock(),
@@ -505,6 +506,16 @@ async def test_light_duration_is_persistent_and_default_on_is_not(rig):
     assert ("send", bytes([0x6C, 5])) in rig.journal
 
 
+async def test_playlist_duration_is_persistent_and_uses_allowlisted_command(rig):
+    coordinator = rig.coordinator
+    await coordinator.async_set_playlist_duration(6)
+
+    assert coordinator.profile_record.desired_profile == {"playlist_duration": 6}
+    assert coordinator.profile_record.pending is True
+    assert coordinator.profile_record.sync_status == "partial"
+    assert ("send", bytes([0x42, 6])) in rig.journal
+
+
 async def test_transient_play_stop_off_never_persist_or_retry(rig):
     coordinator = rig.coordinator
     await coordinator.async_play(7)
@@ -530,6 +541,7 @@ async def test_transient_play_stop_off_never_persist_or_retry(rig):
         ("async_set_volume", (True,)),
         ("async_set_volume", (10,)),
         ("async_set_light_duration", (6,)),
+        ("async_set_playlist_duration", (7,)),
         ("async_play", (8,)),
         ("async_play", (True,)),
         ("async_set_maintenance", (1,)),
