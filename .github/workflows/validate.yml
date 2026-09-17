@@ -49,7 +49,7 @@ jobs:
         uses: hacs/action@main
         with:
           category: integration
-          ignore: brands description topics
+          ignore: description topics
 
   artifact:
     runs-on: ubuntu-latest
