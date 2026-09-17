@@ -192,6 +192,59 @@ async def test_corrupt_file_is_preserved(storage, document):
     backend.async_save.assert_not_awaited()
 
 
+async def test_confirmed_recovery_backs_up_corrupt_bytes_before_replacement(storage):
+    adapter, backend, path = storage
+    corrupt = b"not JSON\nprivate family profile bytes"
+    path.write_bytes(corrupt)
+    record = ProfileRecord(
+        revision=1, desired_profile={"volume": 4}, pending=True, sync_status="pending"
+    )
+
+    await adapter.async_recover(record)
+
+    backups = list(path.parent.glob(f"{path.name}.corrupt.*.backup"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == corrupt
+    assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
+    assert await adapter.async_load() == record
+    backend.async_save.assert_awaited_once_with(record.to_dict())
+
+
+async def test_failed_recovery_preserves_corrupt_source_and_backup(storage):
+    adapter, backend, path = storage
+    corrupt = b"not JSON"
+    path.write_bytes(corrupt)
+    backend.async_save.side_effect = OSError("disk full")
+
+    with pytest.raises(ProfileStorageError):
+        await adapter.async_recover(ProfileRecord(revision=1, pending=True))
+
+    assert path.read_bytes() == corrupt
+    backups = list(path.parent.glob(f"{path.name}.corrupt.*.backup"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == corrupt
+
+
+async def test_cancelled_recovery_waits_for_backup_and_commit_contract(storage):
+    adapter, _, _ = storage
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocked_recovery(_data):
+        started.set()
+        await release.wait()
+
+    with patch.object(adapter, "_async_recover", side_effect=blocked_recovery):
+        recovery = asyncio.create_task(adapter.async_recover(ProfileRecord()))
+        await started.wait()
+        recovery.cancel()
+        await asyncio.sleep(0)
+        assert not recovery.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await recovery
+
+
 async def test_disk_read_error_does_not_become_empty(storage):
     adapter, _, _ = storage
     with (

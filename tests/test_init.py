@@ -83,10 +83,11 @@ async def test_unhealthy_profile_creates_entry_scoped_repair_issue(
 
     issue = ir.async_get(hass).async_get_issue(DOMAIN, _profile_storage_issue_id(entry))
     assert issue is not None
-    assert issue.is_fixable is False
+    assert issue.is_fixable is True
     assert issue.is_persistent is False
     assert issue.severity is ir.IssueSeverity.ERROR
     assert issue.translation_key == ISSUE_ID_PROFILE_STORAGE
+    assert issue.data == {"entry_id": entry.entry_id}
 
 
 async def test_healthy_entry_only_deletes_its_own_stale_profile_issue(

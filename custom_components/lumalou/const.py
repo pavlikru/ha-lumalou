@@ -19,6 +19,7 @@ PROFILE_SCHEMA_VERSION = 2
 CONNECT_TIMEOUT = 20
 RESPONSE_TIMEOUT = 4
 RECOVERY_COOLDOWN = 30
+RECOVERY_MAX_COOLDOWN = 15 * 60
 DFU_SERVICE = "00001530-1212-efde-1523-785feabcd123"
 FORBIDDEN_OPCODES = frozenset({0x34, 0x52})
 # No aggregate state, firmware, routine activation, or raw service dispatch.

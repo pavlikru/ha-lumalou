@@ -58,8 +58,33 @@
           "clock_settings": "Clock settings",
           "routine_settings": "Routine settings",
           "schedule": "Weekly schedule",
+          "routine": "Daily routines",
+          "create": "Create an offline profile",
+          "import_profile": "Import an exported profile",
+          "read_profile": "Read the device profile"
+        }
+      },
+      "create": {
+        "title": "Create an offline profile",
+        "description": "Choose the first private profile block to create. It is saved only after that editor's final confirmation and is never sent to the device.",
+        "menu_options": {
+          "basic": "Light and audio values",
+          "playlist": "Playlist",
+          "clock_settings": "Clock settings",
+          "routine_settings": "Routine settings",
+          "schedule": "Weekly schedule",
           "routine": "Daily routines"
         }
+      },
+      "import_profile": {
+        "title": "Import an exported profile",
+        "description": "Paste a schema-v1 or schema-v2 profile export. It is validated and previewed before the private Store changes; nothing is sent to Lumalou.",
+        "data": {"profile_json": "Exported profile JSON"}
+      },
+      "import_profile_confirm": {
+        "title": "Confirm profile import",
+        "description": "Schema v{schema_version} {scope}: {field_count} persistent fields. This replaces the entire profile at current revision {revision}; {removed_count} current fields absent from the import will be removed: {removed_fields}. The previous revision remains recoverable in storage. Nothing is sent to Lumalou.",
+        "data": {"confirm": "Replace the entire profile with this import"}
       },
       "behavior": {
         "title": "Behavior options",
@@ -108,6 +133,16 @@
           "sleepy_friday_time": "Friday Sleepy time",
           "sleepy_saturday_has_time": "Saturday Sleepy time is set",
           "sleepy_saturday_time": "Saturday Sleepy time"
+        }
+      },
+      "schedule_copy": {
+        "title": "Copy weekly times",
+        "description": "For each time block, choose a source day and optional target days. Selected targets are replaced with independent copies, including an unset time or midnight. Other days remain unchanged.",
+        "data": {
+          "ready_to_rise_copy_from": "Copy Ready-to-Rise from",
+          "ready_to_rise_copy_to": "Apply Ready-to-Rise to days",
+          "sleepy_copy_from": "Copy Sleepy time from",
+          "sleepy_copy_to": "Apply Sleepy time to days"
         }
       },
       "schedule_alarm": {
@@ -172,6 +207,7 @@
     "error": {
       "auto_restore_unavailable": "Automatic restore is not available in this version.",
       "invalid_schedule": "Enter valid minute-resolution schedule times.",
+      "invalid_schedule_copy": "Choose supported source and target days for schedule copying.",
       "invalid_alarm": "Choose a supported alarm offset and sound.",
       "invalid_routine": "Use no more than 12 supported task rows and a valid minute-resolution time.",
       "invalid_basic": "Choose supported light and audio values.",
@@ -180,10 +216,15 @@
       "invalid_routine_settings": "Use whole-byte music and volume values and supported reward sounds.",
       "confirmation_required": "Confirm before saving.",
       "revision_conflict": "The profile changed while this editor was open. Cancel and reopen it to use the latest revision.",
-      "profile_save_failed": "The profile could not be saved. Nothing from this draft was applied."
+      "profile_save_failed": "The profile could not be saved. Nothing from this draft was applied.",
+      "invalid_profile_import": "Enter a valid schema-v1 or schema-v2 Lumalou profile export.",
+      "profile_import_failed": "The imported profile could not be saved. Nothing was applied."
     },
     "abort": {
-      "profile_editor_unavailable": "Load the Lumalou entry before editing its private profile."
+      "profile_editor_unavailable": "Load the Lumalou entry before editing its private profile.",
+      "entry_not_loaded": "Load the Lumalou entry before importing or creating a private profile.",
+      "profile_import_unavailable": "Start the profile import again to validate an export before confirming it.",
+      "profile_readback_unavailable": "Reading a complete Lumalou profile is unavailable until strict upstream readback and hardware validation are complete."
     }
   },
   "selector": {
@@ -293,7 +334,30 @@
   "issues": {
     "profile_storage": {
       "title": "Lumalou profile needs recovery",
-      "description": "Home Assistant could not read the saved Lumalou profile. Automatic profile writes are blocked. Inspect or restore the saved profile and any migration backup before reloading the integration."
+      "description": "Home Assistant could not read the saved Lumalou profile. Automatic profile writes are blocked. Use Repair to import a validated backup; the unreadable file will be preserved. You may instead inspect the file and any migration backup before reloading.",
+      "fix_flow": {
+        "step": {
+          "import_profile": {
+            "title": "Import a saved Lumalou profile",
+            "description": "Paste JSON returned by the Lumalou export action. It is validated now; neither storage nor the device is changed at this step.",
+            "data": {"profile_json": "Exported profile JSON"}
+          },
+          "confirm": {
+            "title": "Confirm profile recovery",
+            "description": "The backup contains {field_count} persistent profile fields. Recovery preserves the unreadable storage bytes in a private backup, then saves this profile as pending. It does not write to Lumalou.",
+            "data": {"confirm": "Replace unreadable storage with this profile"}
+          }
+        },
+        "error": {
+          "invalid_profile": "Enter a valid profile exported by this integration.",
+          "confirmation_required": "Confirm before replacing unreadable storage.",
+          "recovery_failed": "Recovery could not be saved and verified. The unreadable source remains preserved."
+        },
+        "abort": {
+          "entry_removed": "The Lumalou entry was removed.",
+          "entry_not_loaded": "Load the Lumalou entry before repairing its profile."
+        }
+      }
     }
   },
   "entity": {

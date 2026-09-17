@@ -41,6 +41,7 @@ def rig():
         journal.append(("save", deepcopy(record)))
 
     store.async_save = AsyncMock(side_effect=save)
+    store.async_recover = AsyncMock(side_effect=save)
     background_tasks = []
 
     def create_background_task(hass, coro, name, *, eager_start=True):
@@ -824,23 +825,31 @@ async def test_leaving_maintenance_recovers_present_device_without_replaying(rig
     await coordinator.async_shutdown()
 
 
-async def test_leaving_maintenance_coalesces_existing_cooldown_recovery(rig):
+async def test_leaving_maintenance_resets_old_backoff_without_replaying(rig):
     coordinator = rig.coordinator
     coordinator.async_start()
     coordinator._next_recovery_at = asyncio.get_running_loop().time() + 3600
+    coordinator._recovery_failures = 6
     coordinator._async_handle_advertisement(Mock(), Mock())
     await asyncio.sleep(0)
-    original_recovery = coordinator._recovery_task
-    assert original_recovery is not None
+    delayed_recovery = coordinator._recovery_task
+    assert delayed_recovery is not None
 
     await coordinator.async_set_maintenance(True)
+    await asyncio.sleep(0)
+    assert delayed_recovery.cancelled()
+    assert coordinator._recovery_task is None
     await coordinator.async_set_maintenance(False)
 
-    assert coordinator._recovery_task is original_recovery
-    assert len(rig.background_tasks) == 1
-    rig.client_factory.assert_not_called()
+    immediate_recovery = coordinator._recovery_task
+    assert immediate_recovery is not None
+    assert immediate_recovery is not delayed_recovery
+    assert coordinator._recovery_failures == 0
+    assert coordinator._next_recovery_at == 0
+    await immediate_recovery
+    assert coordinator.available
+    rig.clients[0].send.assert_not_awaited()
     await coordinator.async_shutdown()
-    assert original_recovery.cancelled()
 
 
 async def test_entries_do_not_share_saved_intent(rig):
@@ -915,6 +924,67 @@ async def test_import_export_confirmation_conflicts_and_no_restore(rig):
     with pytest.raises(HomeAssistantError, match="upstream full-profile"):
         await coordinator.async_restore_profile()
     rig.discovery.assert_not_called()
+
+
+async def test_corrupt_storage_recovery_requires_confirmed_valid_import(rig):
+    payload = {
+        "schema_version": 1,
+        "scope": "supported_subset",
+        "profile": {"playlist": [18, 2, 2], "volume": 1},
+    }
+    rig.store.async_load.side_effect = ProfileStorageError("Synthetic corruption")
+    await rig.coordinator.async_setup()
+
+    with pytest.raises(ProfileValidationError, match="Confirm"):
+        await rig.coordinator.async_recover_profile(payload)
+    rig.store.async_recover.assert_not_awaited()
+
+    await rig.coordinator.async_recover_profile(payload, confirmed=True)
+
+    assert rig.coordinator.profile_storage_healthy
+    assert rig.coordinator.profile_record == ProfileRecord(
+        revision=1,
+        desired_profile={"playlist": [18, 2, 2], "volume": 1},
+        pending=True,
+        sync_status="pending",
+    )
+    rig.store.async_recover.assert_awaited_once_with(rig.coordinator.profile_record)
+    rig.discovery.assert_not_called()
+
+
+async def test_healthy_storage_cannot_be_replaced_through_recovery(rig):
+    payload = {
+        "schema_version": 1,
+        "scope": "supported_subset",
+        "profile": {"volume": 1},
+    }
+
+    with pytest.raises(HomeAssistantError, match="does not require recovery"):
+        await rig.coordinator.async_recover_profile(payload, confirmed=True)
+
+    rig.store.async_recover.assert_not_awaited()
+
+
+async def test_cancel_after_verified_recovery_publishes_durable_record(rig):
+    payload = {
+        "schema_version": 1,
+        "scope": "supported_subset",
+        "profile": {"volume": 3},
+    }
+    rig.store.async_load.side_effect = ProfileStorageError("Synthetic corruption")
+    await rig.coordinator.async_setup()
+    rig.store.async_recover.side_effect = asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await rig.coordinator.async_recover_profile(payload, confirmed=True)
+
+    assert rig.coordinator.profile_storage_healthy
+    assert rig.coordinator.profile_record == ProfileRecord(
+        revision=1,
+        desired_profile={"volume": 3},
+        pending=True,
+        sync_status="pending",
+    )
 
 
 async def test_export_revision_and_profile_are_one_serialized_snapshot(rig):
@@ -994,6 +1064,43 @@ async def test_advertisements_coalesce_one_background_refresh(rig):
         await rig.background_tasks[0]
 
     await coordinator.async_shutdown()
+
+
+async def test_background_refresh_uses_bounded_exponential_backoff(rig):
+    """Persistent connect failures retry without advertisement-driven hammering."""
+    coordinator = rig.coordinator
+    coordinator.present = True
+    clock = SimpleNamespace(time=Mock(return_value=100.0))
+    failures = [HomeAssistantError("Synthetic refresh failure") for _ in range(7)]
+
+    with (
+        patch.object(
+            coordinator,
+            "async_request_refresh",
+            new=AsyncMock(side_effect=[*failures, None]),
+        ) as refresh,
+        patch(
+            "custom_components.lumalou.coordinator.asyncio.get_running_loop",
+            return_value=clock,
+        ),
+        patch(
+            "custom_components.lumalou.coordinator.asyncio.sleep", new=AsyncMock()
+        ) as sleep,
+    ):
+        await coordinator._async_background_refresh()
+
+    assert refresh.await_count == 8
+    assert [call.args[0] for call in sleep.await_args_list] == [
+        30,
+        60,
+        120,
+        240,
+        480,
+        900,
+        900,
+    ]
+    assert coordinator._recovery_failures == 0
+    assert coordinator._next_recovery_at == 130
 
 
 def test_partial_callback_registration_is_rolled_back(rig):
