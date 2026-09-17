@@ -10,12 +10,12 @@ or a release claim.
 | Serialized, cancellation-safe BLE lifecycle | Coordinator lock/generation, bounded teardown, no independent scanner, mocked stale/cancel tests | Implemented against released client limitations; verify on target HA |
 | Desired profile separate from observed state | Immutable revision record, schema-v2 logical model and private per-entry Store | Full structure exists; partial intent remains explicitly incomplete |
 | Durable revisions, previous value, CAS import | Atomic Store write plus independent readback, strict expected revision, fail-closed export, and backed-up v1→v2 migration | Implemented; corrupted-store recovery UX remains open |
-| Fresh complete readback | Released `lumalou==0.1.0` exposes only unsafe partial behavior; unpublished upstream branch adds strict envelopes, schedule codecs and SET models | Blocked on upstream review/release, standalone response layouts, and hardware evidence |
-| Full persistent profile | Schema v2 validates every source-backed persistent field/block; a public coordinator CAS API merges and durably saves offline logical changes without BLE codecs or invented defaults | Fresh population, clock UI editing and verified application remain incomplete |
+| Fresh complete readback | Released `lumalou==0.1.0` exposes only unsafe partial behavior; unpublished upstream branch adds strict envelopes, schedule codecs, SET models, and a target-evidenced transient `CURRENT_DATE` decoder | Blocked on upstream release, remaining standalone response layouts, and hardware evidence |
+| Full persistent profile | Schema v2 validates every source-backed persistent field/block; a public coordinator CAS API merges and durably saves offline logical changes without BLE codecs or invented defaults | Offline editors cover every modeled block; fresh population and verified application remain incomplete |
 | Seven daily routines and weekly schedules | Native multi-step options editors preserve null versus midnight, alarm offsets/sound, seven exact 12-slot routines, unnamed task ID 0, day-copy independence and a captured-revision CAS save | Offline UI implemented with mocked tests; no BLE write or hardware acceptance exists |
 | Manual import and restore | Versioned schema-v1/v2 JSON import/export exists; structural completeness gate is separate; restore action rejects execution | Import preview, fresh device import and verified restore remain incomplete |
 | Automatic restore after power loss | Option is visible but cannot be enabled | Deliberately blocked until manual restore is freshly verified on hardware |
-| Native controls and offline editing | Light, media player, light/playlist duration selects, maintenance switch, buttons, subset edits, and schema-v2 offline schedule/routine editors with explicit confirmation | Home Assistant options flows have no native drag-reorder control, so routines use 12 fixed ordered rows; clock UI and device application remain incomplete |
+| Native controls and offline editing | Light, media player, light/playlist duration selects, maintenance switch, buttons, and schema-v2 offline editors for every modeled block with explicit CAS confirmation | Home Assistant options flows have no native drag-reorder control, so playlists and routines use 12 fixed ordered rows; device application remains incomplete |
 | Clock sync | Explicit HA-timezone action with weekday conversion and trust threshold | Mocked; DST/timezone and simultaneous reboot need hardware acceptance |
 | Diagnostics and privacy | Redacted diagnostics plus offline revision/pending/sync/error entities; no addresses/raw payloads/session material | Implemented subset; Repair flow and verified-restore timestamps remain open |
 | Apple Home | Standard light and generic media-player entities documented for HomeKit Bridge | Code path implemented; pairing/control must be verified on target HA and Apple Home |
@@ -26,9 +26,10 @@ or a release claim.
 ## Current local branches
 
 - HA integration: `feat/lumalou-integration`.
-- Upstream protocol candidate: `4b9ae91` on
+- Upstream protocol candidate: `430e465` on
   `feat/strict-readback-schedules` (all 28 source-backed queries, strict SET
-  models and Python/JavaScript schedule codecs are exposed).
+  models, Python/JavaScript schedule codecs, and strict transient current-clock
+  decoding are exposed).
 
 Neither branch has been pushed. The target Home Assistant configuration and the
 device have not been modified by these development commits.

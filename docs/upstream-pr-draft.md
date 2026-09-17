@@ -15,6 +15,8 @@ Proposed title: `feat: add strict response sessions and schedule codecs`
 - add strict Python/JavaScript SET models for playlist, clock and routine
   music/rewards without inferring their standalone response layouts;
 - add JavaScript parity for weekly schedules, alarms and seven daily routines;
+- decode the target-observed four-byte `CURRENT_DATE` reply as a strict,
+  transient clock reading without treating it as profile state;
 - correct opcode `0x68` from a setter name to the source-backed request name;
 - add shared literal read vectors and synthetic schedule vectors.
 
@@ -25,7 +27,7 @@ cached state, malformed `GLOBAL_STATE` is rejected instead of padded, and an
 opcode already requested or observed in a session requires a clean reconnect.
 No retry loop, restore workflow, DFU/OTA access, or setter behavior is added.
 
-Playlist, clock and the additional scalar replies remain raw envelopes because
+Playlist, clock-settings and the additional scalar replies remain raw envelopes because
 the pinned source bundle proves their identities but not standalone payload
 layouts. The pull request does not claim hardware-certified backup or restore.
 
@@ -34,9 +36,10 @@ layouts. The pull request does not claim hardware-certified backup or restore.
 - Base: `9fa5ecfc7f6e82ec02e13d01f00fca7be6852567`.
 - Source bundle SHA-256:
   `30bef51fe4ed6728ccd4a811b7f855368cc587d804a578660da368c2ece70b09`.
-- Local commits: `bb59b87`, `cdc6f4b`, `4b9ae91` on
+- Local commits: `bb59b87`, `cdc6f4b`, `4b9ae91`, `430e465` on
   `feat/strict-readback-schedules`.
-- The final 360-test suite passes on Python 3.10, 3.11 and 3.12.
+- The current 389-test suite passes locally; the preceding 360-test state passed
+  on Python 3.10, 3.11 and 3.12.
 - JavaScript typecheck, 20 tests and production/declaration build pass.
 - Code generation is deterministic and `git diff --check` passes.
 
