@@ -153,6 +153,193 @@ async def test_offline_setup_preserves_pending_profile_without_ble(rig):
     listener.assert_called_once()
 
 
+def _weekly_times(hour: int) -> dict[str, dict[str, int]]:
+    """Build one complete schema-v2 weekly schedule block."""
+    return {
+        day: {"hour": hour, "minute": index}
+        for index, day in enumerate(
+            (
+                "sunday",
+                "monday",
+                "tuesday",
+                "wednesday",
+                "thursday",
+                "friday",
+                "saturday",
+            )
+        )
+    }
+
+
+def _weekly_routines() -> dict[str, dict[str, object]]:
+    """Build the exact seven-day, twelve-slot routine schema."""
+    days = (
+        "sunday",
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+    )
+    return {
+        day: {
+            "time": {"hour": 7, "minute": index},
+            "slots": [
+                {"step": 1, "task": index} if slot == 0 else None for slot in range(12)
+            ],
+        }
+        for index, day in enumerate(days)
+    }
+
+
+async def test_public_offline_profile_edit_merges_complex_blocks_without_ble(rig):
+    """Saved intent editing is product-independent and never opens a session."""
+    coordinator = rig.coordinator
+    coordinator.product_code = None
+    rig.store.async_load.return_value = ProfileRecord(
+        revision=4, desired_profile={"playlist": [2, 1], "volume": 3}
+    )
+    await coordinator.async_setup()
+    changes = {
+        "sleepy_times": _weekly_times(20),
+        "routines": _weekly_routines(),
+        "routine_settings": {
+            "enabled": True,
+            "music": 255,
+            "volume": 255,
+            "task_reward_sfx": 15,
+            "routine_reward_sfx": 0,
+        },
+    }
+
+    saved = await coordinator.async_edit_profile(changes, expected_revision=4)
+
+    assert saved.revision == 5
+    assert saved.previous == {
+        "revision": 4,
+        "profile": {"playlist": [2, 1], "volume": 3},
+    }
+    assert saved.desired_profile["playlist"] == [2, 1]
+    assert saved.desired_profile["sleepy_times"] == _weekly_times(20)
+    assert saved.desired_profile["routines"] == _weekly_routines()
+    assert saved.pending is True
+    assert saved.sync_status == "pending"
+    assert saved.last_error is None
+    rig.store.async_save.assert_awaited_once()
+    rig.discovery.assert_not_called()
+    rig.client_factory.assert_not_called()
+    assert not [item for item in rig.journal if item[0] != "save"]
+
+    # Inputs and returned records are detached from the saved immutable revision.
+    changes["routines"]["monday"]["slots"][0]["task"] = 11
+    saved.desired_profile["sleepy_times"]["monday"]["hour"] = 0
+    monday_slot = coordinator.profile_record.desired_profile["routines"]["monday"][
+        "slots"
+    ][0]
+    assert monday_slot == {
+        "step": 1,
+        "task": 1,
+    }
+    assert coordinator.profile_record.desired_profile["sleepy_times"]["monday"] == {
+        "hour": 20,
+        "minute": 1,
+    }
+
+
+async def test_public_offline_profile_edit_requires_loaded_healthy_store(rig):
+    coordinator = rig.coordinator
+    with pytest.raises(HomeAssistantError, match="requires recovery before editing"):
+        await coordinator.async_edit_profile({"volume": 3}, expected_revision=0)
+
+    rig.store.async_load.side_effect = ProfileStorageError("Synthetic corruption")
+    await coordinator.async_setup()
+    with pytest.raises(HomeAssistantError, match="requires recovery before editing"):
+        await coordinator.async_edit_profile({"volume": 3}, expected_revision=0)
+
+    rig.store.async_save.assert_not_awaited()
+    rig.discovery.assert_not_called()
+    rig.client_factory.assert_not_called()
+
+
+async def test_public_offline_profile_edit_rejects_stale_concurrent_revision(rig):
+    coordinator = rig.coordinator
+    await coordinator.async_setup()
+    save_started = asyncio.Event()
+    release_save = asyncio.Event()
+
+    async def delayed_save(_record):
+        save_started.set()
+        await release_save.wait()
+
+    rig.store.async_save.side_effect = delayed_save
+    first = asyncio.create_task(
+        coordinator.async_edit_profile({"volume": 3}, expected_revision=0)
+    )
+    await save_started.wait()
+    stale = asyncio.create_task(
+        coordinator.async_edit_profile({"playlist": [2]}, expected_revision=0)
+    )
+    await asyncio.sleep(0)
+    assert not stale.done()
+
+    release_save.set()
+    first_record = await first
+    with pytest.raises(RevisionConflictError, match="reopen the editor"):
+        await stale
+
+    assert first_record.revision == 1
+    assert coordinator.profile_record.desired_profile == {"volume": 3}
+    assert rig.store.async_save.await_count == 1
+    rig.discovery.assert_not_called()
+    rig.client_factory.assert_not_called()
+
+
+async def test_cancelled_public_offline_edit_never_touches_ble(rig):
+    """A Store-safe completed commit is still published before cancellation."""
+    coordinator = rig.coordinator
+    await coordinator.async_setup()
+    save_started = asyncio.Event()
+    release_save = asyncio.Event()
+
+    async def cancellation_safe_save(_record):
+        commit = asyncio.create_task(release_save.wait())
+        save_started.set()
+        try:
+            await asyncio.shield(commit)
+        except asyncio.CancelledError:
+            await commit
+            raise
+
+    rig.store.async_save.side_effect = cancellation_safe_save
+    edit = asyncio.create_task(
+        coordinator.async_edit_profile({"volume": 3}, expected_revision=0)
+    )
+    await save_started.wait()
+    edit.cancel()
+    release_save.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await edit
+    assert coordinator.profile_record.desired_profile == {"volume": 3}
+    assert coordinator.profile_record.revision == 1
+    rig.discovery.assert_not_called()
+    rig.client_factory.assert_not_called()
+
+
+async def test_public_offline_profile_edit_fails_after_unload(rig):
+    coordinator = rig.coordinator
+    await coordinator.async_setup()
+    await coordinator.async_shutdown()
+
+    with pytest.raises(HomeAssistantError, match="integration is unloaded"):
+        await coordinator.async_edit_profile({"volume": 3}, expected_revision=0)
+
+    rig.store.async_save.assert_not_awaited()
+    rig.discovery.assert_not_called()
+    rig.client_factory.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "operation",
     [
@@ -504,6 +691,21 @@ async def test_light_duration_is_persistent_and_default_on_is_not(rig):
     await coordinator.async_set_light_duration(5)
     assert coordinator.profile_record.desired_profile == {"light_duration": 5}
     assert ("send", bytes([0x6C, 5])) in rig.journal
+
+
+async def test_light_on_never_replays_unaccepted_saved_zero_brightness(rig):
+    """Schema can preserve zero, but HA must not write its unknown side effect."""
+    rig.store.async_load.return_value = ProfileRecord(
+        revision=2, desired_profile={"brightness": 0}
+    )
+    await rig.coordinator.async_setup()
+
+    await rig.coordinator.async_set_light(True)
+
+    assert rig.coordinator.profile_record.revision == 2
+    assert rig.coordinator.profile_record.desired_profile == {"brightness": 0}
+    assert ("send", bytes([0x3A, 1])) in rig.journal
+    assert ("send", bytes([0x3A, 0])) not in rig.journal
 
 
 async def test_playlist_duration_is_persistent_and_uses_allowlisted_command(rig):

@@ -14,6 +14,8 @@ from homeassistant.helpers.storage import Store
 from .const import DOMAIN, PROFILE_SCHEMA_VERSION
 from .models import ProfileRecord, migrate_v1_record
 
+STORAGE_MINOR_VERSION = 1
+
 
 class ProfileStorageError(HomeAssistantError):
     """A profile could not be loaded or durably checked after saving."""
@@ -59,6 +61,7 @@ class ProfileStore:
             f"{DOMAIN}.{entry_id}.profile",
             private=True,
             atomic_writes=True,
+            minor_version=STORAGE_MINOR_VERSION,
         )
         self._lock = asyncio.Lock()
 
@@ -74,12 +77,17 @@ class ProfileStore:
             except (OSError, ValueError) as err:
                 raise ProfileStorageError("Cannot read saved profile") from err
             try:
-                if not isinstance(document, dict) or set(document) != {
-                    "version",
-                    "key",
-                    "data",
-                }:
+                if not isinstance(document, dict) or set(document) not in (
+                    {"version", "key", "data"},
+                    {"version", "minor_version", "key", "data"},
+                ):
                     raise ValueError("Invalid storage document")
+                minor_version = document.get("minor_version", STORAGE_MINOR_VERSION)
+                if (
+                    type(minor_version) is not int
+                    or minor_version != STORAGE_MINOR_VERSION
+                ):
+                    raise ValueError("Unsupported storage minor version")
                 version = document["version"]
                 if (
                     type(version) is not int
@@ -146,7 +154,10 @@ class ProfileStore:
                 _read_document, self._store.path
             )
             if (
-                actual.get("version") != PROFILE_SCHEMA_VERSION
+                not isinstance(actual, dict)
+                or set(actual) != {"version", "minor_version", "key", "data"}
+                or actual.get("version") != PROFILE_SCHEMA_VERSION
+                or actual.get("minor_version") != STORAGE_MINOR_VERSION
                 or actual.get("key") != self._store.key
                 or actual.get("data") != data
             ):

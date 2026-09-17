@@ -113,6 +113,10 @@ class LumalouCoordinator:
         self._callbacks_started = False
         self._stopped = False
         self._storage_healthy = True
+        # A public offline edit must not turn an uninitialized coordinator into
+        # a new empty profile.  `async_setup` is the only point at which the
+        # existing durable revision is known.
+        self._profile_loaded = False
 
     @property
     def profile_record(self) -> ProfileRecord:
@@ -162,6 +166,28 @@ class LumalouCoordinator:
             self._assert_device_writes_allowed()
             yield
 
+    @asynccontextmanager
+    async def _profile_edit_operation(self):
+        """Serialize a durable-only edit without any BLE lifecycle work.
+
+        This intentionally does not reuse `_operation`: cancelling a device
+        operation safely tears down its connection, while an offline editor
+        must have no Bluetooth side effects at all.
+        """
+        task = asyncio.current_task()
+        if self._stopped:
+            raise HomeAssistantError("Lumalou integration is unloaded")
+        if task is not None:
+            self._tasks.add(task)
+        try:
+            async with self._lock:
+                if self._stopped:
+                    raise HomeAssistantError("Lumalou integration is unloaded")
+                yield
+        finally:
+            if task is not None:
+                self._tasks.discard(task)
+
     def _assert_device_writes_allowed(self) -> None:
         """Keep legacy or tampered entries read-only until GLD09 is confirmed."""
         if self.product_code != SUPPORTED_PRODUCT_CODE:
@@ -178,6 +204,8 @@ class LumalouCoordinator:
             self._profile_record = replace(
                 self.profile_record, sync_status="error", last_error="storage_load"
             )
+        else:
+            self._profile_loaded = True
         self._notify()
 
     @callback
@@ -344,6 +372,45 @@ class LumalouCoordinator:
                 last_error=None,
             )
         )
+
+    async def async_edit_profile(
+        self, changes: dict[str, Any], expected_revision: int
+    ) -> ProfileRecord:
+        """Atomically merge schema-v2 intent changes without using Bluetooth.
+
+        `changes` is a partial logical profile, not a protocol payload.  The
+        supplied revision is mandatory so independent editors cannot silently
+        overwrite each other.  This works for legacy/read-only entries because
+        it only updates private saved intent; applying it remains separately
+        gated by the confirmed product code and hardware support.
+        """
+        validated_changes = validate_profile(changes)
+        validate_integer(expected_revision, 0, 2**63 - 1, "expected revision")
+        async with self._profile_edit_operation():
+            if not self._storage_healthy or not self._profile_loaded:
+                raise HomeAssistantError(
+                    "Saved profile requires recovery before editing"
+                )
+            old = self.profile_record
+            if expected_revision != old.revision:
+                raise RevisionConflictError(
+                    "The saved profile changed; reopen the editor"
+                )
+            # Merge only supplied logical blocks.  In particular, this never
+            # removes unknown/saved blocks and never fabricates hardware values.
+            desired = validate_profile({**old.desired_profile, **validated_changes})
+            await self._save(
+                replace(
+                    old,
+                    revision=old.revision + 1,
+                    desired_profile=desired,
+                    previous={"revision": old.revision, "profile": old.desired_profile},
+                    pending=True,
+                    sync_status="pending",
+                    last_error=None,
+                )
+            )
+            return self.profile_record
 
     def _receive(self, generation: int, state: dict) -> None:
         if self._stopped or generation != self._generation:
@@ -514,8 +581,12 @@ class LumalouCoordinator:
                 payloads.append(commands.set_led_brightness(brightness))
             if not payloads:
                 # The user explicitly requested light on. Do not affect audio
-                # via SET_GLOBAL_ON; reuse only an explicit saved light setting.
+                # via SET_GLOBAL_ON. A saved zero can be preserved from a
+                # source-backed profile, but its hardware side effect is not
+                # accepted for the HA write path, so never replay it here.
                 level = self.profile_record.desired_profile.get("brightness", 1)
+                if level == 0:
+                    level = 1
                 payloads.append(commands.set_led_brightness(level))
             if changes:
                 await self._apply_edit(payloads)
