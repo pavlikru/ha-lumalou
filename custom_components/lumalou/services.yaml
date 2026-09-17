@@ -1,0 +1,61 @@
+refresh_state:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: lumalou
+
+sync_clock:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: lumalou
+
+export_profile:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: lumalou
+
+import_profile:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: lumalou
+    profile:
+      required: true
+      selector:
+        object:
+    expected_revision:
+      required: true
+      selector:
+        number:
+          min: 0
+          mode: box
+
+restore_profile:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: lumalou
+
+set_maintenance:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: lumalou
+    enabled:
+      required: true
+      selector:
+        boolean:

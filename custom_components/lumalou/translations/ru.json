@@ -1,0 +1,57 @@
+{
+  "title": "Lumalou",
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Выбор Lumalou",
+        "description": "Выберите найденного Home Assistant кандидата Lumalou, доступного для подключения.",
+        "data": {"address": "Устройство"},
+        "data_description": {"address": "Показаны только connectable-объявления с известным шаблоном Lumalou. Перед тестом на железе проверьте шильдик."}
+      },
+      "bluetooth_confirm": {
+        "title": "Добавить {name}?",
+        "description": "Кандидат будет добавлен, затем запустится фоновый read-only запрос состояния без изменения настроек. Перед тестом на железе проверьте шильдик."
+      }
+    },
+    "error": {"device_unavailable": "Выбранное устройство больше недоступно. Повторите попытку."},
+    "abort": {
+      "already_configured": "Это устройство уже настроено.",
+      "already_in_progress": "Настройка этого устройства уже выполняется.",
+      "no_devices_found": "Connectable-объявления с известным шаблоном Lumalou не найдены.",
+      "not_connectable": "Этот Bluetooth-маршрут не позволяет подключиться к устройству.",
+      "unsupported_device": "Объявление не соответствует известному шаблону Lumalou."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Параметры Lumalou",
+        "description": "Автоматическое восстановление недоступно до реализации полного чтения профиля и проверки на реальном устройстве. Режим обслуживания управляется отдельно на странице устройства.",
+        "data": {"auto_restore": "Включить автоматическое восстановление"},
+        "data_description": {"auto_restore": "Зарезервировано для будущей проверенной реализации. Сейчас включить функцию нельзя."}
+      }
+    },
+    "error": {"auto_restore_unavailable": "Автоматическое восстановление недоступно в этой версии."}
+  },
+  "services": {
+    "refresh_state": {"name": "Обновить состояние", "description": "Запросить у Lumalou свежий снимок состояния без изменений.", "fields": {"config_entry_id": {"name": "Устройство", "description": "Запись конфигурации Lumalou для обновления."}}},
+    "sync_clock": {"name": "Синхронизировать часы", "description": "Установить часы Lumalou по часовому поясу Home Assistant.", "fields": {"config_entry_id": {"name": "Устройство", "description": "Запись конфигурации Lumalou для синхронизации часов."}}},
+    "export_profile": {"name": "Экспортировать профиль", "description": "Вернуть приватный сохранённый профиль и текущую ревизию для резервной копии и безопасного импорта.", "fields": {"config_entry_id": {"name": "Устройство", "description": "Запись конфигурации Lumalou для экспорта."}}},
+    "import_profile": {"name": "Импортировать профиль", "description": "Проверить и сохранить приватный профиль без отправки необработанных команд протокола.", "fields": {"config_entry_id": {"name": "Устройство", "description": "Запись конфигурации Lumalou, которой принадлежит профиль."}, "profile": {"name": "Профиль", "description": "Объект профиля, ранее экспортированный этой интеграцией."}, "expected_revision": {"name": "Ожидаемая ревизия", "description": "Обязательная текущая ревизия для защиты от одновременных изменений."}}},
+    "restore_profile": {"name": "Восстановить профиль", "description": "Недоступно до реализации полного чтения профиля upstream-библиотекой и проверки на реальном устройстве.", "fields": {"config_entry_id": {"name": "Устройство", "description": "Запись конфигурации Lumalou для восстановления."}}},
+    "set_maintenance": {"name": "Задать режим обслуживания", "description": "Освободить Bluetooth и блокировать операции устройства во время работы внешнего контроллера.", "fields": {"config_entry_id": {"name": "Устройство", "description": "Запись конфигурации Lumalou для изменения."}, "enabled": {"name": "Включено", "description": "Включён ли режим обслуживания."}}}
+  },
+  "exceptions": {
+    "config_entry_not_found": {"message": "Выбранная запись конфигурации Lumalou не найдена."},
+    "config_entry_not_loaded": {"message": "Выбранная запись конфигурации Lumalou не загружена."}
+  },
+  "entity": {
+    "button": {"sync_clock": {"name": "Синхронизировать часы"}, "refresh": {"name": "Обновить"}},
+    "light": {"light": {"name": "Свет"}},
+    "media_player": {"audio": {"name": "Аудио"}},
+    "select": {"light_duration": {"name": "Длительность света"}},
+    "sensor": {"connection": {"name": "Подключение"}, "firmware": {"name": "Прошивка"}},
+    "switch": {"maintenance": {"name": "Обслуживание"}}
+  }
+}

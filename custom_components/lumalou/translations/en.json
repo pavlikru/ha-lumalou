@@ -1,0 +1,57 @@
+{
+  "title": "Lumalou",
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Choose a Lumalou",
+        "description": "Choose a connectable Lumalou candidate discovered by Home Assistant.",
+        "data": {"address": "Device"},
+        "data_description": {"address": "Only connectable advertisements matching the known Lumalou pattern are shown. Confirm the product label before hardware testing."}
+      },
+      "bluetooth_confirm": {
+        "title": "Add {name}?",
+        "description": "This adds the candidate device and starts a background read-only state request without changing settings. Confirm the product label before hardware testing."
+      }
+    },
+    "error": {"device_unavailable": "The selected device is no longer available. Try again."},
+    "abort": {
+      "already_configured": "This device is already configured.",
+      "already_in_progress": "Configuration for this device is already in progress.",
+      "no_devices_found": "No connectable advertisements matching the known Lumalou pattern were found.",
+      "not_connectable": "This Bluetooth path cannot connect to the device.",
+      "unsupported_device": "The advertisement does not match the known Lumalou pattern."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Lumalou options",
+        "description": "Automatic restore is unavailable until full profile readback and hardware validation are complete. Maintenance mode is controlled separately on the device page.",
+        "data": {"auto_restore": "Enable automatic restore"},
+        "data_description": {"auto_restore": "Reserved for a future verified implementation. It cannot currently be enabled."}
+      }
+    },
+    "error": {"auto_restore_unavailable": "Automatic restore is not available in this version."}
+  },
+  "services": {
+    "refresh_state": {"name": "Refresh state", "description": "Request a fresh read-only state snapshot from Lumalou.", "fields": {"config_entry_id": {"name": "Device", "description": "Lumalou configuration entry to refresh."}}},
+    "sync_clock": {"name": "Synchronize clock", "description": "Set the Lumalou clock from the Home Assistant time zone.", "fields": {"config_entry_id": {"name": "Device", "description": "Lumalou configuration entry whose clock will be synchronized."}}},
+    "export_profile": {"name": "Export profile", "description": "Return the private saved profile and its current revision for backup and conflict-safe import.", "fields": {"config_entry_id": {"name": "Device", "description": "Lumalou configuration entry to export."}}},
+    "import_profile": {"name": "Import profile", "description": "Validate and save a private profile without sending raw protocol commands.", "fields": {"config_entry_id": {"name": "Device", "description": "Lumalou configuration entry that owns the profile."}, "profile": {"name": "Profile", "description": "Profile object previously exported by this integration."}, "expected_revision": {"name": "Expected revision", "description": "Required current revision used to reject concurrent edits."}}},
+    "restore_profile": {"name": "Restore profile", "description": "Unavailable until upstream full-profile readback and hardware validation are complete.", "fields": {"config_entry_id": {"name": "Device", "description": "Lumalou configuration entry to restore."}}},
+    "set_maintenance": {"name": "Set maintenance mode", "description": "Release Bluetooth and block device operations while using an external controller.", "fields": {"config_entry_id": {"name": "Device", "description": "Lumalou configuration entry to update."}, "enabled": {"name": "Enabled", "description": "Whether maintenance mode is enabled."}}}
+  },
+  "exceptions": {
+    "config_entry_not_found": {"message": "The selected Lumalou configuration entry was not found."},
+    "config_entry_not_loaded": {"message": "The selected Lumalou configuration entry is not loaded."}
+  },
+  "entity": {
+    "button": {"sync_clock": {"name": "Synchronize clock"}, "refresh": {"name": "Refresh"}},
+    "light": {"light": {"name": "Light"}},
+    "media_player": {"audio": {"name": "Audio"}},
+    "select": {"light_duration": {"name": "Light duration"}},
+    "sensor": {"connection": {"name": "Connection"}, "firmware": {"name": "Firmware"}},
+    "switch": {"maintenance": {"name": "Maintenance"}}
+  }
+}

@@ -2,7 +2,15 @@
   "domain": "lumalou",
   "name": "Lumalou",
   "codeowners": ["@pavlikru"],
-  "dependencies": ["bluetooth"],
+  "bluetooth": [
+    {
+      "connectable": true,
+      "manufacturer_data_start": [77, 66],
+      "manufacturer_id": 950
+    }
+  ],
+  "config_flow": true,
+  "dependencies": ["bluetooth_adapters"],
   "documentation": "https://github.com/pavlikru/ha-lumalou",
   "integration_type": "device",
   "iot_class": "local_push",

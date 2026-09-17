@@ -29,6 +29,8 @@ jobs:
         run: uv run ruff check .
       - name: Check formatting
         run: uv run ruff format --check .
+      - name: Type check
+        run: uv run mypy
       - name: Test
         run: uv run pytest
 
@@ -48,3 +50,16 @@ jobs:
         with:
           category: integration
           ignore: brands description topics
+
+  artifact:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Build HACS archive
+        run: python -m zipfile -c lumalou.zip custom_components/lumalou
+      - name: Upload archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: lumalou
+          path: lumalou.zip
