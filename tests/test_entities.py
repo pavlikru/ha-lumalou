@@ -15,6 +15,9 @@ from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH
 from lumalou import Audio, Color
 
 from custom_components.lumalou import (
+    binary_sensor as binary_sensor_platform,
+)
+from custom_components.lumalou import (
     button as button_platform,
 )
 from custom_components.lumalou import (
@@ -32,6 +35,7 @@ from custom_components.lumalou import (
 from custom_components.lumalou import (
     switch as switch_platform,
 )
+from custom_components.lumalou.binary_sensor import LumalouProfilePendingBinarySensor
 from custom_components.lumalou.button import (
     LumalouRefreshButton,
     LumalouSyncClockButton,
@@ -39,10 +43,16 @@ from custom_components.lumalou.button import (
 from custom_components.lumalou.const import SUPPORTED_PRODUCT_CODE
 from custom_components.lumalou.light import LumalouLight
 from custom_components.lumalou.media_player import LumalouMediaPlayer
-from custom_components.lumalou.select import LumalouLightDurationSelect
+from custom_components.lumalou.select import (
+    LumalouLightDurationSelect,
+    LumalouPlaylistDurationSelect,
+)
 from custom_components.lumalou.sensor import (
     LumalouAvailabilitySensor,
     LumalouFirmwareSensor,
+    LumalouProfileLastErrorSensor,
+    LumalouProfileRevisionSensor,
+    LumalouProfileSyncStatusSensor,
 )
 from custom_components.lumalou.switch import LumalouMaintenanceSwitch
 
@@ -55,7 +65,9 @@ class FakeCoordinator:
     sw_version = "test"
     product_code = SUPPORTED_PRODUCT_CODE
 
-    def __init__(self, data: dict | None, available: bool = True) -> None:
+    def __init__(
+        self, data: dict | None, available: bool = True, profile_record=None
+    ) -> None:
         self.data = data
         self.available = available
         self.async_set_light = AsyncMock()
@@ -63,6 +75,7 @@ class FakeCoordinator:
         self.async_play = AsyncMock()
         self.async_stop_audio = AsyncMock()
         self.async_set_light_duration = AsyncMock()
+        self.async_set_playlist_duration = AsyncMock()
         self.async_set_maintenance = AsyncMock()
         self.async_sync_clock = AsyncMock()
         self.async_request_refresh = AsyncMock()
@@ -71,11 +84,27 @@ class FakeCoordinator:
         return lambda: None
 
 
-def make_entry(data: dict | None, *, available: bool = True, maintenance=False):
-    coordinator = FakeCoordinator(data, available)
+def make_entry(
+    data: dict | None,
+    *,
+    available: bool = True,
+    maintenance=False,
+    revision=0,
+    pending=False,
+    sync_status="empty",
+    last_error=None,
+):
+    profile_record = SimpleNamespace(
+        maintenance=maintenance,
+        revision=revision,
+        pending=pending,
+        sync_status=sync_status,
+        last_error=last_error,
+    )
+    coordinator = FakeCoordinator(data, available, profile_record)
     runtime = SimpleNamespace(
         coordinator=coordinator,
-        profile_record=SimpleNamespace(maintenance=maintenance),
+        profile_record=profile_record,
     )
     return SimpleNamespace(runtime_data=runtime), coordinator
 
@@ -177,12 +206,26 @@ async def test_light_duration_select_routes_enum():
 
 
 @pytest.mark.asyncio
+async def test_playlist_duration_select_routes_supported_enum():
+    entry, coordinator = make_entry({"playlistDuration": 6})
+    entity = LumalouPlaylistDurationSelect(entry)
+
+    assert entity.current_option == "MIN_1"
+    await entity.async_select_option("CONTINUOUS")
+    coordinator.async_set_playlist_duration.assert_awaited_once_with(5)
+
+    with pytest.raises(ValueError, match="INVALID"):
+        await entity.async_select_option("INVALID")
+
+
+@pytest.mark.asyncio
 async def test_platform_setup_callbacks_add_all_entities():
     """Every entity platform exposes its expected entities."""
     entry, _coordinator = make_entry({})
     add_entities = Mock()
 
     for platform in (
+        binary_sensor_platform,
         button_platform,
         light_platform,
         media_player_platform,
@@ -192,7 +235,7 @@ async def test_platform_setup_callbacks_add_all_entities():
     ):
         await platform.async_setup_entry(None, entry, add_entities)
 
-    assert sum(len(call.args[0]) for call in add_entities.call_args_list) == 8
+    assert sum(len(call.args[0]) for call in add_entities.call_args_list) == 13
 
 
 def test_diagnostic_sensor_values_remain_readable_offline():
@@ -210,6 +253,42 @@ def test_diagnostic_sensor_values_remain_readable_offline():
     coordinator.sw_version = "1.2.3"
     assert availability.native_value == "available"
     assert firmware.native_value == "1.2.3"
+
+
+def test_profile_diagnostics_remain_readable_offline_without_profile_contents():
+    entry, coordinator = make_entry(
+        None,
+        available=False,
+        revision=4,
+        pending=True,
+        sync_status="partial",
+        last_error="ble_apply",
+    )
+
+    revision = LumalouProfileRevisionSensor(entry)
+    pending = LumalouProfilePendingBinarySensor(entry)
+    status = LumalouProfileSyncStatusSensor(entry)
+    error = LumalouProfileLastErrorSensor(entry)
+    assert revision.available is True
+    assert revision.native_value == 4
+    assert pending.available is True
+    assert pending.is_on is True
+    assert status.native_value == "partial"
+    assert status.options == [
+        "applying",
+        "empty",
+        "error",
+        "partial",
+        "pending",
+        "saved",
+    ]
+    assert error.native_value == "ble_apply"
+
+    coordinator.data = {"playlistDuration": 3}
+    entry.runtime_data.profile_record.pending = False
+    entry.runtime_data.profile_record.last_error = None
+    assert pending.is_on is False
+    assert error.native_value is None
 
 
 @pytest.mark.asyncio

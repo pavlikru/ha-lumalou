@@ -61,8 +61,9 @@
     "button": {"sync_clock": {"name": "Синхронизировать часы"}, "refresh": {"name": "Обновить"}},
     "light": {"light": {"name": "Свет"}},
     "media_player": {"audio": {"name": "Аудио"}},
-    "select": {"light_duration": {"name": "Длительность света"}},
-    "sensor": {"connection": {"name": "Подключение"}, "firmware": {"name": "Прошивка"}},
+    "binary_sensor": {"profile_pending": {"name": "Профиль ожидает синхронизации"}},
+    "select": {"light_duration": {"name": "Длительность света"}, "playlist_duration": {"name": "Длительность плейлиста"}},
+    "sensor": {"connection": {"name": "Подключение"}, "firmware": {"name": "Прошивка"}, "profile_revision": {"name": "Ревизия профиля"}, "profile_sync_status": {"name": "Статус синхронизации профиля", "state": {"empty": "Пусто", "saved": "Сохранено", "pending": "Ожидает", "applying": "Применяется", "partial": "Применено частично", "error": "Ошибка"}}, "profile_last_error": {"name": "Последняя ошибка профиля"}},
     "switch": {"maintenance": {"name": "Обслуживание"}}
   }
 }

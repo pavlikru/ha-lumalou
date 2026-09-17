@@ -10,6 +10,7 @@ from copy import deepcopy
 from dataclasses import replace
 from typing import Any, cast
 
+from bleak import BleakClient
 from bleak.backends.device import BLEDevice
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
@@ -38,6 +39,7 @@ from .models import (
     validate_profile,
 )
 from .storage import ProfileStore
+from .transport import RestrictedLumalouTransport
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,11 +49,25 @@ class SafeLumalouClient(LumalouClient):
 
     The pinned client forwards its address argument unchanged to BleakClient.
     Bleak accepts BLEDevice; this local adaptation is tested at that boundary.
+    Its private transport assignment is wrapped before connect/handshake I/O.
+    Recheck this boundary before upgrading the pinned upstream dependency.
     Upstream must still add strict frame validation and full-profile readback.
     """
 
     def __init__(self, device: BLEDevice, on_state: Callable[[dict], None]) -> None:
         super().__init__(cast(str, device), on_state=on_state)
+
+    @property
+    def _client(self) -> RestrictedLumalouTransport | None:
+        """Expose only the restricted transport to upstream protocol methods."""
+        return self._restricted_transport
+
+    @_client.setter
+    def _client(self, client: BleakClient | None) -> None:
+        """Guard every transport assignment, including initial/repeated connects."""
+        self._restricted_transport = (
+            RestrictedLumalouTransport(client) if client is not None else None
+        )
 
     async def send(self, app_data: bytes) -> None:
         """Reject every unapproved application operation before any I/O."""
@@ -511,6 +527,13 @@ class LumalouCoordinator:
         async with self._device_write_operation():
             await self._save_edit({"light_duration": duration})
             await self._apply_edit([commands.set_light_duration(duration)])
+
+    async def async_set_playlist_duration(self, duration: int) -> None:
+        """Persist and apply a supported playlist duration setting."""
+        validate_profile({"playlist_duration": duration})
+        async with self._device_write_operation():
+            await self._save_edit({"playlist_duration": duration})
+            await self._apply_edit([commands.set_playlist_duration(duration)])
 
     async def async_play(self, source: int) -> None:
         validate_integer(source, 0, 7, "audio source")

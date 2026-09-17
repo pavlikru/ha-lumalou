@@ -6,6 +6,7 @@ DOMAIN = "lumalou"
 CONF_PRODUCT_CODE = "product_code"
 SUPPORTED_PRODUCT_CODE = "GLD09"
 PLATFORMS = (
+    Platform.BINARY_SENSOR,
     Platform.BUTTON,
     Platform.LIGHT,
     Platform.MEDIA_PLAYER,
@@ -20,7 +21,9 @@ RECOVERY_COOLDOWN = 30
 DFU_SERVICE = "00001530-1212-efde-1523-785feabcd123"
 FORBIDDEN_OPCODES = frozenset({0x34, 0x52})
 # No aggregate state, firmware, routine activation, or raw service dispatch.
-ALLOWED_OPCODES = frozenset({0x30, 0x37, 0x38, 0x3A, 0x3C, 0x3E, 0x3F, 0x53, 0x6C})
+ALLOWED_OPCODES = frozenset(
+    {0x30, 0x37, 0x38, 0x3A, 0x3C, 0x3E, 0x3F, 0x42, 0x53, 0x6C}
+)
 WRITE_CHARACTERISTICS = frozenset(
     {
         "4cea0002-c678-4202-b5d3-712dbb5e5b14",
