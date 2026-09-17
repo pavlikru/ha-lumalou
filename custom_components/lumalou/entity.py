@@ -41,11 +41,12 @@ class LumalouEntity(Entity):
 
     @property
     def device_info(self) -> DeviceInfo:
+        product_code = getattr(self._coordinator, "product_code", None)
         return DeviceInfo(
             identifiers={(DOMAIN, self._coordinator.address)},
             connections={(CONNECTION_BLUETOOTH, self._coordinator.address)},
             manufacturer="Fisher-Price",
-            model="Lumalou (gld09)",
+            model=f"Lumalou ({product_code})" if product_code else "Lumalou",
             name=self._coordinator.device_name,
             sw_version=self._coordinator.sw_version,
         )

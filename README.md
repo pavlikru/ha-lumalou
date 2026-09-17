@@ -56,6 +56,8 @@ guide](docs/installation.ru.md).
   missing APIs, freshness defects, and prohibited operations.
 - [Hardware validation ledger](docs/hardware-validation.md) lists every test that
   remains unverified.
+- [Implementation status](docs/implementation-status.md) maps the complete
+  specification to current evidence and remaining release gates.
 - [Architecture](docs/architecture.md) defines the Home Assistant/upstream
   boundary.
 - [Testing](docs/testing.md) explains mocked and hardware checks.

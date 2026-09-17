@@ -10,14 +10,22 @@ import pytest
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 from home_assistant_bluetooth import BluetoothServiceInfoBleak
-from homeassistant.config_entries import SOURCE_BLUETOOTH, SOURCE_USER
+from homeassistant.config_entries import (
+    SOURCE_BLUETOOTH,
+    SOURCE_RECONFIGURE,
+    SOURCE_USER,
+)
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.lumalou.config_flow import CONF_AUTO_RESTORE
-from custom_components.lumalou.const import DOMAIN
+from custom_components.lumalou.const import (
+    CONF_PRODUCT_CODE,
+    DOMAIN,
+    SUPPORTED_PRODUCT_CODE,
+)
 
 ADDRESS = "AA:BB:CC:DD:EE:01"
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
@@ -72,15 +80,38 @@ async def test_bluetooth_discovery_confirm(hass: HomeAssistant) -> None:
         "custom_components.lumalou.async_setup_entry", return_value=True
     ) as setup:
         result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], user_input={}
+            result["flow_id"], user_input={CONF_PRODUCT_CODE: " gld09 "}
         )
         await hass.async_block_till_done()
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["result"].unique_id == ADDRESS
-    assert result["data"] == {CONF_ADDRESS: ADDRESS}
+    assert result["data"] == {
+        CONF_ADDRESS: ADDRESS,
+        CONF_PRODUCT_CODE: SUPPORTED_PRODUCT_CODE,
+    }
     assert result["options"] == {CONF_AUTO_RESTORE: False}
     setup.assert_awaited_once()
+
+
+async def test_product_code_must_be_confirmed_from_label(
+    hass: HomeAssistant,
+) -> None:
+    """Advertisement matching alone never unlocks device writes."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": SOURCE_BLUETOOTH},
+        data=service_info(),
+    )
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={CONF_PRODUCT_CODE: "GWM53"}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "bluetooth_confirm"
+    assert result["errors"] == {CONF_PRODUCT_CODE: "unsupported_product_code"}
+    assert not hass.config_entries.async_entries(DOMAIN)
 
 
 @pytest.mark.parametrize(
@@ -125,6 +156,72 @@ async def test_manual_flow_without_devices(hass: HomeAssistant) -> None:
         )
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "no_devices_found"
+
+
+async def test_manual_flow_also_requires_product_code(hass: HomeAssistant) -> None:
+    """Manual discovery uses the same product-label gate as Bluetooth discovery."""
+    with patch(
+        "homeassistant.components.bluetooth.async_discovered_service_info",
+        return_value=[service_info()],
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_USER}
+        )
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={CONF_ADDRESS: ADDRESS}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "bluetooth_confirm"
+
+    with patch(
+        "custom_components.lumalou.async_setup_entry", return_value=True
+    ) as setup:
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input={CONF_PRODUCT_CODE: SUPPORTED_PRODUCT_CODE},
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"] == {
+        CONF_ADDRESS: ADDRESS,
+        CONF_PRODUCT_CODE: SUPPORTED_PRODUCT_CODE,
+    }
+    setup.assert_awaited_once()
+
+
+async def test_legacy_entry_reconfigure_unlocks_only_gl_d09(
+    hass: HomeAssistant,
+) -> None:
+    """Old address-only entries require explicit supported-label confirmation."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=ADDRESS,
+        data={CONF_ADDRESS: ADDRESS},
+        options={CONF_AUTO_RESTORE: False},
+    )
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": SOURCE_RECONFIGURE, "entry_id": entry.entry_id},
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "reconfigure"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={CONF_PRODUCT_CODE: "GWM53"}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {CONF_PRODUCT_CODE: "unsupported_product_code"}
+    assert CONF_PRODUCT_CODE not in entry.data
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={CONF_PRODUCT_CODE: "gld09"}
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data[CONF_PRODUCT_CODE] == SUPPORTED_PRODUCT_CODE
 
 
 async def test_auto_restore_cannot_be_enabled(hass: HomeAssistant) -> None:

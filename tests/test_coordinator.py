@@ -14,7 +14,12 @@ from bleak.backends.device import BLEDevice
 from homeassistant.exceptions import HomeAssistantError
 from lumalou import crypto
 
-from custom_components.lumalou.const import ALLOWED_OPCODES, GLOBAL_STATE_FIELDS
+from custom_components.lumalou.const import (
+    ALLOWED_OPCODES,
+    CONF_PRODUCT_CODE,
+    GLOBAL_STATE_FIELDS,
+    SUPPORTED_PRODUCT_CODE,
+)
 from custom_components.lumalou.coordinator import LumalouCoordinator, SafeLumalouClient
 from custom_components.lumalou.models import (
     LumalouRuntimeData,
@@ -22,7 +27,7 @@ from custom_components.lumalou.models import (
     ProfileValidationError,
     RevisionConflictError,
 )
-from custom_components.lumalou.storage import ProfileStorageError
+from custom_components.lumalou.storage import ProfileStorageError, ProfileStore
 
 
 @pytest.fixture
@@ -44,7 +49,10 @@ def rig():
         return task
 
     entry = SimpleNamespace(
-        data={"address": device.address},
+        data={
+            "address": device.address,
+            CONF_PRODUCT_CODE: SUPPORTED_PRODUCT_CODE,
+        },
         title="Test Lumalou",
         entry_id="synthetic",
         async_create_background_task=Mock(side_effect=create_background_task),
@@ -145,6 +153,64 @@ async def test_offline_setup_preserves_pending_profile_without_ble(rig):
     listener.assert_called_once()
 
 
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda coordinator: coordinator.async_set_light(True),
+        lambda coordinator: coordinator.async_set_light(False),
+        lambda coordinator: coordinator.async_set_volume(3),
+        lambda coordinator: coordinator.async_set_light_duration(1),
+        lambda coordinator: coordinator.async_play(2),
+        lambda coordinator: coordinator.async_stop_audio(),
+        lambda coordinator: coordinator.async_sync_clock(),
+    ],
+)
+async def test_legacy_entry_blocks_every_device_mutation_before_side_effects(
+    rig, operation
+):
+    """An address-only entry may read but cannot mutate a candidate device."""
+    coordinator = rig.coordinator
+    coordinator.product_code = None
+
+    with pytest.raises(HomeAssistantError, match="Confirm product code GLD09"):
+        await operation(coordinator)
+
+    rig.store.async_save.assert_not_awaited()
+    rig.client_factory.assert_not_called()
+    assert coordinator.profile_record == ProfileRecord()
+
+    await coordinator.async_request_refresh()
+    assert coordinator.available
+    assert rig.clients[0].request_state.await_count == 1
+
+
+async def test_tampered_product_code_cannot_bypass_low_level_write_gate(rig):
+    """Private command dispatch remains guarded against future missed callers."""
+    coordinator = rig.coordinator
+    coordinator.product_code = "gld09"
+
+    with pytest.raises(HomeAssistantError, match="Confirm product code GLD09"):
+        await coordinator._send_commands([bytes([0x37, 3])])
+
+    rig.client_factory.assert_not_called()
+
+
+async def test_queued_device_mutation_checks_product_code_under_lock(rig):
+    """Authorization is evaluated when a queued operation actually starts."""
+    coordinator = rig.coordinator
+    async with coordinator._lock:
+        operation = asyncio.create_task(coordinator.async_set_volume(3))
+        await asyncio.sleep(0)
+        assert not operation.done()
+        coordinator.product_code = None
+
+    with pytest.raises(HomeAssistantError, match="Confirm product code GLD09"):
+        await operation
+
+    rig.store.async_save.assert_not_awaited()
+    rig.client_factory.assert_not_called()
+
+
 async def test_unreadable_profile_blocks_writes_not_discovery(rig):
     rig.store.async_load.side_effect = ProfileStorageError("Synthetic corruption")
     await rig.coordinator.async_setup()
@@ -152,6 +218,49 @@ async def test_unreadable_profile_blocks_writes_not_discovery(rig):
     with pytest.raises(HomeAssistantError, match="requires recovery"):
         await rig.coordinator.async_set_volume(3)
     rig.client_factory.assert_not_called()
+    rig.store.async_save.assert_not_awaited()
+
+
+async def test_corrupt_profile_cannot_export_empty_backup_or_overwrite_file(
+    rig, tmp_path
+):
+    """A setup fallback is diagnostic state, never a valid backup document."""
+    path = tmp_path / "lumalou.synthetic.profile"
+    corrupt_document = '{"version":1,"data":'
+    path.write_text(corrupt_document)
+
+    async def executor(function, *args):
+        return function(*args)
+
+    backend = SimpleNamespace(
+        path=str(path), key="lumalou.synthetic.profile", async_save=AsyncMock()
+    )
+    with patch("custom_components.lumalou.storage.Store", return_value=backend):
+        store = ProfileStore(
+            SimpleNamespace(async_add_executor_job=executor), "synthetic"
+        )
+    coordinator = LumalouCoordinator(rig.coordinator.hass, rig.coordinator.entry, store)
+    await coordinator.async_setup()
+    assert coordinator.profile_record.last_error == "storage_load"
+
+    with pytest.raises(HomeAssistantError, match="requires recovery before exporting"):
+        await coordinator.async_export_profile()
+
+    assert path.read_text() == corrupt_document
+    backend.async_save.assert_not_awaited()
+    rig.client_factory.assert_not_called()
+
+
+async def test_queued_export_rechecks_storage_health_under_lock(rig):
+    coordinator = rig.coordinator
+    async with coordinator._lock:
+        export = asyncio.create_task(coordinator.async_export_profile())
+        await asyncio.sleep(0)
+        assert not export.done()
+        coordinator._storage_healthy = False
+
+    with pytest.raises(HomeAssistantError, match="requires recovery before exporting"):
+        await export
     rig.store.async_save.assert_not_awaited()
 
 
@@ -463,6 +572,48 @@ async def test_maintenance_survives_new_coordinator_without_reconnecting(rig):
     assert reopened.profile_record.maintenance
     assert reopened.profile_record == record
     rig.client_factory.assert_not_called()
+
+
+async def test_leaving_maintenance_recovers_present_device_without_replaying(rig):
+    coordinator = rig.coordinator
+    await coordinator.async_set_maintenance(True)
+    await coordinator.async_set_volume(8)
+    pending = coordinator.profile_record
+    rig.address_present.return_value = True
+    coordinator.async_start()
+    assert coordinator.present
+    assert not rig.background_tasks
+
+    await coordinator.async_set_maintenance(False)
+    assert len(rig.background_tasks) == 1
+    await rig.background_tasks[0]
+
+    assert coordinator.available
+    assert coordinator.profile_record.revision == pending.revision
+    assert coordinator.profile_record.desired_profile == pending.desired_profile
+    assert coordinator.profile_record.pending
+    rig.clients[0].request_state.assert_awaited_once()
+    rig.clients[0].send.assert_not_awaited()
+    await coordinator.async_shutdown()
+
+
+async def test_leaving_maintenance_coalesces_existing_cooldown_recovery(rig):
+    coordinator = rig.coordinator
+    coordinator.async_start()
+    coordinator._next_recovery_at = asyncio.get_running_loop().time() + 3600
+    coordinator._async_handle_advertisement(Mock(), Mock())
+    await asyncio.sleep(0)
+    original_recovery = coordinator._recovery_task
+    assert original_recovery is not None
+
+    await coordinator.async_set_maintenance(True)
+    await coordinator.async_set_maintenance(False)
+
+    assert coordinator._recovery_task is original_recovery
+    assert len(rig.background_tasks) == 1
+    rig.client_factory.assert_not_called()
+    await coordinator.async_shutdown()
+    assert original_recovery.cancelled()
 
 
 async def test_entries_do_not_share_saved_intent(rig):

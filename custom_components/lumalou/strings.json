@@ -15,11 +15,28 @@
       },
       "bluetooth_confirm": {
         "title": "Add {name}?",
-        "description": "This adds the candidate device and starts a background read-only state request without changing settings. Confirm the product label before hardware testing."
+        "description": "Check the product code printed on the device label. Only GLD09 is supported. The entry starts with a background read-only state request and never changes settings automatically.",
+        "data": {
+          "product_code": "Product code"
+        },
+        "data_description": {
+          "product_code": "Enter GLD09 exactly as confirmed on the physical device label. The advertisement alone cannot prove the model."
+        }
+      },
+      "reconfigure": {
+        "title": "Confirm Lumalou product code",
+        "description": "This legacy entry remains read-only until the supported GLD09 code is confirmed from the physical device label.",
+        "data": {
+          "product_code": "Product code"
+        },
+        "data_description": {
+          "product_code": "Enter GLD09 exactly as confirmed on the physical device label."
+        }
       }
     },
     "error": {
-      "device_unavailable": "The selected device is no longer available. Try again."
+      "device_unavailable": "The selected device is no longer available. Try again.",
+      "unsupported_product_code": "Only product code GLD09 is supported. Check the physical device label."
     },
     "abort": {
       "already_configured": "This device is already configured.",

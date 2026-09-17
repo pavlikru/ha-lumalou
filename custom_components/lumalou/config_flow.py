@@ -11,7 +11,7 @@ from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import callback
 
-from .const import DOMAIN
+from .const import CONF_PRODUCT_CODE, DOMAIN, SUPPORTED_PRODUCT_CODE
 
 CONF_AUTO_RESTORE = "auto_restore"
 DEFAULT_AUTO_RESTORE = False
@@ -30,6 +30,16 @@ def _device_title(info: BluetoothServiceInfoBleak) -> str:
     if info.name and info.name != info.address:
         return info.name
     return "Lumalou"
+
+
+def _normalize_product_code(value: Any) -> str:
+    """Normalize user-confirmed label text without guessing compatibility."""
+    return value.strip().upper() if isinstance(value, str) else ""
+
+
+def _product_code_schema() -> vol.Schema:
+    """Require an explicit product-code transcription from the device label."""
+    return vol.Schema({vol.Required(CONF_PRODUCT_CODE): str})
 
 
 class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -72,19 +82,30 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_bluetooth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Confirm a discovered Lumalou."""
+        """Confirm a discovered Lumalou and its supported product label."""
         assert self._discovered is not None
 
         if user_input is not None:
+            product_code = _normalize_product_code(user_input[CONF_PRODUCT_CODE])
+            if product_code != SUPPORTED_PRODUCT_CODE:
+                return self.async_show_form(
+                    step_id="bluetooth_confirm",
+                    data_schema=_product_code_schema(),
+                    errors={CONF_PRODUCT_CODE: "unsupported_product_code"},
+                    description_placeholders=self.context["title_placeholders"],
+                )
             return self.async_create_entry(
                 title=_device_title(self._discovered),
-                data={CONF_ADDRESS: self._discovered.address},
+                data={
+                    CONF_ADDRESS: self._discovered.address,
+                    CONF_PRODUCT_CODE: product_code,
+                },
                 options={CONF_AUTO_RESTORE: DEFAULT_AUTO_RESTORE},
             )
 
-        self._set_confirm_only()
         return self.async_show_form(
             step_id="bluetooth_confirm",
+            data_schema=_product_code_schema(),
             description_placeholders=self.context["title_placeholders"],
         )
 
@@ -107,11 +128,9 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             await self.async_set_unique_id(address)
             self._abort_if_unique_id_configured()
-            return self.async_create_entry(
-                title=_device_title(discovery_info),
-                data={CONF_ADDRESS: address},
-                options={CONF_AUTO_RESTORE: DEFAULT_AUTO_RESTORE},
-            )
+            self._discovered = discovery_info
+            self.context["title_placeholders"] = {"name": _device_title(discovery_info)}
+            return await self.async_step_bluetooth_confirm()
 
         configured_ids = self._async_current_ids(include_ignore=False)
         self._discovered_devices = {
@@ -137,6 +156,27 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     }
                 )
             }
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Let legacy entries explicitly confirm the supported product code."""
+        entry = self._get_reconfigure_entry()
+        if user_input is not None:
+            product_code = _normalize_product_code(user_input[CONF_PRODUCT_CODE])
+            if product_code == SUPPORTED_PRODUCT_CODE:
+                return self.async_update_reload_and_abort(
+                    entry, data_updates={CONF_PRODUCT_CODE: product_code}
+                )
+            return self.async_show_form(
+                step_id="reconfigure",
+                data_schema=_product_code_schema(),
+                errors={CONF_PRODUCT_CODE: "unsupported_product_code"},
+            )
+
+        return self.async_show_form(
+            step_id="reconfigure", data_schema=_product_code_schema()
         )
 
 
