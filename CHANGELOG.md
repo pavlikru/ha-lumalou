@@ -15,6 +15,8 @@
 - Add offline CAS editors for every modeled profile block, including ordered
   playlists, clock settings, weekly schedules, and all seven daily routines.
 - Add local HACS brand assets and current metadata validation.
+- Add a guarded, validation-gated GitHub prerelease workflow and HACS release
+  archive metadata; placeholder version `0.0.0` cannot be published.
 - Document target-observed, read-only `CURRENT_DATE` evidence and its strict
   unpublished upstream decoder.
 - Add static type checking to local and CI validation.

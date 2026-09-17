@@ -1,4 +1,6 @@
 {
   "name": "Lumalou",
-  "homeassistant": "2026.9.2"
+  "homeassistant": "2026.9.2",
+  "zip_release": true,
+  "filename": "lumalou.zip"
 }
