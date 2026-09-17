@@ -3,6 +3,8 @@
 from homeassistant.const import Platform
 
 DOMAIN = "lumalou"
+CONF_PRODUCT_CODE = "product_code"
+SUPPORTED_PRODUCT_CODE = "GLD09"
 PLATFORMS = (
     Platform.BUTTON,
     Platform.LIGHT,

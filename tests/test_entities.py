@@ -36,6 +36,7 @@ from custom_components.lumalou.button import (
     LumalouRefreshButton,
     LumalouSyncClockButton,
 )
+from custom_components.lumalou.const import SUPPORTED_PRODUCT_CODE
 from custom_components.lumalou.light import LumalouLight
 from custom_components.lumalou.media_player import LumalouMediaPlayer
 from custom_components.lumalou.select import LumalouLightDurationSelect
@@ -52,6 +53,7 @@ class FakeCoordinator:
     address = "AA:BB:CC:DD:EE:FF"
     device_name = "Lumalou test"
     sw_version = "test"
+    product_code = SUPPORTED_PRODUCT_CODE
 
     def __init__(self, data: dict | None, available: bool = True) -> None:
         self.data = data
@@ -148,12 +150,21 @@ async def test_device_info_unique_ids_and_buttons():
     assert isinstance(info, dict)
     assert info["identifiers"] == {("lumalou", coordinator.address)}
     assert info["connections"] == {(CONNECTION_BLUETOOTH, coordinator.address)}
+    assert info["model"] == "Lumalou (GLD09)"
     assert light.unique_id == f"{coordinator.address}_light"
 
     await LumalouSyncClockButton(entry).async_press()
     coordinator.async_sync_clock.assert_awaited_once_with()
     await LumalouRefreshButton(entry).async_press()
     coordinator.async_request_refresh.assert_awaited_once_with()
+
+
+def test_unconfirmed_device_info_does_not_claim_gld09():
+    """Legacy entries remain model-neutral until the label is confirmed."""
+    entry, coordinator = make_entry({})
+    coordinator.product_code = None
+
+    assert LumalouLight(entry).device_info["model"] == "Lumalou"
 
 
 @pytest.mark.asyncio

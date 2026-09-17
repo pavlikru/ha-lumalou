@@ -25,4 +25,3 @@ pairing-button press. Use safe daytime light and audio levels.
 Do not run destructive power tests against the Raspberry Pi. Restart Home
 Assistant and the Pi cleanly; power-cycle only the Lumalou during an agreed test
 window. Restore the user's profile after every block.
-

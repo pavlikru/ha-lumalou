@@ -22,11 +22,13 @@ from lumalou.client import LumalouClient
 
 from .const import (
     ALLOWED_OPCODES,
+    CONF_PRODUCT_CODE,
     CONNECT_TIMEOUT,
     FORBIDDEN_OPCODES,
     GLOBAL_STATE_FIELDS,
     RECOVERY_COOLDOWN,
     RESPONSE_TIMEOUT,
+    SUPPORTED_PRODUCT_CODE,
 )
 from .models import (
     ProfileRecord,
@@ -71,6 +73,7 @@ class LumalouCoordinator:
         self.hass = hass
         self.entry = entry
         self.address = entry.data["address"]
+        self.product_code = entry.data.get(CONF_PRODUCT_CODE)
         self.device_name = entry.title or "Lumalou"
         self.sw_version: str | None = None
         self.data: dict[str, int] | None = None
@@ -133,6 +136,20 @@ class LumalouCoordinator:
         finally:
             if task is not None:
                 self._tasks.discard(task)
+
+    @asynccontextmanager
+    async def _device_write_operation(self):
+        """Serialize a mutation and require explicit supported-label consent."""
+        async with self._operation():
+            self._assert_device_writes_allowed()
+            yield
+
+    def _assert_device_writes_allowed(self) -> None:
+        """Keep legacy or tampered entries read-only until GLD09 is confirmed."""
+        if self.product_code != SUPPORTED_PRODUCT_CODE:
+            raise HomeAssistantError(
+                "Confirm product code GLD09 before controlling this device"
+            )
 
     async def async_setup(self) -> None:
         """Load private intent without connecting or changing the device."""
@@ -415,6 +432,7 @@ class LumalouCoordinator:
                 raise HomeAssistantError("Lumalou refresh failed") from err
 
     async def _send_commands(self, payloads: list[bytes]) -> None:
+        self._assert_device_writes_allowed()
         client = await self._connect()
         for payload in payloads:
             async with asyncio.timeout(RESPONSE_TIMEOUT):
@@ -461,7 +479,7 @@ class LumalouCoordinator:
         if color is not None:
             changes["color"] = color
         validate_profile(changes)
-        async with self._operation():
+        async with self._device_write_operation():
             if changes:
                 await self._save_edit(changes)
             if not on:
@@ -484,28 +502,28 @@ class LumalouCoordinator:
 
     async def async_set_volume(self, level: int) -> None:
         validate_profile({"volume": level})
-        async with self._operation():
+        async with self._device_write_operation():
             await self._save_edit({"volume": level})
             await self._apply_edit([commands.set_volume(level)])
 
     async def async_set_light_duration(self, duration: int) -> None:
         validate_profile({"light_duration": duration})
-        async with self._operation():
+        async with self._device_write_operation():
             await self._save_edit({"light_duration": duration})
             await self._apply_edit([commands.set_light_duration(duration)])
 
     async def async_play(self, source: int) -> None:
         validate_integer(source, 0, 7, "audio source")
-        async with self._operation():
+        async with self._device_write_operation():
             await self._transient([commands.play_audio(source)])
 
     async def async_stop_audio(self) -> None:
-        async with self._operation():
+        async with self._device_write_operation():
             await self._transient([commands.turn_off_audio()])
 
     async def async_sync_clock(self) -> None:
         """Explicit action only; never send a stored or naive host timestamp."""
-        async with self._operation():
+        async with self._device_write_operation():
             now = dt_util.now()
             if now.year < 2026:
                 raise HomeAssistantError("Home Assistant clock is not trustworthy")
@@ -524,10 +542,16 @@ class LumalouCoordinator:
             await self._save(replace(self.profile_record, maintenance=enabled))
             if enabled:
                 await self._disconnect()
+            else:
+                self._schedule_recovery()
 
     async def async_export_profile(self) -> dict[str, Any]:
         """Atomically export intent and its CAS revision without identifiers."""
         async with self._operation():
+            if not self._storage_healthy:
+                raise HomeAssistantError(
+                    "Saved profile requires recovery before exporting"
+                )
             record = self.profile_record
             return {
                 "current_revision": record.revision,
