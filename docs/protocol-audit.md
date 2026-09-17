@@ -128,6 +128,9 @@ The deployed client at the audited URL and hash implements these exact layouts:
   the step number and the low nibble is task ID. The builder numbers steps from
   one, rejects empty steps, allows at most 12 tasks with IDs 0–11, and pads with
   zeros. Its clear value is `FF FF` followed by 12 zero bytes.
+- The same verified bundle labels task IDs 1–11 as Get dressed, Wash up, Brush
+  teeth, Bathroom, Backpack, Meal, Story, Tidy up, Heart, Swirl, and Star. Its
+  task ID 0 entry is only an em dash and is not a proven selectable task label.
 - Ready-to-rise alarms (`4A / 4C / 27`) are four bytes: seven Sunday-first,
   high-first alarm nibbles, followed by a sound nibble. Alarm values are
   `0=ACTIVE`, `1..8=AFTER_15..AFTER_120`, `9=INACTIVE`, `10=AFTER_1`; the

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import time
 from collections.abc import Generator
+from copy import deepcopy
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -17,7 +19,7 @@ from homeassistant.config_entries import (
 )
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.data_entry_flow import FlowResultType, InvalidData
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.lumalou.config_flow import CONF_AUTO_RESTORE
@@ -25,6 +27,12 @@ from custom_components.lumalou.const import (
     CONF_PRODUCT_CODE,
     DOMAIN,
     SUPPORTED_PRODUCT_CODE,
+)
+from custom_components.lumalou.models import (
+    DAYS,
+    LumalouRuntimeData,
+    ProfileRecord,
+    RevisionConflictError,
 )
 
 ADDRESS = "AA:BB:CC:DD:EE:01"
@@ -63,6 +71,64 @@ def service_info(
     )
     return BluetoothServiceInfoBleak.from_device_and_advertisement_data(
         device, advertisement, "synthetic", time.monotonic(), connectable
+    )
+
+
+def editable_profile() -> dict:
+    """Return profile blocks used by native schedule and routine forms."""
+    empty_week = {day: None for day in DAYS}
+    routines = {day: {"time": None, "slots": [None] * 12} for day in DAYS}
+    routines["sunday"] = {
+        "time": {"hour": 0, "minute": 0},
+        "slots": [
+            {"step": 2, "task": 0},
+            {"step": 1, "task": 11},
+            *([None] * 10),
+        ],
+    }
+    return {
+        "ready_to_rise": {"enabled": False, "times": deepcopy(empty_week)},
+        "sleepy_times": deepcopy(empty_week),
+        "alarm": {"days": {day: 9 for day in DAYS}, "sound": 0},
+        "routines": routines,
+    }
+
+
+def profile_entry(
+    hass: HomeAssistant,
+    *,
+    revision: int = 7,
+    save: AsyncMock | None = None,
+) -> tuple[MockConfigEntry, SimpleNamespace]:
+    """Add a loaded-looking entry backed by an isolated coordinator mock."""
+    coordinator = SimpleNamespace(
+        profile_record=ProfileRecord(
+            revision=revision,
+            desired_profile=editable_profile(),
+            sync_status="saved",
+        ),
+        async_edit_profile=save or AsyncMock(),
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=ADDRESS,
+        data={CONF_ADDRESS: ADDRESS},
+        options={CONF_AUTO_RESTORE: False},
+    )
+    entry.add_to_hass(hass)
+    entry.runtime_data = LumalouRuntimeData(coordinator)
+    return entry, coordinator
+
+
+async def start_editor(
+    hass: HomeAssistant, entry: MockConfigEntry, section: str
+) -> dict:
+    """Start an options flow and select one native editor section."""
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "init"
+    return await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"next_step_id": section}
     )
 
 
@@ -236,9 +302,285 @@ async def test_auto_restore_cannot_be_enabled(hass: HomeAssistant) -> None:
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"next_step_id": "behavior"}
+    )
+    result = await hass.config_entries.options.async_configure(
         result["flow_id"], user_input={CONF_AUTO_RESTORE: True}
     )
 
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {CONF_AUTO_RESTORE: "auto_restore_unavailable"}
     assert entry.options[CONF_AUTO_RESTORE] is False
+
+
+async def test_behavior_options_flow_still_completes(hass: HomeAssistant) -> None:
+    """The original behavior setting remains available behind the section menu."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=ADDRESS,
+        data={CONF_ADDRESS: ADDRESS},
+        options={CONF_AUTO_RESTORE: False},
+    )
+    entry.add_to_hass(hass)
+    result = await start_editor(hass, entry, "behavior")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={CONF_AUTO_RESTORE: False}
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options == {CONF_AUTO_RESTORE: False}
+
+
+async def test_schedule_draft_saves_only_at_final_confirmation(
+    hass: HomeAssistant,
+) -> None:
+    """Non-final schedule steps never persist the private draft."""
+    entry, coordinator = profile_entry(hass)
+    original_options = dict(entry.options)
+    result = await start_editor(hass, entry, "schedule")
+
+    schedule_input = {"ready_to_rise_enabled": True}
+    for day in DAYS:
+        schedule_input[f"ready_to_rise_{day}_has_time"] = day == "sunday"
+        schedule_input[f"ready_to_rise_{day}_time"] = "00:00:00"
+        schedule_input[f"sleepy_{day}_has_time"] = day == "monday"
+        schedule_input[f"sleepy_{day}_time"] = "21:30:00"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input=schedule_input
+    )
+
+    assert result["step_id"] == "schedule_alarm"
+    coordinator.async_edit_profile.assert_not_awaited()
+    assert entry.options == original_options
+
+    alarm_input = {f"alarm_{day}": "9" for day in DAYS}
+    alarm_input.update({"alarm_sunday": "0", "alarm_sound": "15"})
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input=alarm_input
+    )
+
+    assert result["step_id"] == "schedule_confirm"
+    coordinator.async_edit_profile.assert_not_awaited()
+    assert result["description_placeholders"]["ready_count"] == "1"
+    assert result["description_placeholders"]["sleepy_count"] == "1"
+
+    with patch.object(hass.config_entries, "async_schedule_reload") as schedule_reload:
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], user_input={"confirm": True}
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    coordinator.async_edit_profile.assert_awaited_once()
+    changes, expected_revision = coordinator.async_edit_profile.await_args.args
+    assert expected_revision == 7
+    assert changes["ready_to_rise"]["times"]["sunday"] == {
+        "hour": 0,
+        "minute": 0,
+    }
+    assert changes["ready_to_rise"]["times"]["monday"] is None
+    assert changes["sleepy_times"]["monday"] == {"hour": 21, "minute": 30}
+    assert changes["alarm"]["days"]["sunday"] == 0
+    assert changes["alarm"]["sound"] == 15
+    assert entry.options == original_options
+    schedule_reload.assert_not_called()
+
+
+async def test_cancel_discards_schedule_draft(hass: HomeAssistant) -> None:
+    """Removing a flow after a draft step cannot write profile or options."""
+    entry, coordinator = profile_entry(hass)
+    original_options = dict(entry.options)
+    result = await start_editor(hass, entry, "schedule")
+    schedule_input = {"ready_to_rise_enabled": True}
+    for day in DAYS:
+        schedule_input[f"ready_to_rise_{day}_has_time"] = day == "sunday"
+        schedule_input[f"ready_to_rise_{day}_time"] = "06:45:00"
+        schedule_input[f"sleepy_{day}_has_time"] = False
+        schedule_input[f"sleepy_{day}_time"] = "00:00:00"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input=schedule_input
+    )
+    assert result["step_id"] == "schedule_alarm"
+    hass.config_entries.options.async_abort(result["flow_id"])
+
+    coordinator.async_edit_profile.assert_not_awaited()
+    assert entry.options == original_options
+
+
+async def test_schedule_confirmation_rejects_revision_conflict(
+    hass: HomeAssistant,
+) -> None:
+    """A stale captured revision remains a draft when CAS rejects it."""
+    save = AsyncMock(side_effect=RevisionConflictError("stale"))
+    entry, coordinator = profile_entry(hass, save=save)
+    result = await start_editor(hass, entry, "schedule")
+    schedule_input = {"ready_to_rise_enabled": False}
+    for day in DAYS:
+        schedule_input[f"ready_to_rise_{day}_has_time"] = False
+        schedule_input[f"ready_to_rise_{day}_time"] = "00:00:00"
+        schedule_input[f"sleepy_{day}_has_time"] = False
+        schedule_input[f"sleepy_{day}_time"] = "00:00:00"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input=schedule_input
+    )
+    alarm_input = {f"alarm_{day}": "9" for day in DAYS}
+    alarm_input["alarm_sound"] = "0"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input=alarm_input
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"confirm": True}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "schedule_confirm"
+    assert result["errors"] == {"base": "revision_conflict"}
+    coordinator.async_edit_profile.assert_awaited_once()
+    assert entry.options == {CONF_AUTO_RESTORE: False}
+
+
+async def test_routine_copy_is_independent_and_preserves_task_zero(
+    hass: HomeAssistant,
+) -> None:
+    """Copied routines detach and unnamed task zero cannot be selected or lost."""
+    entry, coordinator = profile_entry(hass)
+    result = await start_editor(hass, entry, "routine")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"routine_day": "sunday"}
+    )
+    task_selector = result["data_schema"].schema["task_2"]
+    assert task_selector.config["options"] == [str(value) for value in range(1, 12)]
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={
+            "routine_has_time": True,
+            "routine_time": "00:00:00",
+            "task_2": "3",
+            "task_12": "11",
+        },
+    )
+    assert result["step_id"] == "routine_copy"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"copy_to": ["monday", "tuesday"]}
+    )
+    assert result["step_id"] == "routine_confirm"
+    assert result["description_placeholders"]["copy_count"] == "2"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"confirm": True}
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    routines = coordinator.async_edit_profile.await_args.args[0]["routines"]
+    assert routines["sunday"]["time"] == {"hour": 0, "minute": 0}
+    assert routines["sunday"]["slots"][0] == {"step": 2, "task": 0}
+    assert routines["sunday"] == routines["monday"] == routines["tuesday"]
+    routines["monday"]["slots"][1]["task"] = 8
+    assert routines["sunday"]["slots"][1]["task"] == 3
+    assert routines["tuesday"]["slots"][1]["task"] == 3
+
+
+async def test_routine_existing_task_can_be_cleared(hass: HomeAssistant) -> None:
+    """An omitted optional row clears a visible task instead of defaulting it back."""
+    entry, coordinator = profile_entry(hass)
+    result = await start_editor(hass, entry, "routine")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"routine_day": "sunday"}
+    )
+    task_marker = next(
+        marker for marker in result["data_schema"].schema if marker.schema == "task_2"
+    )
+    assert task_marker.description == {"suggested_value": "11"}
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={"routine_has_time": True, "routine_time": "00:00:00"},
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"copy_to": []}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"confirm": True}
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    routine = coordinator.async_edit_profile.await_args.args[0]["routines"]["sunday"]
+    assert routine["slots"][0] == {"step": 2, "task": 0}
+    assert routine["slots"][1] is None
+
+
+async def test_routine_no_time_distinct_from_midnight(hass: HomeAssistant) -> None:
+    """Routine toggle stores null even when visible selector contains midnight."""
+    entry, coordinator = profile_entry(hass)
+    result = await start_editor(hass, entry, "routine")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"routine_day": "monday"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={"routine_has_time": False, "routine_time": "00:00:00"},
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"copy_to": []}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"confirm": True}
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    routines = coordinator.async_edit_profile.await_args.args[0]["routines"]
+    assert routines["monday"]["time"] is None
+
+
+async def test_confirm_after_unload_aborts_cleanly(hass: HomeAssistant) -> None:
+    """An open draft never crashes if the config entry unloads before save."""
+    entry, coordinator = profile_entry(hass)
+    result = await start_editor(hass, entry, "routine")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"routine_day": "monday"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={"routine_has_time": False, "routine_time": "00:00:00"},
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"copy_to": []}
+    )
+    delattr(entry, "runtime_data")
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"confirm": True}
+    )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "profile_editor_unavailable"
+    coordinator.async_edit_profile.assert_not_awaited()
+
+
+async def test_routine_invalid_and_overlength_input_rejected(
+    hass: HomeAssistant,
+) -> None:
+    """Native schema rejects unsupported task IDs and a thirteenth row."""
+    entry, coordinator = profile_entry(hass)
+    result = await start_editor(hass, entry, "routine")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"routine_day": "friday"}
+    )
+    with pytest.raises(InvalidData):
+        await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={
+                "routine_has_time": True,
+                "routine_time": "12:00:00",
+                "task_1": "0",
+            },
+        )
+    with pytest.raises(InvalidData):
+        await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={
+                "routine_has_time": True,
+                "routine_time": "12:00:00",
+                **{f"task_{index}": "1" for index in range(1, 14)},
+            },
+        )
+    coordinator.async_edit_profile.assert_not_awaited()

@@ -11,7 +11,11 @@ import pytest
 
 from custom_components.lumalou.const import PROFILE_SCHEMA_VERSION
 from custom_components.lumalou.models import ProfileRecord, ProfileValidationError
-from custom_components.lumalou.storage import ProfileStorageError, ProfileStore
+from custom_components.lumalou.storage import (
+    STORAGE_MINOR_VERSION,
+    ProfileStorageError,
+    ProfileStore,
+)
 
 
 @pytest.fixture
@@ -27,7 +31,14 @@ def storage(tmp_path):
 
     async def write(data):
         path.write_text(
-            json.dumps({"version": PROFILE_SCHEMA_VERSION, "key": key, "data": data})
+            json.dumps(
+                {
+                    "version": PROFILE_SCHEMA_VERSION,
+                    "minor_version": STORAGE_MINOR_VERSION,
+                    "key": key,
+                    "data": data,
+                }
+            )
         )
 
     backend = SimpleNamespace(
@@ -38,7 +49,12 @@ def storage(tmp_path):
     ) as factory:
         adapter = ProfileStore(hass, "synthetic-entry")
     factory.assert_called_once_with(
-        hass, PROFILE_SCHEMA_VERSION, key, private=True, atomic_writes=True
+        hass,
+        PROFILE_SCHEMA_VERSION,
+        key,
+        private=True,
+        atomic_writes=True,
+        minor_version=STORAGE_MINOR_VERSION,
     )
     return adapter, backend, path
 
@@ -92,6 +108,7 @@ async def test_v1_is_backed_up_migrated_and_verified_without_defaults(storage):
     )
     assert json.loads(path.read_text()) == {
         "version": PROFILE_SCHEMA_VERSION,
+        "minor_version": STORAGE_MINOR_VERSION,
         "key": backend.key,
         "data": migrated.to_dict(),
     }
@@ -162,6 +179,8 @@ async def test_schema_downgrade_future_and_cross_version_records_rejected(
         '{"version":3,"key":"lumalou.synthetic-entry.profile","data":{}}',
         '{"version":2,"key":"other-entry","data":{}}',
         '{"version":2,"key":"lumalou.synthetic-entry.profile","data":{}}',
+        '{"version":2,"minor_version":2,"key":"lumalou.synthetic-entry.profile","data":{}}',
+        '{"version":2,"minor_version":true,"key":"lumalou.synthetic-entry.profile","data":{}}',
     ],
 )
 async def test_corrupt_file_is_preserved(storage, document):
@@ -252,7 +271,14 @@ async def test_cancelled_save_holds_lock_until_commit_finishes(tmp_path):
             started.set()
             await release.wait()
         path.write_text(
-            json.dumps({"version": PROFILE_SCHEMA_VERSION, "key": key, "data": data})
+            json.dumps(
+                {
+                    "version": PROFILE_SCHEMA_VERSION,
+                    "minor_version": STORAGE_MINOR_VERSION,
+                    "key": key,
+                    "data": data,
+                }
+            )
         )
 
     backend = SimpleNamespace(

@@ -37,13 +37,47 @@
   "options": {
     "step": {
       "init": {
-        "title": "Lumalou options",
-        "description": "Automatic restore is unavailable until full profile readback and hardware validation are complete. Maintenance mode is controlled separately on the device page.",
-        "data": {"auto_restore": "Enable automatic restore"},
-        "data_description": {"auto_restore": "Reserved for a future verified implementation. It cannot currently be enabled."}
-      }
+        "title": "Edit Lumalou",
+        "description": "Choose behavior options, the weekly schedule, or one daily routine. Profile edits are saved offline and are not sent to the device.",
+        "menu_options": {"behavior": "Behavior options", "schedule": "Weekly schedule", "routine": "Daily routines"}
+      },
+      "behavior": {"title": "Behavior options", "description": "Automatic restore is unavailable until full profile readback and hardware validation are complete. Maintenance mode is controlled separately on the device page.", "data": {"auto_restore": "Enable automatic restore"}, "data_description": {"auto_restore": "Reserved for a future verified implementation. It cannot currently be enabled."}},
+      "schedule": {
+        "title": "Weekly Ready-to-Rise and Sleepy times",
+        "description": "A disabled time is stored as no time. An enabled 00:00 time is stored as midnight. The time control remains visible when disabled; the switch determines which value is saved.",
+        "data": {
+          "ready_to_rise_enabled": "Enable Ready-to-Rise",
+          "ready_to_rise_sunday_has_time": "Sunday Ready-to-Rise has a time", "ready_to_rise_sunday_time": "Sunday Ready-to-Rise time",
+          "ready_to_rise_monday_has_time": "Monday Ready-to-Rise has a time", "ready_to_rise_monday_time": "Monday Ready-to-Rise time",
+          "ready_to_rise_tuesday_has_time": "Tuesday Ready-to-Rise has a time", "ready_to_rise_tuesday_time": "Tuesday Ready-to-Rise time",
+          "ready_to_rise_wednesday_has_time": "Wednesday Ready-to-Rise has a time", "ready_to_rise_wednesday_time": "Wednesday Ready-to-Rise time",
+          "ready_to_rise_thursday_has_time": "Thursday Ready-to-Rise has a time", "ready_to_rise_thursday_time": "Thursday Ready-to-Rise time",
+          "ready_to_rise_friday_has_time": "Friday Ready-to-Rise has a time", "ready_to_rise_friday_time": "Friday Ready-to-Rise time",
+          "ready_to_rise_saturday_has_time": "Saturday Ready-to-Rise has a time", "ready_to_rise_saturday_time": "Saturday Ready-to-Rise time",
+          "sleepy_sunday_has_time": "Sunday Sleepy time is set", "sleepy_sunday_time": "Sunday Sleepy time",
+          "sleepy_monday_has_time": "Monday Sleepy time is set", "sleepy_monday_time": "Monday Sleepy time",
+          "sleepy_tuesday_has_time": "Tuesday Sleepy time is set", "sleepy_tuesday_time": "Tuesday Sleepy time",
+          "sleepy_wednesday_has_time": "Wednesday Sleepy time is set", "sleepy_wednesday_time": "Wednesday Sleepy time",
+          "sleepy_thursday_has_time": "Thursday Sleepy time is set", "sleepy_thursday_time": "Thursday Sleepy time",
+          "sleepy_friday_has_time": "Friday Sleepy time is set", "sleepy_friday_time": "Friday Sleepy time",
+          "sleepy_saturday_has_time": "Saturday Sleepy time is set", "sleepy_saturday_time": "Saturday Sleepy time"
+        }
+      },
+      "schedule_alarm": {"title": "Weekly alarm offsets", "description": "Choose each day's source-defined alarm offset and one alarm sound. Sound numbers are preserved exactly; hardware behavior is not yet verified.", "data": {"alarm_sunday": "Sunday alarm", "alarm_monday": "Monday alarm", "alarm_tuesday": "Tuesday alarm", "alarm_wednesday": "Wednesday alarm", "alarm_thursday": "Thursday alarm", "alarm_friday": "Friday alarm", "alarm_saturday": "Saturday alarm", "alarm_sound": "Alarm sound"}},
+      "routine": {"title": "Choose a routine day", "description": "Each day stores an independent routine.", "data": {"routine_day": "Day"}},
+      "routine_tasks": {"title": "Edit daily routine", "description": "Rows are stored in order. Clear a row to remove it. Existing source task ID 0 rows are retained but are not shown as a named choice. Drag-and-drop reordering is unavailable in Home Assistant options flows; move choices between fixed rows instead.", "data": {"routine_has_time": "Routine has a start time", "routine_time": "Routine start time", "task_1": "Task row 1", "task_2": "Task row 2", "task_3": "Task row 3", "task_4": "Task row 4", "task_5": "Task row 5", "task_6": "Task row 6", "task_7": "Task row 7", "task_8": "Task row 8", "task_9": "Task row 9", "task_10": "Task row 10", "task_11": "Task row 11", "task_12": "Task row 12"}},
+      "routine_copy": {"title": "Copy routine", "description": "Optionally replace routines on selected days with independent copies of this routine.", "data": {"copy_to": "Copy to days"}},
+      "schedule_confirm": {"title": "Confirm weekly schedule", "description": "Revision {revision}: {ready_count} Ready-to-Rise times, {sleepy_count} Sleepy times, {alarm_count} enabled alarms, alarm sound {alarm_sound}. Saving changes only the private profile; it does not write to the device.", "data": {"confirm": "Save this schedule"}},
+      "routine_confirm": {"title": "Confirm daily routine", "description": "Revision {revision}: {day}, {task_count} task rows, {copy_count} matching copied days, {zero_count} preserved unnamed task ID 0 rows. Saving changes only the private profile; it does not write to the device.", "data": {"confirm": "Save this routine"}}
     },
-    "error": {"auto_restore_unavailable": "Automatic restore is not available in this version."}
+    "error": {"auto_restore_unavailable": "Automatic restore is not available in this version.", "invalid_schedule": "Enter valid minute-resolution schedule times.", "invalid_alarm": "Choose a supported alarm offset and sound.", "invalid_routine": "Use no more than 12 supported task rows and a valid minute-resolution time.", "confirmation_required": "Confirm before saving.", "revision_conflict": "The profile changed while this editor was open. Cancel and reopen it to use the latest revision.", "profile_save_failed": "The profile could not be saved. Nothing from this draft was applied."},
+    "abort": {"profile_editor_unavailable": "Load the Lumalou entry before editing its private profile."}
+  },
+  "selector": {
+    "weekday": {"options": {"sunday": "Sunday", "monday": "Monday", "tuesday": "Tuesday", "wednesday": "Wednesday", "thursday": "Thursday", "friday": "Friday", "saturday": "Saturday"}},
+    "alarm_offset": {"options": {"0": "At Ready-to-Rise time", "1": "15 minutes after", "2": "30 minutes after", "3": "45 minutes after", "4": "60 minutes after", "5": "75 minutes after", "6": "90 minutes after", "7": "105 minutes after", "8": "120 minutes after", "9": "Off", "10": "1 minute after"}},
+    "alarm_sound": {"options": {"0": "Alarm 1", "1": "Alarm 2", "2": "Alarm 3", "3": "Alarm 4", "4": "Alarm 5", "5": "Alarm 6", "6": "Alarm 7", "7": "Alarm 8", "8": "Alarm 9", "9": "Alarm 10", "10": "Alarm 11", "11": "Alarm 12", "12": "Alarm 13", "13": "Alarm 14", "14": "Alarm 15", "15": "Alarm 16"}},
+    "routine_task": {"options": {"1": "Get dressed", "2": "Wash up", "3": "Brush teeth", "4": "Bathroom", "5": "Backpack", "6": "Meal", "7": "Story", "8": "Tidy up", "9": "Heart", "10": "Swirl", "11": "Star"}}
   },
   "services": {
     "refresh_state": {"name": "Refresh state", "description": "Request a fresh read-only state snapshot from Lumalou.", "fields": {"config_entry_id": {"name": "Device", "description": "Lumalou configuration entry to refresh."}}},
