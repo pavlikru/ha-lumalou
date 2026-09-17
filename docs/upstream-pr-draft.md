@@ -36,7 +36,7 @@ layouts. The pull request does not claim hardware-certified backup or restore.
 - Base: `9fa5ecfc7f6e82ec02e13d01f00fca7be6852567`.
 - Source bundle SHA-256:
   `30bef51fe4ed6728ccd4a811b7f855368cc587d804a578660da368c2ece70b09`.
-- Local commits: `bb59b87`, `cdc6f4b`, `4b9ae91`, `430e465` on
+- Local commits: `bb59b87`, `cdc6f4b`, `4b9ae91`, `430e465`, `46b9ca6` on
   `feat/strict-readback-schedules`.
 - The current 389-test suite passes locally; the preceding 360-test state passed
   on Python 3.10, 3.11 and 3.12.

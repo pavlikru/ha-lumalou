@@ -26,7 +26,7 @@ or a release claim.
 ## Current local branches
 
 - HA integration: `feat/lumalou-integration`.
-- Upstream protocol candidate: `430e465` on
+- Upstream protocol candidate: `46b9ca6` on
   `feat/strict-readback-schedules` (all 28 source-backed queries, strict SET
   models, Python/JavaScript schedule codecs, and strict transient current-clock
   decoding are exposed).
