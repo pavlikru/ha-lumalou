@@ -99,13 +99,19 @@
     "config_entry_not_found": {"message": "The selected Lumalou configuration entry was not found."},
     "config_entry_not_loaded": {"message": "The selected Lumalou configuration entry is not loaded."}
   },
+  "issues": {
+    "profile_storage": {
+      "title": "Lumalou profile needs recovery",
+      "description": "Home Assistant could not read the saved Lumalou profile. Automatic profile writes are blocked. Inspect or restore the saved profile and any migration backup before reloading the integration."
+    }
+  },
   "entity": {
     "button": {"sync_clock": {"name": "Synchronize clock"}, "refresh": {"name": "Refresh"}},
     "light": {"light": {"name": "Light"}},
     "media_player": {"audio": {"name": "Audio"}},
-    "binary_sensor": {"profile_pending": {"name": "Profile pending"}},
+    "binary_sensor": {"profile_pending": {"name": "Profile pending"}, "profile_present": {"name": "Profile present"}},
     "select": {"light_duration": {"name": "Light duration"}, "playlist_duration": {"name": "Playlist duration"}},
-    "sensor": {"connection": {"name": "Connection"}, "firmware": {"name": "Firmware"}, "profile_revision": {"name": "Profile revision"}, "profile_sync_status": {"name": "Profile sync status", "state": {"empty": "Empty", "saved": "Saved", "pending": "Pending", "applying": "Applying", "partial": "Partially applied", "error": "Error"}}, "profile_last_error": {"name": "Profile last error"}},
+    "sensor": {"connection": {"name": "Connection"}, "firmware": {"name": "Firmware"}, "profile_revision": {"name": "Profile revision"}, "profile_verified_revision": {"name": "Profile verified revision"}, "profile_sync_status": {"name": "Profile sync status", "state": {"empty": "Empty", "saved": "Saved", "pending": "Pending", "applying": "Applying", "partial": "Partially applied", "error": "Error"}}, "profile_last_error": {"name": "Profile last error"}},
     "switch": {"maintenance": {"name": "Maintenance"}}
   }
 }

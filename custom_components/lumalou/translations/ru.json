@@ -99,13 +99,19 @@
     "config_entry_not_found": {"message": "Выбранная запись конфигурации Lumalou не найдена."},
     "config_entry_not_loaded": {"message": "Выбранная запись конфигурации Lumalou не загружена."}
   },
+  "issues": {
+    "profile_storage": {
+      "title": "Профиль Lumalou требует восстановления",
+      "description": "Home Assistant не смог прочитать сохранённый профиль Lumalou. Автоматическая запись профиля заблокирована. Проверьте или восстановите сохранённый профиль и резервную копию миграции, если она есть, перед перезагрузкой интеграции."
+    }
+  },
   "entity": {
     "button": {"sync_clock": {"name": "Синхронизировать часы"}, "refresh": {"name": "Обновить"}},
     "light": {"light": {"name": "Свет"}},
     "media_player": {"audio": {"name": "Аудио"}},
-    "binary_sensor": {"profile_pending": {"name": "Профиль ожидает синхронизации"}},
+    "binary_sensor": {"profile_pending": {"name": "Профиль ожидает синхронизации"}, "profile_present": {"name": "Профиль сохранён"}},
     "select": {"light_duration": {"name": "Длительность света"}, "playlist_duration": {"name": "Длительность плейлиста"}},
-    "sensor": {"connection": {"name": "Подключение"}, "firmware": {"name": "Прошивка"}, "profile_revision": {"name": "Ревизия профиля"}, "profile_sync_status": {"name": "Статус синхронизации профиля", "state": {"empty": "Пусто", "saved": "Сохранено", "pending": "Ожидает", "applying": "Применяется", "partial": "Применено частично", "error": "Ошибка"}}, "profile_last_error": {"name": "Последняя ошибка профиля"}},
+    "sensor": {"connection": {"name": "Подключение"}, "firmware": {"name": "Прошивка"}, "profile_revision": {"name": "Ревизия профиля"}, "profile_verified_revision": {"name": "Подтверждённая ревизия профиля"}, "profile_sync_status": {"name": "Статус синхронизации профиля", "state": {"empty": "Пусто", "saved": "Сохранено", "pending": "Ожидает", "applying": "Применяется", "partial": "Применено частично", "error": "Ошибка"}}, "profile_last_error": {"name": "Последняя ошибка профиля"}},
     "switch": {"maintenance": {"name": "Обслуживание"}}
   }
 }

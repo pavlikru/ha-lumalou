@@ -3,6 +3,7 @@
 from homeassistant.const import Platform
 
 DOMAIN = "lumalou"
+ISSUE_ID_PROFILE_STORAGE = "profile_storage"
 CONF_PRODUCT_CODE = "product_code"
 SUPPORTED_PRODUCT_CODE = "GLD09"
 PLATFORMS = (

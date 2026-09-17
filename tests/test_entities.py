@@ -35,7 +35,10 @@ from custom_components.lumalou import (
 from custom_components.lumalou import (
     switch as switch_platform,
 )
-from custom_components.lumalou.binary_sensor import LumalouProfilePendingBinarySensor
+from custom_components.lumalou.binary_sensor import (
+    LumalouProfilePendingBinarySensor,
+    LumalouProfilePresentBinarySensor,
+)
 from custom_components.lumalou.button import (
     LumalouRefreshButton,
     LumalouSyncClockButton,
@@ -53,6 +56,7 @@ from custom_components.lumalou.sensor import (
     LumalouProfileLastErrorSensor,
     LumalouProfileRevisionSensor,
     LumalouProfileSyncStatusSensor,
+    LumalouProfileVerifiedRevisionSensor,
 )
 from custom_components.lumalou.switch import LumalouMaintenanceSwitch
 
@@ -66,10 +70,15 @@ class FakeCoordinator:
     product_code = SUPPORTED_PRODUCT_CODE
 
     def __init__(
-        self, data: dict | None, available: bool = True, profile_record=None
+        self,
+        data: dict | None,
+        available: bool = True,
+        profile_record=None,
+        profile_storage_healthy: bool = True,
     ) -> None:
         self.data = data
         self.available = available
+        self.profile_storage_healthy = profile_storage_healthy
         self.async_set_light = AsyncMock()
         self.async_set_volume = AsyncMock()
         self.async_play = AsyncMock()
@@ -90,6 +99,9 @@ def make_entry(
     available: bool = True,
     maintenance=False,
     revision=0,
+    verified_revision=None,
+    desired_profile=None,
+    profile_storage_healthy=True,
     pending=False,
     sync_status="empty",
     last_error=None,
@@ -97,11 +109,15 @@ def make_entry(
     profile_record = SimpleNamespace(
         maintenance=maintenance,
         revision=revision,
+        verified_revision=verified_revision,
+        desired_profile=desired_profile or {},
         pending=pending,
         sync_status=sync_status,
         last_error=last_error,
     )
-    coordinator = FakeCoordinator(data, available, profile_record)
+    coordinator = FakeCoordinator(
+        data, available, profile_record, profile_storage_healthy
+    )
     runtime = SimpleNamespace(
         coordinator=coordinator,
         profile_record=profile_record,
@@ -235,7 +251,7 @@ async def test_platform_setup_callbacks_add_all_entities():
     ):
         await platform.async_setup_entry(None, entry, add_entities)
 
-    assert sum(len(call.args[0]) for call in add_entities.call_args_list) == 13
+    assert sum(len(call.args[0]) for call in add_entities.call_args_list) == 15
 
 
 def test_diagnostic_sensor_values_remain_readable_offline():
@@ -260,19 +276,30 @@ def test_profile_diagnostics_remain_readable_offline_without_profile_contents():
         None,
         available=False,
         revision=4,
+        verified_revision=2,
+        desired_profile={"volume": 3},
         pending=True,
         sync_status="partial",
         last_error="ble_apply",
     )
 
     revision = LumalouProfileRevisionSensor(entry)
+    verified_revision = LumalouProfileVerifiedRevisionSensor(entry)
     pending = LumalouProfilePendingBinarySensor(entry)
+    present = LumalouProfilePresentBinarySensor(entry)
     status = LumalouProfileSyncStatusSensor(entry)
     error = LumalouProfileLastErrorSensor(entry)
     assert revision.available is True
     assert revision.native_value == 4
+    assert verified_revision.native_value == 2
     assert pending.available is True
     assert pending.is_on is True
+    assert present.available is True
+    assert present.is_on is True
+    entry.runtime_data.profile_record.revision = 0
+    assert present.is_on is True
+    entry.runtime_data.profile_record.verified_revision = None
+    assert verified_revision.native_value is None
     assert status.native_value == "partial"
     assert status.options == [
         "applying",
@@ -286,9 +313,24 @@ def test_profile_diagnostics_remain_readable_offline_without_profile_contents():
 
     coordinator.data = {"playlistDuration": 3}
     entry.runtime_data.profile_record.pending = False
+    entry.runtime_data.profile_record.revision = 0
+    entry.runtime_data.profile_record.desired_profile = {}
     entry.runtime_data.profile_record.last_error = None
     assert pending.is_on is False
+    assert present.is_on is False
     assert error.native_value is None
+
+
+def test_profile_present_unavailable_when_profile_storage_is_unhealthy():
+    entry, _coordinator = make_entry(
+        None,
+        revision=4,
+        desired_profile={"volume": 3},
+        profile_storage_healthy=False,
+    )
+    present = LumalouProfilePresentBinarySensor(entry)
+
+    assert present.available is False
 
 
 @pytest.mark.asyncio

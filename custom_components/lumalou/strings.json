@@ -290,6 +290,12 @@
       "message": "The selected Lumalou configuration entry is not loaded."
     }
   },
+  "issues": {
+    "profile_storage": {
+      "title": "Lumalou profile needs recovery",
+      "description": "Home Assistant could not read the saved Lumalou profile. Automatic profile writes are blocked. Inspect or restore the saved profile and any migration backup before reloading the integration."
+    }
+  },
   "entity": {
     "button": {
       "sync_clock": {"name": "Synchronize clock"},
@@ -297,7 +303,7 @@
     },
     "light": {"light": {"name": "Light"}},
     "media_player": {"audio": {"name": "Audio"}},
-    "binary_sensor": {"profile_pending": {"name": "Profile pending"}},
+    "binary_sensor": {"profile_pending": {"name": "Profile pending"}, "profile_present": {"name": "Profile present"}},
     "select": {
       "light_duration": {"name": "Light duration"},
       "playlist_duration": {"name": "Playlist duration"}
@@ -306,6 +312,7 @@
       "connection": {"name": "Connection"},
       "firmware": {"name": "Firmware"},
       "profile_revision": {"name": "Profile revision"},
+      "profile_verified_revision": {"name": "Profile verified revision"},
       "profile_sync_status": {
         "name": "Profile sync status",
         "state": {
