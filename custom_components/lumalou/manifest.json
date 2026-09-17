@@ -1,0 +1,12 @@
+{
+  "domain": "lumalou",
+  "name": "Lumalou",
+  "codeowners": ["@pavlikru"],
+  "dependencies": ["bluetooth"],
+  "documentation": "https://github.com/pavlikru/ha-lumalou",
+  "integration_type": "device",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/pavlikru/ha-lumalou/issues",
+  "requirements": ["lumalou==0.1.0"],
+  "version": "0.0.0"
+}

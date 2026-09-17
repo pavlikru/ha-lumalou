@@ -1,0 +1,42 @@
+[project]
+name = "ha-lumalou"
+version = "0.0.0"
+description = "Home Assistant custom integration for Fisher-Price Lumalou"
+readme = "README.md"
+requires-python = ">=3.14.2"
+license = "MIT"
+authors = [{ name = "Pavel Maltsev" }]
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "homeassistant==2026.9.2",
+  "pre-commit==4.3.0",
+  "pytest==9.0.3",
+  "pytest-cov==7.1.0",
+  "pytest-homeassistant-custom-component==0.13.365",
+  "ruff==0.16.8",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers --strict-config --cov=custom_components.lumalou --cov-report=term-missing"
+asyncio_mode = "auto"
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+
+[tool.ruff]
+target-version = "py314"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["ASYNC", "B", "E", "F", "I", "PYI", "RUF", "SIM", "UP"]
