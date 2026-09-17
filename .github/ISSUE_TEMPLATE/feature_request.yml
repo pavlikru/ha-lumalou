@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest a Home Assistant feature or supported device behavior
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: Describe the user problem, not only the proposed solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Explain how this should appear and behave in Home Assistant.
+    validations:
+      required: true
+  - type: dropdown
+    id: hardware
+    attributes:
+      label: Can you test this on real Lumalou hardware?
+      options:
+        - "Yes"
+        - "No"
+    validations:
+      required: true
