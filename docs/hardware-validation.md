@@ -31,6 +31,66 @@ layout on this target only; product code and firmware are still unrecorded.
 Stable-release claims are prohibited until this ledger contains anonymized
 results for the target device and the complete profile API is available.
 
+## Authorization and stop conditions
+
+Before any integration connection, record all of the following in this private
+test session; do not commit identifiers or family schedules:
+
+- a label-confirmed `GLD09` product code and the firmware version, with serial
+  numbers and Bluetooth addresses redacted from retained evidence;
+- explicit permission to deploy/restart the Raspberry Pi Home Assistant and a
+  separate permission before changing the HomeKit Bridge filter;
+- an agreed local-time window, maximum light level, maximum audio level and the
+  number of permitted Lumalou-only power cycles;
+- a fresh Home Assistant backup and exported Lumalou profile kept outside this
+  public repository.
+
+Stop immediately on an unexpected light/audio/routine activation, a request for
+Pairing, any unknown GATT service/characteristic, malformed or incomplete fresh
+readback, profile revision conflict, failure to preserve the pre-test profile,
+or impact on another Home Assistant integration. Never continue by sending raw
+opcodes, accessing DFU, editing `.storage`, restarting the host by cutting
+power, or raising output levels beyond the agreed limits.
+
+## Ordered acceptance runbook
+
+Each phase requires the previous phase to pass. Record UTC and HA-local
+timestamps, component/upstream versions, profile revision, anonymized result,
+duration, and rollback result for every phase.
+
+1. **Read-only target inventory.** Verify live HA/HAOS/Supervisor versions,
+   Bluetooth adapter/backend, label and firmware. Close the Web Bluetooth
+   session, confirm connectable advertising without Pairing, install the exact
+   prerelease, onboard GLD09 and request fresh state. Confirm no device setting
+   changes and no duplicate entry after reload.
+2. **Minimal live controls.** After a second explicit go-ahead, test light at
+   the agreed minimum level, then short audio at the agreed minimum volume.
+   Test stop/off and one clock sync separately. Record setter side effects and
+   restore the pre-test user state after each command group.
+3. **Complete read and import.** Only with a released strict upstream API, read
+   every mandatory block in one session, including playlist, clock settings,
+   schedules and seven identified routines. Reject partial data. Preview and
+   confirm import with restore suppressed; compare the saved normalized profile
+   against a second complete fresh read.
+4. **Manual restore.** Change one field per block at safe values, save one exact
+   revision, power-cycle only Lumalou, and restore minimal diffs in the
+   hardware-proven order. Require a complete fresh readback match and verify
+   that Play, light-on, Nap and routine actions were not replayed.
+5. **Recovery failures and automation.** Interrupt BLE before a write, between
+   blocks and before verification. Confirm eventual convergence to one current
+   revision, bounded backoff and no false verified state. Then enable
+   auto-restore and run at least ten short/long Lumalou power cycles plus HA
+   restart and clean Raspberry restart cases.
+6. **External controller and Apple Home.** Enter Maintenance, edit through the
+   browser, import with restore suppressed, leave Maintenance and repeat a
+   power cycle. With separate approval, include only the Lumalou light and audio
+   entities in HomeKit Bridge, reset/re-add cached accessories if required, and
+   verify the documented light and switch-style audio controls.
+7. **Prerelease and soak.** Install the generated ZIP through HACS as a custom
+   repository on a clean test path, verify update/rollback and profile backup,
+   then run a 72-hour soak. Stable release remains prohibited until this ledger
+   records every required pass or an explicit documented limitation.
+
 ## Read-only observations
 
 The browser reported the device in Soother mode with light and audio off,
