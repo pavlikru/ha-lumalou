@@ -5,6 +5,13 @@ connected by the user to the upstream Web Bluetooth client in Chrome. No light,
 audio, clock, schedule, routine, raw-opcode, or other write control was used.
 The integration itself was not installed or connected.
 
+The same existing browser session was inspected again on 2026-09-17. Navigation
+between read-only views caused schedule/routine queries but no reconnect and no
+configuration command. The device emitted four-byte `CURRENT_DATE` payloads
+through the local midnight boundary: `23:59:00`, weekday `03`, was followed by
+`00:00:00`, weekday `04`. This supports a BCD hour/minute/second/weekday response
+layout on this target only; product code and firmware are still unrecorded.
+
 | Item | Status | Evidence |
 | --- | --- | --- |
 | Exact product code | Not recorded | Requires label inspection |
@@ -17,7 +24,7 @@ The integration itself was not installed or connected.
 | Light/audio controls | Not tested on hardware | Setter side effects unknown |
 | Browser schedule readback | Partially observed | Both 14-byte week blocks were all zero; 4-byte alarm block was inactive |
 | Browser seven-routine readback | Partially observed | Seven distinct 14-byte day responses and a 7-byte task-status response were all zero |
-| Full schedules and seven routines in Python | Blocked on release and hardware proof | A local upstream candidate has strict Python/JavaScript codecs and 360 passing Python tests; released upstream 0.1.0 still lacks them |
+| Full schedules and seven routines in Python | Blocked on release and hardware proof | A local upstream candidate has strict Python/JavaScript codecs and 389 passing Python tests; released upstream 0.1.0 still lacks them |
 | Ten Lumalou power cycles | Not run | Acceptance test |
 | 72-hour soak | Not run | Acceptance test |
 
