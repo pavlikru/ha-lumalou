@@ -40,7 +40,7 @@ from .models import (
     validate_integer,
     validate_profile,
 )
-from .storage import ProfileStore
+from .storage import ProfileStorageError, ProfileStore
 from .transport import RestrictedLumalouTransport
 
 _LOGGER = logging.getLogger(__name__)
@@ -124,6 +124,11 @@ class LumalouCoordinator:
         return deepcopy(self._profile_record)
 
     @property
+    def profile_storage_healthy(self) -> bool:
+        """Return whether the saved profile was read successfully."""
+        return self._storage_healthy
+
+    @property
     def observed_state(self) -> dict[str, int] | None:
         """Return a detached observation, never the desired profile."""
         return deepcopy(self.data)
@@ -199,7 +204,7 @@ class LumalouCoordinator:
         """Load private intent without connecting or changing the device."""
         try:
             self._profile_record = await self._store.async_load()
-        except HomeAssistantError:
+        except ProfileStorageError:
             self._storage_healthy = False
             self._profile_record = replace(
                 self.profile_record, sync_status="error", last_error="storage_load"

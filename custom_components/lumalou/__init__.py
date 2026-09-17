@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.typing import ConfigType
 
-from .const import PLATFORMS
+from .const import DOMAIN, ISSUE_ID_PROFILE_STORAGE, PLATFORMS
 from .models import LumalouRuntimeData
 from .services import async_setup_services
 
@@ -25,6 +26,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: LumalouConfigEntry) -> b
 
     coordinator = LumalouCoordinator(hass, entry)
     await coordinator.async_setup()
+    issue_id = f"{entry.entry_id}_{ISSUE_ID_PROFILE_STORAGE}"
+    if coordinator.profile_storage_healthy:
+        ir.async_delete_issue(hass, DOMAIN, issue_id)
+    else:
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            issue_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key=ISSUE_ID_PROFILE_STORAGE,
+        )
     entry.runtime_data = LumalouRuntimeData(coordinator)
 
     try:
@@ -44,3 +57,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: LumalouConfigEntry) -> 
 
     await entry.runtime_data.coordinator.async_shutdown()
     return True
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: LumalouConfigEntry) -> None:
+    """Remove this entry's Repairs issue without touching private profile storage."""
+    ir.async_delete_issue(hass, DOMAIN, f"{entry.entry_id}_{ISSUE_ID_PROFILE_STORAGE}")

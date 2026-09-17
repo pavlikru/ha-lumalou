@@ -17,6 +17,8 @@
 - Add local HACS brand assets and current metadata validation.
 - Add a guarded, validation-gated GitHub prerelease workflow and HACS release
   archive metadata; placeholder version `0.0.0` cannot be published.
+- Expose profile presence and last verified revision as diagnostics, and create
+  an entry-scoped Home Assistant Repair when private profile storage is corrupt.
 - Document target-observed, read-only `CURRENT_DATE` evidence and its strict
   unpublished upstream decoder.
 - Add static type checking to local and CI validation.

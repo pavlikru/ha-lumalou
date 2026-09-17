@@ -18,6 +18,7 @@ async def async_setup_entry(hass: Any, entry: Any, async_add_entities: Any) -> N
             LumalouAvailabilitySensor(entry),
             LumalouFirmwareSensor(entry),
             LumalouProfileRevisionSensor(entry),
+            LumalouProfileVerifiedRevisionSensor(entry),
             LumalouProfileSyncStatusSensor(entry),
             LumalouProfileLastErrorSensor(entry),
         ]
@@ -83,6 +84,20 @@ class LumalouProfileRevisionSensor(_LumalouProfileDiagnosticSensor):
     @property
     def native_value(self) -> int:
         return self.profile_record.revision
+
+
+class LumalouProfileVerifiedRevisionSensor(_LumalouProfileDiagnosticSensor):
+    """Report the last profile revision with verified device state."""
+
+    def __init__(self, entry: Any) -> None:
+        super().__init__(
+            entry, "Profile verified revision", "profile_verified_revision"
+        )
+        self._attr_translation_key = "profile_verified_revision"
+
+    @property
+    def native_value(self) -> int | None:
+        return self.profile_record.verified_revision
 
 
 class LumalouProfileSyncStatusSensor(_LumalouProfileDiagnosticSensor):

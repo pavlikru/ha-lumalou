@@ -402,10 +402,22 @@ async def test_queued_device_mutation_checks_product_code_under_lock(rig):
 async def test_unreadable_profile_blocks_writes_not_discovery(rig):
     rig.store.async_load.side_effect = ProfileStorageError("Synthetic corruption")
     await rig.coordinator.async_setup()
+    assert not rig.coordinator.profile_storage_healthy
     assert rig.coordinator.profile_record.last_error == "storage_load"
     with pytest.raises(HomeAssistantError, match="requires recovery"):
         await rig.coordinator.async_set_volume(3)
     rig.client_factory.assert_not_called()
+    rig.store.async_save.assert_not_awaited()
+
+
+async def test_setup_only_handles_profile_storage_errors(rig):
+    """Unexpected Home Assistant errors must not masquerade as recovery state."""
+    rig.store.async_load.side_effect = HomeAssistantError("Synthetic unexpected error")
+
+    with pytest.raises(HomeAssistantError, match="Synthetic unexpected error"):
+        await rig.coordinator.async_setup()
+
+    assert rig.coordinator.profile_storage_healthy
     rig.store.async_save.assert_not_awaited()
 
 
@@ -429,6 +441,7 @@ async def test_corrupt_profile_cannot_export_empty_backup_or_overwrite_file(
         )
     coordinator = LumalouCoordinator(rig.coordinator.hass, rig.coordinator.entry, store)
     await coordinator.async_setup()
+    assert not coordinator.profile_storage_healthy
     assert coordinator.profile_record.last_error == "storage_load"
 
     with pytest.raises(HomeAssistantError, match="requires recovery before exporting"):
