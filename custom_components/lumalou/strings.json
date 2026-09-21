@@ -341,12 +341,11 @@
   "issues": {
     "profile_storage": {
       "title": "Lumalou profile needs recovery",
-      "description": "Home Assistant could not read the saved Lumalou profile. Automatic profile writes are blocked. Use Repair to import a validated backup; the unreadable file will be preserved. You may instead inspect the file and any migration backup before reloading.",
       "fix_flow": {
         "step": {
           "import_profile": {
             "title": "Import a saved Lumalou profile",
-            "description": "Paste JSON returned by the Lumalou export action. It is validated now; neither storage nor the device is changed at this step.",
+            "description": "Home Assistant could not read the saved Lumalou profile, so automatic profile writes are blocked. Paste JSON returned by the Lumalou export action. It is validated now; neither storage nor the device is changed at this step. The unreadable file will be preserved during confirmed recovery.",
             "data": {"profile_json": "Exported profile JSON"}
           },
           "confirm": {

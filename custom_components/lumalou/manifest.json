@@ -1,7 +1,6 @@
 {
   "domain": "lumalou",
   "name": "Lumalou",
-  "codeowners": ["@pavlikru"],
   "bluetooth": [
     {
       "connectable": true,
@@ -9,6 +8,7 @@
       "manufacturer_id": 950
     }
   ],
+  "codeowners": ["@pavlikru"],
   "config_flow": true,
   "dependencies": ["bluetooth_adapters"],
   "documentation": "https://github.com/pavlikru/ha-lumalou",
