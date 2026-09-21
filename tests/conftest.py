@@ -7,9 +7,10 @@ import sys
 from types import ModuleType
 from typing import TypedDict
 
-# HA's Linux USB watcher is not installed by its platform markers on macOS.
-# Keep real packages on supported hosts; fail closed if a test tries to use it.
-if sys.platform == "darwin" and importlib.util.find_spec("aiousbwatcher") is None:
+# PyPI Home Assistant omits integration requirements until HA installs that
+# integration. Keep a real package when present; otherwise fail closed if a
+# unit test accidentally tries to access USB hardware.
+if importlib.util.find_spec("aiousbwatcher") is None:
     watcher_stub = ModuleType("aiousbwatcher")
 
     class UnavailableWatcher:
@@ -22,7 +23,7 @@ if sys.platform == "darwin" and importlib.util.find_spec("aiousbwatcher") is Non
     watcher_stub.InotifyNotAvailableError = RuntimeError
     sys.modules["aiousbwatcher"] = watcher_stub
 
-if sys.platform == "darwin" and importlib.util.find_spec("serialx") is None:
+if importlib.util.find_spec("serialx") is None:
     serial_stub = ModuleType("serialx")
     serial_common_stub = ModuleType("serialx.common")
 
