@@ -233,7 +233,7 @@ class LumalouCoordinator:
                         address=self.address, connectable=True
                     ),
                     bluetooth.BluetoothScanningMode.PASSIVE,
-                    replay=bluetooth.BluetoothCallbackReplay.DISABLED,
+                    replay=bluetooth.BluetoothCallbackReplay.NEWEST_FIRST,
                 )
             )
             self._unsubscribers.append(
