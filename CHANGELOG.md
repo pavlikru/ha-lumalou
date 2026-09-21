@@ -22,3 +22,9 @@
 - Document target-observed, read-only `CURRENT_DATE` evidence and its strict
   unpublished upstream decoder.
 - Add static type checking to local and CI validation.
+- Replay Home Assistant's newest cached advertisement so reload can recover
+  presence without waiting for changed BLE payload bytes.
+- Declare fixed-palette light effects through the standard HA feature flag so
+  normal service calls and HomeKit-facing state retain palette control.
+- Add a strict passive-advertisement codec to the unpublished upstream branch;
+  HA consumption remains blocked until a released version can be exact-pinned.

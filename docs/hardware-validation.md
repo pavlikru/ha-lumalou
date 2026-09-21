@@ -12,6 +12,13 @@ through the local midnight boundary: `23:59:00`, weekday `03`, was followed by
 `00:00:00`, weekday `04`. This supports a BCD hour/minute/second/weekday response
 layout on this target only; product code and firmware are still unrecorded.
 
+The already-connected session was rechecked read-only on 2026-09-21. It again
+returned fresh `CURRENT_DATE`, seven separately identified 14-byte routine
+responses, two 14-byte weekly-time responses, one 4-byte alarm response and a
+7-byte routine-task response. The observed clock payload `16:40:00`, weekday
+`01`, matched Monday in the configured local timezone. All schedule/routine
+payloads remained empty; no control, form value or device setting was changed.
+
 | Item | Status | Evidence |
 | --- | --- | --- |
 | Exact product code | Not recorded | Requires label inspection |
@@ -24,7 +31,7 @@ layout on this target only; product code and firmware are still unrecorded.
 | Light/audio controls | Not tested on hardware | Setter side effects unknown |
 | Browser schedule readback | Partially observed | Both 14-byte week blocks were all zero; 4-byte alarm block was inactive |
 | Browser seven-routine readback | Partially observed | Seven distinct 14-byte day responses and a 7-byte task-status response were all zero |
-| Full schedules and seven routines in Python | Blocked on release and hardware proof | A local upstream candidate has strict Python/JavaScript codecs and 389 passing Python tests; released upstream 0.1.0 still lacks them |
+| Full schedules and seven routines in Python | Blocked on release and hardware proof | A local upstream candidate has strict codecs and 403 passing Python tests; released upstream 0.1.0 still lacks them |
 | Ten Lumalou power cycles | Not run | Acceptance test |
 | 72-hour soak | Not run | Acceptance test |
 
