@@ -1037,7 +1037,7 @@ async def test_advertisements_coalesce_one_background_refresh(rig):
     coordinator.async_start()
     advertisement = rig.register_callback.call_args.args[1]
     assert rig.register_callback.call_args.args[3].value == "passive"
-    assert rig.register_callback.call_args.kwargs["replay"].name == "DISABLED"
+    assert rig.register_callback.call_args.kwargs["replay"].name == "NEWEST_FIRST"
     assert rig.register_callback.call_args.args[2] == {
         "address": rig.device.address,
         "connectable": True,
@@ -1064,6 +1064,26 @@ async def test_advertisements_coalesce_one_background_refresh(rig):
         await rig.background_tasks[0]
 
     await coordinator.async_shutdown()
+
+
+async def test_start_replays_cached_presence_without_gatt_in_maintenance(rig):
+    """A cached HA advertisement restores presence without taking Bluetooth."""
+    coordinator = rig.coordinator
+    rig.store.async_load.return_value = ProfileRecord(maintenance=True)
+    await coordinator.async_setup()
+
+    def register_with_replay(_hass, callback, _matcher, _mode, **_kwargs):
+        callback(Mock(), Mock())
+        return Mock()
+
+    rig.register_callback.side_effect = register_with_replay
+    coordinator.async_start()
+
+    assert coordinator.present is True
+    assert rig.register_callback.call_args.kwargs["replay"].name == "NEWEST_FIRST"
+    rig.discovery.assert_not_called()
+    rig.client_factory.assert_not_called()
+    assert not rig.background_tasks
 
 
 async def test_background_refresh_uses_bounded_exponential_backoff(rig):
