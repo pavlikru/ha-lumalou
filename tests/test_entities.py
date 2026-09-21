@@ -6,12 +6,17 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from homeassistant.components.light import ColorMode
+from homeassistant.components.light import ATTR_EFFECT, ColorMode, LightEntityFeature
+from homeassistant.components.light.const import DATA_COMPONENT
+from homeassistant.components.light.const import DOMAIN as LIGHT_DOMAIN
 from homeassistant.components.media_player import (
     MediaPlayerEntityFeature,
     MediaPlayerState,
 )
+from homeassistant.const import ATTR_ENTITY_ID, SERVICE_TURN_ON
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH
+from homeassistant.setup import async_setup_component
 from lumalou import Audio, Color
 
 from custom_components.lumalou import (
@@ -133,12 +138,34 @@ async def test_light_scale_effects_and_commands():
     entity = LumalouLight(entry)
 
     assert entity.supported_color_modes == {ColorMode.BRIGHTNESS}
+    assert entity.supported_features == LightEntityFeature.EFFECT
     assert entity.brightness == 255
     assert entity.effect == "BLUE"
     await entity.async_turn_on(brightness=128, effect="RED")
     coordinator.async_set_light.assert_awaited_once_with(True, 5, int(Color.RED))
     await entity.async_turn_off()
     coordinator.async_set_light.assert_awaited_with(False)
+
+
+async def test_light_service_forwards_fixed_palette_effect(
+    hass: HomeAssistant,
+) -> None:
+    """HA's light service must not filter the declared palette effect."""
+    assert await async_setup_component(hass, LIGHT_DOMAIN, {})
+    entry, coordinator = make_entry(
+        {"lightStatus": 0, "lightBrightness": 0, "lightColor": int(Color.WARM)}
+    )
+    entity = LumalouLight(entry)
+    await hass.data[DATA_COMPONENT].async_add_entities([entity])
+
+    await hass.services.async_call(
+        LIGHT_DOMAIN,
+        SERVICE_TURN_ON,
+        {ATTR_ENTITY_ID: entity.entity_id, ATTR_EFFECT: "RED"},
+        blocking=True,
+    )
+
+    coordinator.async_set_light.assert_awaited_once_with(True, None, int(Color.RED))
 
 
 def test_light_preserves_observed_zero_brightness():

@@ -9,6 +9,7 @@ from homeassistant.components.light import (
     ATTR_EFFECT,
     ColorMode,
     LightEntity,
+    LightEntityFeature,
 )
 
 from lumalou import Color  # type: ignore[attr-defined]
@@ -28,6 +29,7 @@ class LumalouLight(LumalouEntity, LightEntity):
 
     _attr_color_mode = ColorMode.BRIGHTNESS
     _attr_effect = None
+    _attr_supported_features = LightEntityFeature.EFFECT
 
     def __init__(self, entry: Any) -> None:
         super().__init__(entry, "Light", "light")
