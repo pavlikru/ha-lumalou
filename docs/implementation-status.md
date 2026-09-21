@@ -6,7 +6,7 @@ or a release claim.
 
 | Requirement | Current evidence | Status / next proof |
 | --- | --- | --- |
-| HA Bluetooth discovery and one config entry per device | Config flow, address unique ID, explicit GLD09 label gate, passive HA callbacks, mocked duplicate/offline tests | Implemented in development; confirm the target label, advertisement and adapter |
+| HA Bluetooth discovery and one config entry per device | Config flow, address unique ID, explicit GLD09 evidence gate, user-triggered read-only standard GATT Model Number probe, passive HA callbacks, mocked duplicate/offline tests | Implemented in development; confirm the target through label or exact standard Model Number, advertisement and adapter |
 | Serialized, cancellation-safe BLE lifecycle | Coordinator lock/generation, bounded teardown, no independent scanner, one read-only recovery loop with 30-second-to-15-minute exponential backoff, and mocked stale/cancel/maintenance-reset tests | Implemented against released client limitations; verify timing on target HA |
 | Desired profile separate from observed state | Immutable revision record, schema-v2 logical model and private per-entry Store | Full structure exists; partial intent remains explicitly incomplete |
 | Durable revisions, previous value, CAS import | Atomic Store write plus independent readback, strict expected revision, fail-closed export, backed-up v1→v2 migration, and a confirmation-gated Repair that preserves corrupt bytes before importing a validated backup | Implemented offline; recovery from an exported profile is tested through the HA Repairs manager |
@@ -18,9 +18,9 @@ or a release claim.
 | Native controls and offline editing | Light, media player, light/playlist duration selects, maintenance switch, buttons, and schema-v2 offline editors for every modeled block with explicit CAS confirmation | Home Assistant options flows have no native drag-reorder control, so playlists and routines use 12 fixed ordered rows; device application remains incomplete |
 | Clock sync | Explicit HA-timezone action with weekday conversion and trust threshold | Mocked; DST/timezone and simultaneous reboot need hardware acceptance |
 | Diagnostics and privacy | Redacted diagnostics plus offline presence/revision/verified-revision/pending/sync/error entities; an entry-scoped fixable Repair imports a validated backup only after preserving unreadable private storage; no addresses/raw payloads/session material | Verified-restore timestamps remain blocked with restore; target UI must be checked |
-| Apple Home | Standard light (brightness plus fixed-palette effects) and generic media-player entities documented for HomeKit Bridge; HA service filtering is regression-tested | Code path implemented; pairing/control must be verified on target HA and Apple Home |
+| Apple Home | Standard light on/off/brightness (fixed-palette HA effects are not native HomeKit colors) and switch-style generic media-player on/off are documented; the runbook preserves the existing bridge/exclude filter and forbids routine whole-bridge reset | Code path implemented; pairing/control and entity-scoped filter change must be verified on target HA and Apple Home |
 | HACS packaging and CI | HACS metadata plus lint/type/test/hassfest/HACS/artifact jobs; validation and release share a deterministic root-layout ZIP builder; a tag workflow reruns validation, rejects placeholder/mismatched versions, and publishes only prereleases | Local archive/layout checks pass; public CI and clean HACS installation require push/release |
-| Hardware acceptance | Read-only browser lengths/state recorded without identifiers | Product label, firmware, HA Bluetooth backend, writes, power cycles and soak are missing |
+| Hardware acceptance | Read-only browser lengths/state recorded without identifiers | Exact model (label inaccessible, standard GATT probe pending), firmware, HA Bluetooth backend, writes, power cycles and soak are missing |
 | Public release | Local feature branches and commits exist; nothing pushed | Requires user authorization, upstream release, prerelease artifact, and acceptance report |
 
 ## Current local branches

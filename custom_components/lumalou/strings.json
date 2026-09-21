@@ -15,27 +15,34 @@
       },
       "bluetooth_confirm": {
         "title": "Add {name}?",
-        "description": "Check the product code printed on the device label. Only GLD09 is supported. The entry starts with a background read-only state request and never changes settings automatically.",
+        "description": "Confirm GLD09 from the device label, or leave the code empty and use the read-only standard Bluetooth Device Information probe. The probe connects, reads identity fields, disconnects, and sends no Lumalou commands.",
         "data": {
-          "product_code": "Product code"
+          "product_code": "Product code",
+          "read_device_information": "Read model from the device"
         },
         "data_description": {
-          "product_code": "Enter GLD09 exactly as confirmed on the physical device label. The advertisement alone cannot prove the model."
+          "product_code": "Enter GLD09 only if confirmed on the physical device label; otherwise leave empty.",
+          "read_device_information": "Read the standard Model Number characteristic without protocol writes. Not every firmware exposes it."
         }
       },
       "reconfigure": {
         "title": "Confirm Lumalou product code",
-        "description": "This legacy entry remains read-only until the supported GLD09 code is confirmed from the physical device label.",
+        "description": "This legacy entry remains read-only until GLD09 is confirmed from the label or the standard Bluetooth Model Number characteristic.",
         "data": {
-          "product_code": "Product code"
+          "product_code": "Product code",
+          "read_device_information": "Read model from the device"
         },
         "data_description": {
-          "product_code": "Enter GLD09 exactly as confirmed on the physical device label."
+          "product_code": "Enter GLD09 only if confirmed on the physical device label; otherwise leave empty.",
+          "read_device_information": "Read the standard Model Number characteristic without protocol writes."
         }
       }
     },
     "error": {
+      "cannot_connect": "Could not connect for the read-only identity probe. Make sure no other app is connected and try again.",
       "device_unavailable": "The selected device is no longer available. Try again.",
+      "identity_required": "Enter the confirmed GLD09 label or enable the read-only device identity probe.",
+      "model_not_reported": "The device does not expose a readable standard Model Number. It remains unconfirmed and read-only.",
       "unsupported_product_code": "Only product code GLD09 is supported. Check the physical device label."
     },
     "abort": {

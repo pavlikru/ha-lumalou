@@ -8,6 +8,7 @@ from datetime import time
 from typing import Any, override
 
 import voluptuous as vol
+from bleak.backends.device import BLEDevice
 from home_assistant_bluetooth import BluetoothServiceInfoBleak
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult, FlowType
@@ -16,7 +17,16 @@ from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import selector
 
-from .const import CONF_PRODUCT_CODE, DOMAIN, SUPPORTED_PRODUCT_CODE
+from .const import (
+    CONF_IDENTIFICATION_SOURCE,
+    CONF_PRODUCT_CODE,
+    CONF_READ_DEVICE_INFORMATION,
+    DOMAIN,
+    IDENTIFICATION_SOURCE_DEVICE_INFORMATION,
+    IDENTIFICATION_SOURCE_LABEL,
+    SUPPORTED_PRODUCT_CODE,
+)
+from .identity import async_read_device_information
 from .models import (
     DAYS,
     ProfileValidationError,
@@ -62,8 +72,13 @@ def _normalize_product_code(value: Any) -> str:
 
 
 def _product_code_schema() -> vol.Schema:
-    """Require an explicit product-code transcription from the device label."""
-    return vol.Schema({vol.Required(CONF_PRODUCT_CODE): str})
+    """Offer label transcription or a read-only standard GATT probe."""
+    return vol.Schema(
+        {
+            vol.Optional(CONF_PRODUCT_CODE, default=""): str,
+            vol.Optional(CONF_READ_DEVICE_INFORMATION, default=True): bool,
+        }
+    )
 
 
 class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -106,23 +121,30 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_bluetooth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Confirm a discovered Lumalou and its supported product label."""
+        """Confirm a discovered Lumalou from a label or standard GATT identity."""
         assert self._discovered is not None
 
         if user_input is not None:
-            product_code = _normalize_product_code(user_input[CONF_PRODUCT_CODE])
-            if product_code != SUPPORTED_PRODUCT_CODE:
+            product_code, source, error = await self._async_resolve_product_code(
+                user_input,
+                self._discovered.device,
+                _device_title(self._discovered),
+            )
+            if error is not None:
                 return self.async_show_form(
                     step_id="bluetooth_confirm",
                     data_schema=_product_code_schema(),
-                    errors={CONF_PRODUCT_CODE: "unsupported_product_code"},
+                    errors=error,
                     description_placeholders=self.context["title_placeholders"],
                 )
+            assert product_code is not None
+            assert source is not None
             return self.async_create_entry(
                 title=_device_title(self._discovered),
                 data={
                     CONF_ADDRESS: self._discovered.address,
                     CONF_PRODUCT_CODE: product_code,
+                    CONF_IDENTIFICATION_SOURCE: source,
                 },
                 options={CONF_AUTO_RESTORE: DEFAULT_AUTO_RESTORE},
             )
@@ -132,6 +154,34 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=_product_code_schema(),
             description_placeholders=self.context["title_placeholders"],
         )
+
+    async def _async_resolve_product_code(
+        self,
+        user_input: dict[str, Any],
+        device: BLEDevice | None,
+        name: str,
+    ) -> tuple[str | None, str | None, dict[str, str] | None]:
+        """Resolve GLD09 without treating an advertisement as model evidence."""
+        product_code = _normalize_product_code(user_input.get(CONF_PRODUCT_CODE))
+        if product_code:
+            if product_code != SUPPORTED_PRODUCT_CODE:
+                return None, None, {CONF_PRODUCT_CODE: "unsupported_product_code"}
+            return product_code, IDENTIFICATION_SOURCE_LABEL, None
+
+        if not user_input.get(CONF_READ_DEVICE_INFORMATION, True):
+            return None, None, {CONF_PRODUCT_CODE: "identity_required"}
+        if device is None:
+            return None, None, {"base": "device_unavailable"}
+        try:
+            identity = await async_read_device_information(device, name)
+        except Exception:
+            return None, None, {"base": "cannot_connect"}
+        detected = _normalize_product_code(identity.model_number)
+        if not detected:
+            return None, None, {"base": "model_not_reported"}
+        if detected != SUPPORTED_PRODUCT_CODE:
+            return None, None, {CONF_PRODUCT_CODE: "unsupported_product_code"}
+        return detected, IDENTIFICATION_SOURCE_DEVICE_INFORMATION, None
 
     @override
     async def async_step_user(
@@ -200,18 +250,35 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Let legacy entries explicitly confirm the supported product code."""
+        """Let legacy entries confirm GLD09 by label or standard GATT identity."""
         entry = self._get_reconfigure_entry()
         if user_input is not None:
-            product_code = _normalize_product_code(user_input[CONF_PRODUCT_CODE])
-            if product_code == SUPPORTED_PRODUCT_CODE:
+            device = None
+            if not _normalize_product_code(
+                user_input.get(CONF_PRODUCT_CODE)
+            ) and user_input.get(CONF_READ_DEVICE_INFORMATION, True):
+                from homeassistant.components import bluetooth
+
+                device = bluetooth.async_ble_device_from_address(
+                    self.hass, entry.data[CONF_ADDRESS], connectable=True
+                )
+            product_code, source, error = await self._async_resolve_product_code(
+                user_input, device, entry.title or "Lumalou"
+            )
+            if error is None:
+                assert product_code is not None
+                assert source is not None
                 return self.async_update_reload_and_abort(
-                    entry, data_updates={CONF_PRODUCT_CODE: product_code}
+                    entry,
+                    data_updates={
+                        CONF_PRODUCT_CODE: product_code,
+                        CONF_IDENTIFICATION_SOURCE: source,
+                    },
                 )
             return self.async_show_form(
                 step_id="reconfigure",
                 data_schema=_product_code_schema(),
-                errors={CONF_PRODUCT_CODE: "unsupported_product_code"},
+                errors=error,
             )
 
         return self.async_show_form(

@@ -21,7 +21,7 @@ payloads remained empty; no control, form value or device setting was changed.
 
 | Item | Status | Evidence |
 | --- | --- | --- |
-| Exact product code | Not recorded | Requires label inspection |
+| Exact product code | Not recorded | Label is inaccessible; next proof is a read-only standard GATT Model Number read. Advertisement/handshake alone are insufficient |
 | Lumalou firmware | Not recorded | Requires advertisement/readback |
 | HA installation and version | Configuration record only | Raspberry Pi 4 (4 GB), HAOS 18.2/aarch64, Core 2026.9.2, Supervisor 2026.09.0; live state not verified |
 | Connectable adapter/backend | Not recorded | Requires target diagnostics |
@@ -43,8 +43,9 @@ results for the target device and the complete profile API is available.
 Before any integration connection, record all of the following in this private
 test session; do not commit identifiers or family schedules:
 
-- a label-confirmed `GLD09` product code and the firmware version, with serial
-  numbers and Bluetooth addresses redacted from retained evidence;
+- an exact `GLD09` product code confirmed either from the physical label or a
+  user-triggered read of the standard GATT Model Number characteristic, plus
+  the firmware version; serial numbers and Bluetooth addresses stay redacted;
 - explicit permission to deploy/restart the Raspberry Pi Home Assistant and a
   separate permission before changing the HomeKit Bridge filter;
 - an agreed local-time window, maximum light level, maximum audio level and the
@@ -65,11 +66,15 @@ Each phase requires the previous phase to pass. Record UTC and HA-local
 timestamps, component/upstream versions, profile revision, anonymized result,
 duration, and rollback result for every phase.
 
-1. **Read-only target inventory.** Verify live HA/HAOS/Supervisor versions,
-   Bluetooth adapter/backend, label and firmware. Close the Web Bluetooth
-   session, confirm connectable advertising without Pairing, install the exact
-   prerelease, onboard GLD09 and request fresh state. Confirm no device setting
-   changes and no duplicate entry after reload.
+1. **Read-only target inventory.** Verify live HA/HAOS/Supervisor versions and
+   Bluetooth adapter/backend. Close the Web Bluetooth session, confirm
+   connectable advertising without Pairing, then read only the standard Device
+   Information model/firmware characteristics. Do not treat `MB` advertising,
+   the shared MPID service or a successful handshake as a product code. If an
+   exact `GLD09` is returned, install the exact prerelease, onboard it and
+   request fresh state. If Model Number is absent or different, stop normal
+   onboarding and retain the honest unknown/unsupported status. Confirm no
+   device setting changes and no duplicate entry after reload.
 2. **Minimal live controls.** After a second explicit go-ahead, test light at
    the agreed minimum level, then short audio at the agreed minimum volume.
    Test stop/off and one clock sync separately. Record setter side effects and
@@ -90,9 +95,11 @@ duration, and rollback result for every phase.
    restart and clean Raspberry restart cases.
 6. **External controller and Apple Home.** Enter Maintenance, edit through the
    browser, import with restore suppressed, leave Maintenance and repeat a
-   power cycle. With separate approval, include only the Lumalou light and audio
-   entities in HomeKit Bridge, reset/re-add cached accessories if required, and
-   verify the documented light and switch-style audio controls.
+   power cycle. With separate approval, preserve the existing HomeKit Bridge
+   mode and exclude filter, and change only the two specific Lumalou entity
+   selections. Do not reset or re-pair the whole bridge as a routine step. Verify
+   light on/off/brightness and switch-style audio on/off; fixed HA light effects
+   are not a native Apple Home color control.
 7. **Prerelease and soak.** Install the generated ZIP through HACS as a custom
    repository on a clean test path, verify update/rollback and profile backup,
    then run a 72-hour soak. Stable release remains prohibited until this ledger
