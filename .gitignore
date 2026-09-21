@@ -17,6 +17,23 @@ htmlcov/
 config/
 *.log
 
+# Secrets, private keys, backups, and hardware captures
+.env
+.env.*
+!.env.example
+secrets.yaml
+*.key
+*.pem
+*.p12
+*.pfx
+*.tar
+*.tar.*
+*.backup
+*.zip
+*.btsnoop
+*.pcap
+*.pcapng
+
 # Editors and operating systems
 .DS_Store
 .idea/

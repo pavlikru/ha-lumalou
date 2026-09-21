@@ -27,10 +27,15 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.lumalou.config_flow import CONF_AUTO_RESTORE
 from custom_components.lumalou.const import (
+    CONF_IDENTIFICATION_SOURCE,
     CONF_PRODUCT_CODE,
+    CONF_READ_DEVICE_INFORMATION,
     DOMAIN,
+    IDENTIFICATION_SOURCE_DEVICE_INFORMATION,
+    IDENTIFICATION_SOURCE_LABEL,
     SUPPORTED_PRODUCT_CODE,
 )
+from custom_components.lumalou.identity import DeviceInformation
 from custom_components.lumalou.models import (
     DAYS,
     LumalouRuntimeData,
@@ -167,6 +172,7 @@ async def test_bluetooth_discovery_confirm(hass: HomeAssistant) -> None:
     assert result["data"] == {
         CONF_ADDRESS: ADDRESS,
         CONF_PRODUCT_CODE: SUPPORTED_PRODUCT_CODE,
+        CONF_IDENTIFICATION_SOURCE: IDENTIFICATION_SOURCE_LABEL,
     }
     assert result["options"] == {CONF_AUTO_RESTORE: False}
     setup.assert_awaited_once()
@@ -194,6 +200,7 @@ async def test_new_entry_opens_profile_source_options_flow(
     assert result["data"] == {
         CONF_ADDRESS: ADDRESS,
         CONF_PRODUCT_CODE: SUPPORTED_PRODUCT_CODE,
+        CONF_IDENTIFICATION_SOURCE: IDENTIFICATION_SOURCE_LABEL,
     }
     assert result["options"] == {CONF_AUTO_RESTORE: False}
 
@@ -448,6 +455,137 @@ async def test_product_code_must_be_confirmed_from_label(
     assert not hass.config_entries.async_entries(DOMAIN)
 
 
+async def test_product_code_can_be_read_from_standard_device_information(
+    hass: HomeAssistant,
+) -> None:
+    """A user-triggered standard GATT read can replace inaccessible label text."""
+    info = service_info()
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": SOURCE_BLUETOOTH},
+        data=info,
+    )
+
+    with (
+        patch(
+            "custom_components.lumalou.config_flow.async_read_device_information",
+            new_callable=AsyncMock,
+            return_value=DeviceInformation(
+                model_number="gld09", firmware_revision="1.2.3"
+            ),
+        ) as probe,
+        patch("custom_components.lumalou.async_setup_entry", return_value=True),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input={
+                CONF_PRODUCT_CODE: "",
+                CONF_READ_DEVICE_INFORMATION: True,
+            },
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"] == {
+        CONF_ADDRESS: ADDRESS,
+        CONF_PRODUCT_CODE: SUPPORTED_PRODUCT_CODE,
+        CONF_IDENTIFICATION_SOURCE: IDENTIFICATION_SOURCE_DEVICE_INFORMATION,
+    }
+    probe.assert_awaited_once_with(info.device, "Lumalou test")
+
+
+@pytest.mark.parametrize(
+    ("identity", "error"),
+    [
+        (DeviceInformation(), {"base": "model_not_reported"}),
+        (
+            DeviceInformation(model_number="GWM53"),
+            {CONF_PRODUCT_CODE: "unsupported_product_code"},
+        ),
+    ],
+)
+async def test_device_information_never_guesses_gl_d09(
+    hass: HomeAssistant, identity: DeviceInformation, error: dict[str, str]
+) -> None:
+    """A missing or different standard model keeps hardware control locked."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": SOURCE_BLUETOOTH},
+        data=service_info(),
+    )
+
+    with patch(
+        "custom_components.lumalou.config_flow.async_read_device_information",
+        new_callable=AsyncMock,
+        return_value=identity,
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input={
+                CONF_PRODUCT_CODE: "",
+                CONF_READ_DEVICE_INFORMATION: True,
+            },
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == error
+    assert not hass.config_entries.async_entries(DOMAIN)
+
+
+async def test_device_information_connection_error_is_retryable(
+    hass: HomeAssistant,
+) -> None:
+    """A failed identity connection does not create or unlock an entry."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": SOURCE_BLUETOOTH},
+        data=service_info(),
+    )
+
+    with patch(
+        "custom_components.lumalou.config_flow.async_read_device_information",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("synthetic connect failure"),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input={
+                CONF_PRODUCT_CODE: "",
+                CONF_READ_DEVICE_INFORMATION: True,
+            },
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "cannot_connect"}
+    assert not hass.config_entries.async_entries(DOMAIN)
+
+
+async def test_identity_probe_requires_explicit_checkbox(
+    hass: HomeAssistant,
+) -> None:
+    """Submitting no evidence never starts a connection or creates an entry."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": SOURCE_BLUETOOTH},
+        data=service_info(),
+    )
+
+    with patch(
+        "custom_components.lumalou.config_flow.async_read_device_information",
+        new_callable=AsyncMock,
+    ) as probe:
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input={
+                CONF_PRODUCT_CODE: "",
+                CONF_READ_DEVICE_INFORMATION: False,
+            },
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {CONF_PRODUCT_CODE: "identity_required"}
+    probe.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     ("info", "reason"),
     [
@@ -521,6 +659,7 @@ async def test_manual_flow_also_requires_product_code(hass: HomeAssistant) -> No
     assert result["data"] == {
         CONF_ADDRESS: ADDRESS,
         CONF_PRODUCT_CODE: SUPPORTED_PRODUCT_CODE,
+        CONF_IDENTIFICATION_SOURCE: IDENTIFICATION_SOURCE_LABEL,
     }
     setup.assert_awaited_once()
 
@@ -556,6 +695,55 @@ async def test_legacy_entry_reconfigure_unlocks_only_gl_d09(
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
     assert entry.data[CONF_PRODUCT_CODE] == SUPPORTED_PRODUCT_CODE
+    assert entry.data[CONF_IDENTIFICATION_SOURCE] == IDENTIFICATION_SOURCE_LABEL
+
+
+async def test_legacy_entry_reconfigure_can_read_standard_model(
+    hass: HomeAssistant,
+) -> None:
+    """A legacy entry can record exact standard model evidence without a label."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=ADDRESS,
+        title="Lumalou test",
+        data={CONF_ADDRESS: ADDRESS},
+        options={CONF_AUTO_RESTORE: False},
+    )
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": SOURCE_RECONFIGURE, "entry_id": entry.entry_id},
+    )
+    device = service_info().device
+
+    with (
+        patch(
+            "homeassistant.components.bluetooth.async_ble_device_from_address",
+            return_value=device,
+        ) as resolve_device,
+        patch(
+            "custom_components.lumalou.config_flow.async_read_device_information",
+            new_callable=AsyncMock,
+            return_value=DeviceInformation(model_number="GLD09"),
+        ) as probe,
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input={
+                CONF_PRODUCT_CODE: "",
+                CONF_READ_DEVICE_INFORMATION: True,
+            },
+        )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data == {
+        CONF_ADDRESS: ADDRESS,
+        CONF_PRODUCT_CODE: SUPPORTED_PRODUCT_CODE,
+        CONF_IDENTIFICATION_SOURCE: IDENTIFICATION_SOURCE_DEVICE_INFORMATION,
+    }
+    resolve_device.assert_called_once_with(hass, ADDRESS, connectable=True)
+    probe.assert_awaited_once_with(device, "Lumalou test")
 
 
 async def test_auto_restore_cannot_be_enabled(hass: HomeAssistant) -> None:

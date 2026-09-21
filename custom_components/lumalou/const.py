@@ -5,6 +5,10 @@ from homeassistant.const import Platform
 DOMAIN = "lumalou"
 ISSUE_ID_PROFILE_STORAGE = "profile_storage"
 CONF_PRODUCT_CODE = "product_code"
+CONF_IDENTIFICATION_SOURCE = "identification_source"
+CONF_READ_DEVICE_INFORMATION = "read_device_information"
+IDENTIFICATION_SOURCE_DEVICE_INFORMATION = "device_information"
+IDENTIFICATION_SOURCE_LABEL = "label"
 SUPPORTED_PRODUCT_CODE = "GLD09"
 PLATFORMS = (
     Platform.BINARY_SENSOR,
