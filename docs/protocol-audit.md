@@ -15,6 +15,7 @@ library. Its documented model is GLD09; GWM53 compatibility is unverified.
 | --- | --- |
 | Upstream `main` | `9fa5ecfc7f6e82ec02e13d01f00fca7be6852567`, committed 2026-07-28 |
 | Deployed web client bundle | `index-CP__DzxD.js`, SHA-256 `30bef51fe4ed6728ccd4a811b7f855368cc587d804a578660da368c2ece70b09`; source commit unknown |
+| Independent GLD09 controller | `kvdb/gld09-control` commit `7f157405e7b047e49eeb41e80bda01dee49ce15a`, committed 2026-07-04; MIT |
 | Annotated `py-v0.1.0` tag object | `9c275fac2daaf6f3c4abff4303553e8c4fb5dcca` |
 | Release tag's commit | `b79ee9bee39aaf919b942c8388710d2856732f5a`, committed 2026-07-23 |
 | Published dependency | `lumalou==0.1.0`, uploaded 2026-07-23; Python >=3.10 |
@@ -29,6 +30,17 @@ or vector changes. No upstream commits after the specification's 2026-09-16
 date were present at inspection. The package declares `bleak>=0.22` and
 `cryptography>=41`; an exact top-level pin does not pin those transitive versions.
 Sources: [release commit][release], [main commit][main], [PyPI release metadata][pypi].
+
+The independent controller records a live-verified manufacturer payload as
+`MB | format version | connection flags | firmware ASCII`: bit 7 means already
+connected, bit 6 means pairing and zero means idle. Its observed GLD09 firmware
+was `0.3.7`. This layout belongs in the upstream protocol package before the HA
+integration consumes it; the current released dependency does not expose such a
+parser. This source also names responses `0x19`, `0x93` and `0x99`, but logs them
+only as raw bytes and publishes no payload layouts; it therefore does not close
+the full-readback gap.
+[Independent advertisement parser][independent-advertisement],
+[independent raw response handling][independent-responses].
 
 ## What exists, versus what is merely named
 
@@ -435,3 +447,5 @@ does not validate Raspberry Pi Bluetooth reachability or this integration.
 [tests]: https://github.com/stramanu/lumalou/blob/9fa5ecfc7f6e82ec02e13d01f00fca7be6852567/packages/python/tests/test_vectors.py
 [ha-bluetooth]: https://developers.home-assistant.io/docs/bluetooth/
 [ha-api]: https://developers.home-assistant.io/docs/core/bluetooth/api/
+[independent-advertisement]: https://github.com/kvdb/gld09-control/blob/7f157405e7b047e49eeb41e80bda01dee49ce15a/lumalou_mpid.py#L377-L404
+[independent-responses]: https://github.com/kvdb/gld09-control/blob/7f157405e7b047e49eeb41e80bda01dee49ce15a/lumalou.py#L312-L328
