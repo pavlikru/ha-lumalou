@@ -17,6 +17,9 @@ Proposed title: `feat: add strict response sessions and schedule codecs`
 - add JavaScript parity for weekly schedules, alarms and seven daily routines;
 - decode the target-observed four-byte `CURRENT_DATE` reply as a strict,
   transient clock reading without treating it as profile state;
+- add strict passive manufacturer-advertisement metadata parsing from an
+  independent GLD09 implementation, while preserving the undocumented format
+  byte as opaque metadata;
 - correct opcode `0x68` from a setter name to the source-backed request name;
 - add shared literal read vectors and synthetic schedule vectors.
 
@@ -36,9 +39,10 @@ layouts. The pull request does not claim hardware-certified backup or restore.
 - Base: `9fa5ecfc7f6e82ec02e13d01f00fca7be6852567`.
 - Source bundle SHA-256:
   `30bef51fe4ed6728ccd4a811b7f855368cc587d804a578660da368c2ece70b09`.
-- Local commits: `bb59b87`, `cdc6f4b`, `4b9ae91`, `430e465`, `46b9ca6` on
+- Local commits: `bb59b87`, `cdc6f4b`, `4b9ae91`, `430e465`, `46b9ca6`,
+  `648eb86` on
   `feat/strict-readback-schedules`.
-- The current 389-test suite passes locally; the preceding 360-test state passed
+- The current 403-test suite passes locally; the preceding 360-test state passed
   on Python 3.10, 3.11 and 3.12.
 - JavaScript typecheck, 20 tests and production/declaration build pass.
 - Code generation is deterministic and `git diff --check` passes.
@@ -52,3 +56,5 @@ layouts. The pull request does not claim hardware-certified backup or restore.
    Friday/Saturday response IDs.
 5. Whether the source-backed raw query surface should be released before more
    payload layouts receive hardware evidence.
+6. Defensive firmware validation and opaque advertisement format-version
+   handling.

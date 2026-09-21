@@ -18,7 +18,7 @@ or a release claim.
 | Native controls and offline editing | Light, media player, light/playlist duration selects, maintenance switch, buttons, and schema-v2 offline editors for every modeled block with explicit CAS confirmation | Home Assistant options flows have no native drag-reorder control, so playlists and routines use 12 fixed ordered rows; device application remains incomplete |
 | Clock sync | Explicit HA-timezone action with weekday conversion and trust threshold | Mocked; DST/timezone and simultaneous reboot need hardware acceptance |
 | Diagnostics and privacy | Redacted diagnostics plus offline presence/revision/verified-revision/pending/sync/error entities; an entry-scoped fixable Repair imports a validated backup only after preserving unreadable private storage; no addresses/raw payloads/session material | Verified-restore timestamps remain blocked with restore; target UI must be checked |
-| Apple Home | Standard light and generic media-player entities documented for HomeKit Bridge | Code path implemented; pairing/control must be verified on target HA and Apple Home |
+| Apple Home | Standard light (brightness plus fixed-palette effects) and generic media-player entities documented for HomeKit Bridge; HA service filtering is regression-tested | Code path implemented; pairing/control must be verified on target HA and Apple Home |
 | HACS packaging and CI | HACS metadata plus lint/type/test/hassfest/HACS/artifact jobs; validation and release share a deterministic root-layout ZIP builder; a tag workflow reruns validation, rejects placeholder/mismatched versions, and publishes only prereleases | Local archive/layout checks pass; public CI and clean HACS installation require push/release |
 | Hardware acceptance | Read-only browser lengths/state recorded without identifiers | Product label, firmware, HA Bluetooth backend, writes, power cycles and soak are missing |
 | Public release | Local feature branches and commits exist; nothing pushed | Requires user authorization, upstream release, prerelease artifact, and acceptance report |
@@ -26,10 +26,10 @@ or a release claim.
 ## Current local branches
 
 - HA integration: `feat/lumalou-integration`.
-- Upstream protocol candidate: `46b9ca6` on
+- Upstream protocol candidate: `648eb86` on
   `feat/strict-readback-schedules` (all 28 source-backed queries, strict SET
   models, Python/JavaScript schedule codecs, and strict transient current-clock
-  decoding are exposed).
+  and passive-advertisement decoding are exposed).
 
 Neither branch has been pushed. The target Home Assistant configuration and the
 device have not been modified by these development commits.
