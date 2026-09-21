@@ -109,10 +109,9 @@
   "issues": {
     "profile_storage": {
       "title": "Lumalou profile needs recovery",
-      "description": "Home Assistant could not read the saved Lumalou profile. Automatic profile writes are blocked. Use Repair to import a validated backup; the unreadable file will be preserved. You may instead inspect the file and any migration backup before reloading.",
       "fix_flow": {
         "step": {
-          "import_profile": {"title": "Import a saved Lumalou profile", "description": "Paste JSON returned by the Lumalou export action. It is validated now; neither storage nor the device is changed at this step.", "data": {"profile_json": "Exported profile JSON"}},
+          "import_profile": {"title": "Import a saved Lumalou profile", "description": "Home Assistant could not read the saved Lumalou profile, so automatic profile writes are blocked. Paste JSON returned by the Lumalou export action. It is validated now; neither storage nor the device is changed at this step. The unreadable file will be preserved during confirmed recovery.", "data": {"profile_json": "Exported profile JSON"}},
           "confirm": {"title": "Confirm profile recovery", "description": "The backup contains {field_count} persistent profile fields. Recovery preserves the unreadable storage bytes in a private backup, then saves this profile as pending. It does not write to Lumalou.", "data": {"confirm": "Replace unreadable storage with this profile"}}
         },
         "error": {"invalid_profile": "Enter a valid profile exported by this integration.", "confirmation_required": "Confirm before replacing unreadable storage.", "recovery_failed": "Recovery could not be saved and verified. The unreadable source remains preserved."},
