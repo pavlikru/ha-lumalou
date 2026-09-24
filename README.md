@@ -43,12 +43,15 @@ does not mislabel the toy as a TV or receiver to work around that limitation.
 
 ## Installation and recovery
 
-The repository is packaged in the HACS custom-integration shape, but it has no
-accepted public release yet. The HACS custom-repository URL procedure is
-therefore future guidance, not an install method for this preview. For an
-agreed development test, copy `custom_components/lumalou/` into the same path
-on Home Assistant, restart Home Assistant if requested, then add Lumalou from
-**Settings → Devices & services**.
+For an agreed development test, add `pavlikru/ha-lumalou` in HACS as a custom
+repository of type **Integration**, download the current development branch,
+restart Home Assistant if requested, then add Lumalou from **Settings → Devices
+& services**. This installs branch source, not a tested release. The published
+upstream dependency remains exactly `lumalou==0.1.0`; complete profile
+readback and restore remain unavailable.
+
+HACS release-ZIP mode is disabled until a GitHub Release actually contains
+`lumalou.zip`. The CI-built ZIP is currently a validation artifact only.
 
 For an update, back up Home Assistant first, replace only the integration
 directory with the selected release, and restart Home Assistant. To roll back,

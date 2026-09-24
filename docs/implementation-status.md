@@ -19,9 +19,9 @@ or a release claim.
 | Clock sync | Explicit HA-timezone action with weekday conversion and trust threshold | Mocked; DST/timezone and simultaneous reboot need hardware acceptance |
 | Diagnostics and privacy | Redacted diagnostics plus offline presence/revision/verified-revision/pending/sync/error entities; an entry-scoped fixable Repair imports a validated backup only after preserving unreadable private storage; no addresses/raw payloads/session material | Verified-restore timestamps remain blocked with restore; target UI must be checked |
 | Apple Home | Standard light on/off/brightness (fixed-palette HA effects are not native HomeKit colors) and switch-style generic media-player on/off are documented; the runbook preserves the existing bridge/exclude filter and forbids routine whole-bridge reset | Code path implemented; pairing/control and entity-scoped filter change must be verified on target HA and Apple Home |
-| HACS packaging and CI | HACS metadata plus lint/type/test/hassfest/HACS/artifact jobs; validation and release share a deterministic root-layout ZIP builder; a tag workflow reruns validation, rejects placeholder/mismatched versions, and publishes only prereleases | Local archive/layout checks pass; public CI and clean HACS installation require push/release |
+| HACS packaging and CI | HACS downloads branch source for development tests; lint/type/test/hassfest/HACS/artifact jobs passed at `4e3c104`; validation and release share a deterministic root-layout ZIP builder; tag workflow rejects placeholder/mismatched versions and publishes only prereleases | HACS download failed with ZIP mode before any release asset existed; branch-source fix requires push and live retry. CI/archive success does not prove installation |
 | Hardware acceptance | Read-only browser lengths/state recorded without identifiers | Exact model (label inaccessible, standard GATT probe pending), firmware, HA Bluetooth backend, writes, power cycles and soak are missing |
-| Public release | Local feature branches and commits exist; nothing pushed | Requires user authorization, upstream release, prerelease artifact, and acceptance report |
+| Public release | HA and upstream feature branches are published in forks; no HA integration release exists | Requires versioned prerelease artifact and an explicit acceptance report; stable release requires hardware acceptance and complete upstream API |
 
 ## Current local branches
 
@@ -31,5 +31,7 @@ or a release claim.
   models, Python/JavaScript schedule codecs, and strict transient current-clock
   and passive-advertisement decoding are exposed).
 
-Neither branch has been pushed. The target Home Assistant configuration and the
-device have not been modified by these development commits.
+Both branches are published. The Lumalou device has not been modified by these
+development commits. HACS custom-repository registration and one failed
+download attempt occurred on the target Home Assistant; no integration setup
+or device connection has been verified.
