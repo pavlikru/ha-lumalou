@@ -41,12 +41,10 @@ def test_manifest_uses_released_upstream_library() -> None:
 
 
 def test_hacs_metadata_uses_current_supported_fields() -> None:
-    """Keep custom-repository metadata version-gated and release-ready."""
+    """Use branch sources until a ZIP-bearing release exists."""
     assert json.loads(HACS_PATH.read_text(encoding="utf-8")) == {
         "name": "Lumalou",
         "homeassistant": "2026.9.2",
-        "zip_release": True,
-        "filename": "lumalou.zip",
     }
 
 
