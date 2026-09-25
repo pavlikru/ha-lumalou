@@ -185,6 +185,56 @@ def _all_tasks_done(status: RoutineTaskStatus) -> bool:
     )
 
 
+def _verifiable(desired: dict[str, Any], read: DeviceSnapshot) -> dict[str, Any]:
+    """Return ``desired`` without light and sound values the read cannot show.
+
+    While the soother (or a sleep stage) runs, the reported light and sound
+    values are its own; while the light is off, a written brightness is kept
+    for the next "on" but not proven to be reported. Those fields take the
+    read value, so they neither fail nor fake a verification (logged).
+    """
+    state = read.state
+    skipped: tuple[str, ...] = ()
+    if state.get("currentStage"):
+        skipped = ("volume", "light_brightness", "light_duration", "playlist_duration")
+    elif not state.get("lightStatus"):
+        skipped = ("light_brightness",)
+    result = deepcopy(desired)
+    for key in skipped:
+        if result[LIVE_BLOCK][key] != read.profile[LIVE_BLOCK][key]:
+            _LOGGER.info(
+                "Not verifying light and sound %s now: saved %s, device shows %s",
+                key,
+                result[LIVE_BLOCK][key],
+                read.profile[LIVE_BLOCK][key],
+            )
+        result[LIVE_BLOCK][key] = read.profile[LIVE_BLOCK][key]
+    return result
+
+
+def _field_differences(
+    desired: dict[str, Any], observed: dict[str, Any], blocks: tuple[str, ...]
+) -> list[str]:
+    """Describe each differing field of ``blocks``: path, saved and device value."""
+    differences: list[str] = []
+
+    def walk(path: str, want: Any, have: Any) -> None:
+        if isinstance(want, dict) and isinstance(have, dict):
+            for key in want:
+                walk(f"{path}.{key}", want[key], have.get(key))
+        elif (
+            isinstance(want, list) and isinstance(have, list) and len(want) == len(have)
+        ):
+            for index, (item, other) in enumerate(zip(want, have, strict=True)):
+                walk(f"{path}[{index}]", item, other)
+        elif want != have:
+            differences.append(f"{path}: saved {want!r}, device {have!r}")
+
+    for block in blocks:
+        walk(block, desired[block], observed[block])
+    return differences
+
+
 def _monotonic() -> float:
     """Event-loop time (patched in tests)."""
     return asyncio.get_running_loop().time()
@@ -730,35 +780,61 @@ class LumalouCoordinator:
                 raise
 
     def _is_reset(self, snapshot: DeviceSnapshot, last_frame_at: float | None) -> bool:
-        """Return whether the device clock shows a power loss.
+        """Return whether a fresh device read shows a power loss.
 
-        A power loss restarts the clock at 05:00 on Sunday. So the clock must
-        be far off and run on Sunday from 05:00 for no longer than since the
-        last frame Home Assistant received from the device (unknown after a
-        restart: capped). An offset of whole hours (DST or a time zone
-        change) counts only when the device also has all factory defaults.
+        Either every setting is at its factory default (hardware: a short
+        outage can reset the settings while the clock keeps running), or the
+        clock restarted at 05:00 on Sunday: far off, running from 05:00 for no
+        longer than since the last frame Home Assistant received from the
+        device (unknown after a restart: capped), and not off by whole hours
+        (DST) unless the device was heard within the last hour. Every input
+        and criterion is logged at info level (no identifiers).
         """
-        if _trusted_now() is None:
-            return False
-        offset = clock_offset_seconds(snapshot.clock, snapshot.read_at)
-        if offset <= RESET_CLOCK_OFFSET:
-            return False
+        clock, now = snapshot.clock, _trusted_now()
+        offset = clock_offset_seconds(clock, snapshot.read_at)
         window = RESET_WINDOW_MAX
         unseen: float | None = None
         if last_frame_at is not None:
             unseen = _monotonic() - last_frame_at
             window = min(window, round(unseen) + RESET_CLOCK_OFFSET)
-        if not is_factory_clock(snapshot.clock, window):
-            return False
-        # A whole-hour offset is DST, unless Home Assistant heard the device
-        # within the last hour (DST changes at night, not while the device
-        # shows the Sunday 05:00 restart) or every setting is factory default
-        # (a power loss that happened to come back near a full hour).
-        return (
-            not is_whole_hour_offset(offset, WHOLE_HOUR_TOLERANCE)
-            or (unseen is not None and unseen <= DST_AMBIGUITY_WINDOW)
-            or is_factory_default(snapshot.profile)
+        factory = is_factory_default(snapshot.profile)
+        far_off = offset > RESET_CLOCK_OFFSET
+        power_loss_clock = is_factory_clock(clock, window)
+        whole_hours = is_whole_hour_offset(offset, WHOLE_HOUR_TOLERANCE)
+        heard_recently = unseen is not None and unseen <= DST_AMBIGUITY_WINDOW
+        reset = now is not None and (
+            factory
+            or (far_off and power_loss_clock and (not whole_hours or heard_recently))
         )
+        _LOGGER.info(
+            "%s clock on connect %02d:%02d:%02d weekday %d, Home Assistant "
+            "%02d:%02d:%02d weekday %d, offset %d s",
+            self.device_name,
+            clock.hour,
+            clock.minute,
+            clock.second,
+            clock.weekday,
+            snapshot.read_at.hour,
+            snapshot.read_at.minute,
+            snapshot.read_at.second,
+            device_weekday(snapshot.read_at),
+            offset,
+        )
+        _LOGGER.info(
+            "%s reset check: factory settings %s, far off %s, power-loss clock "
+            "%s (window %d s), whole hours %s, heard within an hour %s, trusted "
+            "time %s: reset %s",
+            self.device_name,
+            factory,
+            far_off,
+            power_loss_clock,
+            window,
+            whole_hours,
+            heard_recently,
+            now is not None,
+            reset,
+        )
+        return reset
 
     def _detect_restore_needed(
         self, record: ProfileRecord, observed: dict[str, Any], *, reset: bool
@@ -1351,6 +1427,14 @@ class LumalouCoordinator:
         record = self._profile_record
         if not profile_is_complete(record.desired_profile):
             return
+        if block == LIVE_BLOCK and self._live_state().get("currentStage"):
+            # While the soother (or a sleep stage) runs, the light and sound
+            # values the device shows are not proven to persist; keep the
+            # saved ones (they are written back only after a power loss).
+            _LOGGER.info(
+                "%s: not saving %s while the soother runs", self.device_name, values
+            )
+            return
         profile = deepcopy(record.desired_profile)
         profile[block] = {**profile[block], **values}
         if profile != record.desired_profile:
@@ -1872,7 +1956,12 @@ class LumalouCoordinator:
                     "restore_verify" if len(applied) == len(steps) else "restore_write"
                 )
                 raise await self._async_restore_failed(result(error=error)) from err
-            mismatched = changed_blocks(desired, verification.profile)
+            comparable = _verifiable(desired, verification)
+            mismatched = changed_blocks(comparable, verification.profile)
+            for difference in _field_differences(
+                comparable, verification.profile, mismatched
+            ):
+                _LOGGER.warning("Lumalou restore mismatch: %s", difference)
         if mismatched:
             raise await self._async_restore_failed(
                 result(error="restore_mismatch", mismatched_blocks=mismatched)
