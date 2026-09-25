@@ -1603,6 +1603,18 @@ async def test_daily_clock_check_skips_offline_or_locked_devices(rig):
     assert len(rig.clients) == 1
 
 
+async def test_queued_clock_check_skips_after_maintenance(rig):
+    coordinator = rig.coordinator
+    await coordinator.async_request_refresh()
+    coordinator.async_schedule_clock_check(NOW)
+    await coordinator.async_set_maintenance(True)
+
+    await asyncio.gather(*rig.background_tasks)
+
+    assert len(rig.clients) == 1
+    assert not sends(rig)
+
+
 async def test_failed_daily_clock_check_only_drops_the_session(rig):
     coordinator = rig.coordinator
     await coordinator.async_request_refresh()
