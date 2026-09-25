@@ -37,8 +37,11 @@ CONNECT_TIMEOUT = MAX_CONNECT_ATTEMPTS * BLEAK_SAFETY_TIMEOUT + 3 * GATT_TIMEOUT
 RESPONSE_TIMEOUT = 4
 RECOVERY_COOLDOWN = 30
 RECOVERY_MAX_COOLDOWN = 15 * 60
-# An immediate reconnect after a disconnect sometimes fails once on hardware.
-RECONNECT_DELAY = 1.5
+# A connect right after a disconnect fails on hardware ("BLE connection was
+# lost"); this gap is kept from the moment the previous link was closed.
+RECONNECT_DELAY = 2.0
+# Attempts to open a session when the link drops during connect/handshake.
+SESSION_CONNECT_ATTEMPTS = 3
 # The device pushes GLOBAL_STATE right after each write; wait this long for
 # the push that confirms a setting before it is saved to the profile.
 STATE_CONFIRM_TIMEOUT = 3
