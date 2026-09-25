@@ -570,12 +570,6 @@
     "binary_sensor": {
       "connection": {
         "name": "Connection"
-      },
-      "profile_pending": {
-        "name": "Profile pending"
-      },
-      "profile_present": {
-        "name": "Profile present"
       }
     },
     "select": {
@@ -607,12 +601,6 @@
       "firmware": {
         "name": "Firmware"
       },
-      "profile_revision": {
-        "name": "Profile revision"
-      },
-      "profile_verified_revision": {
-        "name": "Profile verified revision"
-      },
       "profile_sync_status": {
         "name": "Profile sync status",
         "state": {
@@ -622,16 +610,6 @@
           "applying": "Applying",
           "partial": "Partially applied",
           "error": "Error"
-        }
-      },
-      "profile_last_error": {
-        "name": "Profile last error",
-        "state": {
-          "ble_apply": "Live change not confirmed",
-          "storage_load": "Saved profile unreadable",
-          "restore_write": "Restore write failed",
-          "restore_verify": "Restore not verified",
-          "restore_mismatch": "Device did not keep the profile"
         }
       }
     },
