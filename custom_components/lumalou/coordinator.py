@@ -121,6 +121,10 @@ _ERRORS = {
     "identity_not_enrolled": "No Lumalou device identity was enrolled",
     "profile_read_failed": "Could not read a complete, consistent Lumalou profile",
     "profile_other_device": "The saved profile was verified on a different device",
+    "command_failed": "Lumalou command failed; it will not be replayed",
+    "refresh_failed": "Lumalou refresh failed",
+    "profile_storage_unhealthy": "Saved profile requires recovery first",
+    "clock_untrusted": "Home Assistant clock is not trustworthy",
 }
 
 
@@ -177,6 +181,8 @@ class LumalouCoordinator:
         self._unsubscribers: list[Callable[[], None]] = []
         self._callbacks_started = False
         self._stopped = False
+        # Log device loss and return once each (quality scale).
+        self._unavailable_logged = False
         self._storage_healthy = True
         # A public offline edit must not turn an uninitialized coordinator into
         # a new empty profile. `async_setup` is the only point at which the
@@ -279,7 +285,7 @@ class LumalouCoordinator:
 
     def _assert_profile_usable(self) -> None:
         if not self._storage_healthy or not self._profile_loaded:
-            raise HomeAssistantError("Saved profile requires recovery first")
+            raise _error("profile_storage_unhealthy")
 
     async def async_setup(self) -> None:
         """Load private intent without connecting or changing the device."""
@@ -370,6 +376,9 @@ class LumalouCoordinator:
         """Invalidate immediately, then close only the detached old session."""
         if self._stopped:
             return
+        if not self._unavailable_logged:
+            _LOGGER.info("%s is unavailable", self.device_name)
+            self._unavailable_logged = True
         self.present = False
         self._cancel_recovery()
         self._recovery_failures = 0
@@ -537,7 +546,7 @@ class LumalouCoordinator:
 
     async def _save(self, record: ProfileRecord) -> None:
         if not self._storage_healthy:
-            raise HomeAssistantError("Saved profile requires recovery before editing")
+            raise _error("profile_storage_unhealthy")
         try:
             await self._store.async_save(record)
         except asyncio.CancelledError:
@@ -573,9 +582,7 @@ class LumalouCoordinator:
         validate_integer(expected_revision, 0, _MAX_REVISION, "expected revision")
         async with self._profile_edit_operation():
             if not self._storage_healthy or not self._profile_loaded:
-                raise HomeAssistantError(
-                    "Saved profile requires recovery before editing"
-                )
+                raise _error("profile_storage_unhealthy")
             if not profile_is_complete(self._profile_record.desired_profile):
                 raise HomeAssistantError("Read the device profile before editing")
             # Merges only supplied logical blocks: never removes saved blocks
@@ -602,6 +609,9 @@ class LumalouCoordinator:
         self._received += 1
         self.data = dict(state)
         self.available = True
+        if self._unavailable_logged:
+            _LOGGER.info("%s is available again", self.device_name)
+            self._unavailable_logged = False
         self._notify()
 
     async def _connect(self) -> SafeLumalouClient:
@@ -690,7 +700,7 @@ class LumalouCoordinator:
                 await self._refresh()
             except Exception as err:
                 await self._disconnect()
-                raise HomeAssistantError("Lumalou refresh failed") from err
+                raise _error("refresh_failed") from err
 
     async def _read_snapshot(self, client: SafeLumalouClient) -> DeviceSnapshot:
         """Read every persistent block once in the current strict session."""
@@ -816,9 +826,7 @@ class LumalouCoordinator:
             await self._send_commands(payloads)
         except Exception as err:
             await self._disconnect()
-            raise HomeAssistantError(
-                "Lumalou command failed; it will not be replayed"
-            ) from err
+            raise _error("command_failed") from err
 
     async def async_set_light(
         self, on: bool, brightness: int | None = None, color: int | None = None
@@ -889,7 +897,7 @@ class LumalouCoordinator:
         async with self._device_write_operation():
             now = _trusted_now()
             if now is None:
-                raise HomeAssistantError("Home Assistant clock is not trustworthy")
+                raise _error("clock_untrusted")
             await self._transient([set_current_date_payload(now)])
             self.last_clock_sync = now
 
@@ -912,9 +920,7 @@ class LumalouCoordinator:
         """Atomically export intent and its CAS revision without identifiers."""
         async with self._operation():
             if not self._storage_healthy:
-                raise HomeAssistantError(
-                    "Saved profile requires recovery before exporting"
-                )
+                raise _error("profile_storage_unhealthy")
             record = self.profile_record
             return {
                 "current_revision": record.revision,
@@ -959,7 +965,7 @@ class LumalouCoordinator:
         validate_integer(expected_revision, 0, _MAX_REVISION, "expected revision")
         async with self._profile_edit_operation():
             if not self._storage_healthy:
-                raise HomeAssistantError("Saved profile requires recovery first")
+                raise _error("profile_storage_unhealthy")
             self._assert_enrolled_device()
             if self._previewed_profile is None or desired != self._previewed_profile:
                 raise HomeAssistantError("Read the device profile again to confirm it")
@@ -1030,7 +1036,7 @@ class LumalouCoordinator:
         async with self._operation():
             self._assert_enrolled_device()
             if not self._storage_healthy:
-                raise HomeAssistantError("Saved profile requires recovery first")
+                raise _error("profile_storage_unhealthy")
             record = self.profile_record
             try:
                 _client, snapshot = await self._async_fresh_snapshot()

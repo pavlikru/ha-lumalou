@@ -437,6 +437,18 @@
     },
     "invalid_profile": {
       "message": "The saved or supplied profile is incomplete or invalid for this action."
+    },
+    "command_failed": {
+      "message": "The Lumalou command failed and will not be retried. Check that Lumalou is nearby and try again."
+    },
+    "refresh_failed": {
+      "message": "Could not read the current Lumalou state. Check that Lumalou is nearby and try again."
+    },
+    "profile_storage_unhealthy": {
+      "message": "The saved Lumalou profile could not be read. Follow the Repairs issue to recover it first."
+    },
+    "clock_untrusted": {
+      "message": "The Home Assistant clock does not look set, so the Lumalou clock was not changed."
     }
   },
   "issues": {
