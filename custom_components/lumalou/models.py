@@ -292,52 +292,6 @@ class ProfileRecord:
         return cls(**_validate_record(value))
 
 
-@dataclass(frozen=True, slots=True)
-class ProfileReconciliationPlan:
-    """Compare two complete persistent profiles without choosing wire order.
-
-    `changed_blocks` is a stable display/test order only; it is not an approved
-    BLE setter sequence. Current time and transient actions are outside this
-    persistent-profile plan.
-    """
-
-    revision: int
-    changed_blocks: tuple[str, ...]
-
-    @property
-    def already_matches(self) -> bool:
-        """Return whether the complete snapshots differ in no persistent block."""
-        return not self.changed_blocks
-
-
-def plan_profile_reconciliation(
-    record: ProfileRecord,
-    observed_profile: Any,
-    *,
-    expected_revision: int,
-) -> ProfileReconciliationPlan:
-    """Plan a revision-bound full-profile diff without any I/O or writes.
-
-    The observed input must be a fresh, complete profile returned by the
-    strict read path. This function cannot establish freshness itself and does
-    not authorize applying setters or claim hardware verification.
-    """
-    validate_integer(expected_revision, 0, 2**63 - 1, "expected revision")
-    if expected_revision != record.revision:
-        raise RevisionConflictError("The saved profile changed")
-    target = require_complete_profile(record.desired_profile)
-    observed = require_complete_profile(observed_profile)
-    changed_blocks = tuple(
-        sorted(
-            field for field in FULL_PROFILE_FIELDS if target[field] != observed[field]
-        )
-    )
-    return ProfileReconciliationPlan(
-        revision=record.revision,
-        changed_blocks=changed_blocks,
-    )
-
-
 def _validate_record(value: Any) -> dict[str, Any]:
     """Validate record metadata and both saved profiles."""
     if not isinstance(value, dict) or set(value) != set(
@@ -378,11 +332,3 @@ class LumalouRuntimeData:
     """Runtime belongs to one config entry; it is not persistent storage."""
 
     coordinator: LumalouCoordinator
-
-    @property
-    def profile_record(self) -> ProfileRecord:
-        """Expose the current record after immutable revision replacement."""
-        return self.coordinator.profile_record
-
-
-RuntimeData = LumalouRuntimeData

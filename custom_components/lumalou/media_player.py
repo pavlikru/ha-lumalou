@@ -70,12 +70,6 @@ class LumalouMediaPlayer(LumalouControlEntity, MediaPlayerEntity):
 
     @property
     def source(self) -> str | None:
-        audio = self.snapshot_value("currentAudio")
-        if audio is not None:
-            try:
-                return Audio(int(audio)).name.lower()
-            except ValueError:
-                return None
         song = self._song()
         # Only these built-in sounds have a one-to-one Audio mapping.
         name = song.name.lower() if song is not None else None

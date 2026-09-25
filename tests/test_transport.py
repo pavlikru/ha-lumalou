@@ -14,7 +14,6 @@ from lumalou.client import FACTORY, RX, SESSION, TX
 from custom_components.lumalou.const import (
     ALLOWED_REQUEST_OPCODES,
     ALLOWED_SEND_OPCODES,
-    DFU_SERVICE,
     FORBIDDEN_OPCODES,
     WRITE_CHARACTERISTICS,
 )
@@ -25,6 +24,7 @@ from custom_components.lumalou.transport import (
 )
 
 FINGERPRINT = "a" * 64
+DFU_SERVICE = "00001530-1212-efde-1523-785feabcd123"  # Nordic DFU; never allowed
 DEVICE = BLEDevice("synthetic-device", "Test", {})
 HASS = SimpleNamespace()
 

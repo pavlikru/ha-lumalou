@@ -47,14 +47,8 @@ async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: LumalouConfigEntry
 ) -> dict[str, Any]:
     """Return diagnostics without addresses, profiles, or raw BLE data."""
-    runtime = entry.runtime_data
-    coordinator = runtime.coordinator
-    profile_record = getattr(runtime, "profile_record", None)
-    last_error = getattr(profile_record, "last_error", None)
-    profile_present = profile_record is not None and bool(
-        getattr(profile_record, "revision", 0)
-        or getattr(profile_record, "desired_profile", None)
-    )
+    coordinator = entry.runtime_data.coordinator
+    profile_record = coordinator.profile_record
 
     restore_needed = getattr(coordinator, "restore_needed", None)
     last_restore = getattr(coordinator, "last_restore_result", None)
@@ -120,7 +114,7 @@ async def async_get_config_entry_diagnostics(
             ),
         },
         "profile": {
-            "present": profile_present,
+            "present": bool(profile_record.revision or profile_record.desired_profile),
             **_selected_attributes(
                 profile_record,
                 (
@@ -133,6 +127,6 @@ async def async_get_config_entry_diagnostics(
                     "maintenance",
                 ),
             ),
-            "last_error": _diagnostic_value(last_error),
+            "last_error": profile_record.last_error,
         },
     }

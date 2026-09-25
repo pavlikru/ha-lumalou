@@ -45,7 +45,6 @@ from custom_components.lumalou.coordinator import (
 from custom_components.lumalou.models import (
     DAYS,
     FULL_PROFILE_FIELDS,
-    LumalouRuntimeData,
     ProfileRecord,
     ProfileValidationError,
     RevisionConflictError,
@@ -620,122 +619,6 @@ async def test_user_confirmed_device_snapshot_saves_as_verified_revision(rig):
     rig.store.async_save.assert_awaited_once()
 
 
-async def test_restore_planning_reads_fresh_complete_diff_without_writing(rig):
-    """A restore preview is fresh and revision-bound but never applies setters."""
-    coordinator = rig.coordinator
-    await verified_profile(rig)
-    await coordinator.async_edit_profile({"volume": 5}, expected_revision=1)
-    record_before_plan = coordinator.profile_record
-    saves_before_plan = rig.store.async_save.await_count
-    journal_before_plan = len(rig.journal)
-
-    plan = await coordinator.async_plan_profile_restore(expected_revision=2)
-
-    assert plan.revision == 2
-    assert plan.changed_blocks == ("volume",)
-    assert not plan.already_matches
-    assert coordinator.profile_record.verified_revision == 1
-    assert coordinator.profile_record.pending
-    assert coordinator.profile_record == record_before_plan
-    assert rig.store.async_save.await_count == saves_before_plan
-    assert not sends(rig, journal_before_plan)
-
-
-async def test_restore_planning_rejects_stale_revision_before_device_read(rig):
-    """A stale preview request cannot initiate another BLE snapshot."""
-    coordinator = rig.coordinator
-    await verified_profile(rig)
-    await coordinator.async_edit_profile({"volume": 5}, expected_revision=1)
-    connects_before_plan = rig.client_factory.call_count
-    saves_before_plan = rig.store.async_save.await_count
-
-    with pytest.raises(RevisionConflictError):
-        await coordinator.async_plan_profile_restore(expected_revision=1)
-
-    assert rig.client_factory.call_count == connects_before_plan
-    assert rig.store.async_save.await_count == saves_before_plan
-
-
-async def test_restore_planning_rejects_incomplete_profile_before_read(rig):
-    """A partial saved profile can never become an automatic restore target."""
-    coordinator = rig.coordinator
-    await coordinator.async_setup()
-
-    with pytest.raises(ProfileValidationError, match="incomplete"):
-        await coordinator.async_plan_profile_restore(expected_revision=0)
-
-    rig.client_factory.assert_not_called()
-    rig.store.async_save.assert_not_awaited()
-
-
-async def test_restore_planning_gates_before_device_read(rig):
-    """No restore preview may open BLE with unavailable state or identity."""
-    coordinator = rig.coordinator
-    await coordinator.async_setup()
-    coordinator._profile_record = replace(coordinator.profile_record, maintenance=True)
-
-    with pytest.raises(HomeAssistantError, match="maintenance mode"):
-        await coordinator.async_plan_profile_restore(expected_revision=0)
-
-    rig.client_factory.assert_not_called()
-    rig.store.async_save.assert_not_awaited()
-
-
-async def test_restore_planning_rechecks_maintenance_after_read(rig):
-    """A maintenance transition during preview prevents a returned plan."""
-    coordinator = rig.coordinator
-    await coordinator.async_setup()
-    snapshot, _ = await coordinator.async_read_profile_snapshot()
-    coordinator._profile_record = ProfileRecord(
-        revision=1, desired_profile=snapshot, verified_revision=1
-    )
-
-    async def read_then_enter_maintenance():
-        coordinator._profile_record = replace(
-            coordinator.profile_record, maintenance=True
-        )
-        return snapshot, 1
-
-    coordinator.async_read_profile_snapshot = AsyncMock(
-        side_effect=read_then_enter_maintenance
-    )
-    saves_before_plan = rig.store.async_save.await_count
-
-    with pytest.raises(HomeAssistantError, match="maintenance mode"):
-        await coordinator.async_plan_profile_restore(expected_revision=1)
-
-    assert rig.store.async_save.await_count == saves_before_plan
-
-
-async def test_restore_planning_rechecks_revision_after_read(rig):
-    """An edit racing the preview read invalidates its captured target revision."""
-    coordinator = rig.coordinator
-    await coordinator.async_setup()
-    snapshot, _ = await coordinator.async_read_profile_snapshot()
-    coordinator._profile_record = ProfileRecord(
-        revision=1, desired_profile=snapshot, verified_revision=1
-    )
-
-    async def read_then_advance_revision():
-        coordinator._profile_record = replace(
-            coordinator.profile_record,
-            revision=2,
-            pending=True,
-            sync_status="pending",
-        )
-        return snapshot, 1
-
-    coordinator.async_read_profile_snapshot = AsyncMock(
-        side_effect=read_then_advance_revision
-    )
-    saves_before_plan = rig.store.async_save.await_count
-
-    with pytest.raises(RevisionConflictError):
-        await coordinator.async_plan_profile_restore(expected_revision=1)
-
-    assert rig.store.async_save.await_count == saves_before_plan
-
-
 async def test_device_snapshot_acceptance_requires_complete_profile_and_cas(rig):
     coordinator = rig.coordinator
     await coordinator.async_setup()
@@ -1301,7 +1184,6 @@ async def test_save_precedes_apply_and_cannot_claim_verified(rig):
     detached = record.desired_profile
     detached["volume"] = 1
     assert rig.coordinator.profile_record.desired_profile == {"volume": 7}
-    assert LumalouRuntimeData(rig.coordinator).profile_record.revision == 1
 
 
 async def test_concurrent_edits_are_serialized_without_mixing_revisions(rig):
