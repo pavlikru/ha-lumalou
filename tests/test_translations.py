@@ -13,7 +13,6 @@ from custom_components.lumalou.config_flow import EDITORS
 from custom_components.lumalou.const import (
     ISSUE_ID_IDENTITY_ENROLLMENT,
     ISSUE_ID_PROFILE_RESTORE_NEEDED,
-    ISSUE_ID_PROFILE_STORAGE,
 )
 from custom_components.lumalou.coordinator import _ERRORS
 
@@ -91,7 +90,6 @@ def test_flow_steps_errors_and_aborts_are_translated() -> None:
 
 def test_issues_and_exceptions_are_translated() -> None:
     assert {
-        ISSUE_ID_PROFILE_STORAGE,
         ISSUE_ID_IDENTITY_ENROLLMENT,
         ISSUE_ID_PROFILE_RESTORE_NEEDED,
     } == set(STRINGS["issues"])

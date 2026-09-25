@@ -13,8 +13,6 @@ PROJECT_ROOT = Path(__file__).parents[1]
 MANIFEST_PATH = PROJECT_ROOT / "custom_components" / "lumalou" / "manifest.json"
 HACS_PATH = PROJECT_ROOT / "hacs.json"
 BRAND_PATH = PROJECT_ROOT / "custom_components" / "lumalou" / "brand"
-TRANSLATIONS_PATH = PROJECT_ROOT / "custom_components" / "lumalou" / "translations"
-STRINGS_PATH = PROJECT_ROOT / "custom_components" / "lumalou" / "strings.json"
 
 
 def load_manifest() -> dict[str, Any]:
@@ -56,22 +54,3 @@ def test_local_brand_icons_match_home_assistant_dimensions() -> None:
         width, height = struct.unpack(">II", contents[16:24])
         assert (width, height) == (expected_size, expected_size)
         assert contents[25] in (4, 6)  # Grayscale/RGB with an alpha channel.
-
-
-def test_profile_storage_repair_translations_are_shipped() -> None:
-    """Keep the profile recovery issue and fix flow translated in both locales."""
-    for path in (
-        STRINGS_PATH,
-        TRANSLATIONS_PATH / "en.json",
-        TRANSLATIONS_PATH / "ru.json",
-    ):
-        issue = json.loads(path.read_text(encoding="utf-8"))["issues"][
-            "profile_storage"
-        ]
-        assert issue["title"]
-        assert "description" not in issue
-        fix_flow = issue["fix_flow"]
-        assert fix_flow["step"]["import_profile"]["description"]
-        assert fix_flow["step"]["import_profile"]["data"]["profile_json"]
-        assert fix_flow["step"]["confirm"]["data"]["confirm"]
-        assert fix_flow["error"]["invalid_profile"]

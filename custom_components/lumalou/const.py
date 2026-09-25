@@ -3,7 +3,6 @@
 from homeassistant.const import Platform
 
 DOMAIN = "lumalou"
-ISSUE_ID_PROFILE_STORAGE = "profile_storage"
 # A verified saved profile no longer matches the device (e.g. power loss).
 ISSUE_ID_PROFILE_RESTORE_NEEDED = "profile_restore_needed"
 # Entries created before signed-device enrollment must be reconfigured once.

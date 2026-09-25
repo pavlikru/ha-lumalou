@@ -444,44 +444,11 @@
     "refresh_failed": {
       "message": "Could not read the current Lumalou state. Check that Lumalou is nearby and try again."
     },
-    "profile_storage_unhealthy": {
-      "message": "The saved Lumalou profile could not be read. Follow the Repairs issue to recover it first."
-    },
     "clock_untrusted": {
       "message": "The Home Assistant clock does not look set, so the Lumalou clock was not changed."
     }
   },
   "issues": {
-    "profile_storage": {
-      "title": "Lumalou profile needs recovery",
-      "fix_flow": {
-        "step": {
-          "import_profile": {
-            "title": "Import a saved Lumalou profile",
-            "description": "Home Assistant could not read the saved Lumalou profile, so automatic profile writes are blocked. Paste JSON returned by the Lumalou export action. It is validated now; neither storage nor the device is changed at this step. The unreadable file will be preserved during confirmed recovery.",
-            "data": {
-              "profile_json": "Exported profile JSON"
-            }
-          },
-          "confirm": {
-            "title": "Confirm profile recovery",
-            "description": "The backup contains {field_count} persistent profile fields. Recovery preserves the unreadable storage bytes in a private backup, then saves this profile as pending. It does not write to Lumalou.",
-            "data": {
-              "confirm": "Replace unreadable storage with this profile"
-            }
-          }
-        },
-        "error": {
-          "invalid_profile": "Enter a valid profile exported by this integration.",
-          "confirmation_required": "Confirm before replacing unreadable storage.",
-          "recovery_failed": "Recovery could not be saved and verified. The unreadable source remains preserved."
-        },
-        "abort": {
-          "entry_removed": "The Lumalou entry was removed.",
-          "entry_not_loaded": "Load the Lumalou entry before repairing its profile."
-        }
-      }
-    },
     "identity_enrollment": {
       "title": "Verify the device for {title}",
       "description": "This Lumalou entry was created before signed device verification, so Home Assistant does not connect to it. Open Settings > Devices & services > Lumalou, choose Reconfigure for this entry and select your Lumalou. Its entities and history are kept."
