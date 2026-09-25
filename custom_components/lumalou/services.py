@@ -79,7 +79,10 @@ def _validation_error(err: ValueError) -> ServiceValidationError:
 async def _async_export_profile(
     hass: HomeAssistant, call: ServiceCall
 ) -> ServiceResponse:
-    response = await _coordinator(hass, call).async_export_profile()
+    try:
+        response = await _coordinator(hass, call).async_export_profile()
+    except ProfileValidationError as err:
+        raise _validation_error(err) from err
     return cast(ServiceResponse, response)
 
 

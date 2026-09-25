@@ -1641,7 +1641,7 @@ async def test_routine_settings_rejects_non_byte_values(
             result["flow_id"],
             user_input={
                 "routine_enabled": False,
-                "routine_music": 256,
+                "routine_music": 16,
                 "routine_volume": 0,
                 "task_reward_sfx": "0",
                 "routine_reward_sfx": "0",

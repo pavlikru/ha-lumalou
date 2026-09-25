@@ -85,7 +85,7 @@ def everything_changed() -> dict:
     desired["clock_settings"] = {"display": False, "brightness": 9, "format": 0}
     desired["routine_settings"] = {
         "enabled": True,
-        "music": 255,
+        "music": 15,
         "volume": 7,
         "task_reward_sfx": 15,
         "routine_reward_sfx": 0,
@@ -137,7 +137,7 @@ def test_full_diff_uses_documented_order_and_only_allowlisted_setters():
     payloads = {step.name: step.payload for step in steps}
     assert payloads["clock_settings"] == bytes([0x79, 0, 0x90])
     assert payloads["playlist"] == bytes([0x40, 12, 2, 2] + [0] * 9)
-    assert payloads["routine_settings.music"] == bytes([0x69, 255, 0xF0])
+    assert payloads["routine_settings.music"] == bytes([0x69, 15, 0xF0])
     assert payloads["routine_settings.volume"] == bytes([0x77, 7])
     assert payloads["sleepy_times"] == bytes([0x48] + [0x19, 0x45] * 7)
     assert payloads["ready_to_rise.times"] == bytes([0x46] + [0x07, 0x05] * 7)

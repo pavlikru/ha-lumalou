@@ -286,8 +286,8 @@ entry with `lumalou.import_profile` and write it with
 - Power-loss detection is a heuristic (a verified profile that no longer
   matches the device). Restore and the write behavior of the individual
   settings are not yet hardware-validated.
-- Routine music and routine volume are read back as 4-bit values; a saved
-  value above 15 can never verify.
+- Routine music and routine volume are read back as 4-bit values, so they
+  are limited to 0–15.
 
 ## Documentation
 

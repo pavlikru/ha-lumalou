@@ -64,7 +64,7 @@
       },
       "read_first": {
         "title": "Read the device profile first",
-        "description": "No complete profile has been read from this Lumalou yet. Read it first: after you confirm it, it becomes the saved profile, device control is unlocked and the profile editors become available. Nothing is written to the device.",
+        "description": "No complete, supported profile is saved for this Lumalou yet. Read it first: after you confirm it, it becomes the saved profile, device control is unlocked and the profile editors become available. Nothing is written to the device.",
         "menu_options": {
           "read_profile": "Read the device profile",
           "behavior": "Behavior options"
@@ -127,11 +127,11 @@
       },
       "routine_settings": {
         "title": "Routine settings",
-        "description": "Edit the saved routine-settings block. Music and volume are raw validated bytes, not named modes. Nothing is sent to the device.",
+        "description": "Edit the saved routine-settings block. Music and volume are raw values from 0 to 15, as Lumalou reports them, not named modes. Nothing is sent to the device.",
         "data": {
           "routine_enabled": "Enable routine mode",
-          "routine_music": "Routine music byte",
-          "routine_volume": "Routine volume byte",
+          "routine_music": "Routine music value",
+          "routine_volume": "Routine volume value",
           "task_reward_sfx": "Task reward sound",
           "routine_reward_sfx": "Routine reward sound"
         }
@@ -280,7 +280,7 @@
       "invalid_basic": "Choose supported light and audio values.",
       "invalid_playlist": "Use at most 12 song IDs from 1 through 12.",
       "invalid_clock_settings": "Choose a supported clock display, brightness, and format.",
-      "invalid_routine_settings": "Use whole-byte music and volume values and supported reward sounds.",
+      "invalid_routine_settings": "Use whole music and volume values from 0 to 15 and supported reward sounds.",
       "confirmation_required": "Confirm before saving.",
       "revision_conflict": "The profile changed while this editor was open. Cancel and reopen it to use the latest revision.",
       "profile_save_failed": "The profile could not be saved. Nothing was changed."
@@ -436,7 +436,7 @@
       "message": "The saved profile changed. Use its current revision and try again."
     },
     "invalid_profile": {
-      "message": "The saved or supplied profile is incomplete or invalid for this action."
+      "message": "The saved or supplied profile is incomplete or contains values Lumalou cannot keep (routine music and volume must be 0 to 15). Read the device profile again or import a valid profile."
     },
     "command_failed": {
       "message": "The Lumalou command failed and will not be retried. Check that Lumalou is nearby and try again."
