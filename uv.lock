@@ -1164,7 +1164,7 @@ dev = [
     { name = "hap-python", specifier = "==5.0.0" },
     { name = "homeassistant", specifier = "==2026.9.2" },
     { name = "homekit-audio-proxy", specifier = "==1.2.1" },
-    { name = "lumalou-gld09", specifier = "==0.2.1" },
+    { name = "lumalou-gld09", specifier = "==0.3.0" },
     { name = "mypy", specifier = "==1.18.2" },
     { name = "pre-commit", specifier = "==4.3.0" },
     { name = "pyqrcode", specifier = "==1.2.1" },
@@ -1480,15 +1480,15 @@ wheels = [
 
 [[package]]
 name = "lumalou-gld09"
-version = "0.2.1"
+version = "0.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bleak" },
     { name = "cryptography" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/df/4f/d88bc851da127a3cfd4fdc6d1c123643201375e5acd8f37c9e875d556853/lumalou_gld09-0.2.1.tar.gz", hash = "sha256:2823110938123c9c4d655fbb302f0349ebe3607ade428d14419ed75be8d48f56", size = 43657, upload-time = "2026-09-25T15:53:33.409Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/44/93/6f2c8ed9af0867a5a3927985b66c4298409a992a47937ed59443aca74e92/lumalou_gld09-0.3.0.tar.gz", hash = "sha256:5cdb16e42059b3c33f5b7296da5f7ed6b5a7d1caa3b543421c780049d0ef81c3", size = 49518, upload-time = "2026-09-25T17:49:26.956Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4b/5c/e3233b8bb345f59e281455d33c76aa2e26823d8fd777362328a0b1fba64b/lumalou_gld09-0.2.1-py3-none-any.whl", hash = "sha256:3fa70cd921712426e13ae0986a8dd73c0b08fba938c58a2c22a65173eded6118", size = 30867, upload-time = "2026-09-25T15:53:32.18Z" },
+    { url = "https://files.pythonhosted.org/packages/c7/fb/977b424a871def92748bd0da951d4cef142d34ad8beb7378de7cee6facb0/lumalou_gld09-0.3.0-py3-none-any.whl", hash = "sha256:b87cb09192718d56dc0b882a7d7daf4e7aa7cd89adc4983e3df3e6bbb55cf9b2", size = 34408, upload-time = "2026-09-25T17:49:25.62Z" },
 ]
 
 [[package]]

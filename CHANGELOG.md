@@ -60,6 +60,9 @@ Based on a hardware check of every Bluetooth command on firmware 0.3.7.
   commands (`0x4D`, `0x4F`) are blocked. Routine start (`0x7B`) and routine
   control (`0x6B` codes 0–4) are allowed as exact payloads after their
   hardware check.
+- Requires `lumalou-gld09` 0.3.0: it ignores the bare frame the device sends
+  after "previous task", "restart" and "complete all", which ended the
+  session with 0.2.1.
 - The **Daily routines** editor picks one task per step by name (each task
   once, up to 11); a day without tasks has no routine. The **Bathroom** task
   is now called **Toilet**.
