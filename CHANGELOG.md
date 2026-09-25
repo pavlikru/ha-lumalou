@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0b5] - 2026-09-25
+
+Fixes from the first Home Assistant run on hardware (Raspberry Pi 4).
+
+### Fixed
+
+- Profile edits, `lumalou.set_routine`, restores and profile reads failed with
+  "saved but could not be written" because the fresh Bluetooth session was
+  opened about 0.4 seconds after the previous one closed, which the device
+  rejects ("BLE connection was lost"). A new connect now waits until the
+  previous session is fully closed and at least 2 seconds after that, and a
+  link that drops while connecting is retried twice.
+- The audio source is shown while the sleep playlist (soother) plays: from
+  the pushed state (built-in sounds, the soother's stage) or the source Home
+  Assistant started.
+- The light shows no palette effect while the soother cycles the colors.
+
 ## [0.1.0b4] - 2026-09-25
 
 Based on a hardware check of every Bluetooth command on firmware 0.3.7.
@@ -225,7 +242,8 @@ Hardware validation: summary of passed phases (anonymized).
 Requires Home Assistant 2026.9.0 or newer and lumalou-gld09==0.2.0.
 -->
 
-[Unreleased]: https://github.com/pavlikru/ha-lumalou/compare/v0.1.0b4...HEAD
+[Unreleased]: https://github.com/pavlikru/ha-lumalou/compare/v0.1.0b5...HEAD
+[0.1.0b5]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b5
 [0.1.0b4]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b4
 [0.1.0b3]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b3
 [0.1.0b2]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b2

@@ -101,9 +101,13 @@ controls stay locked until a device read is confirmed again.
 ## Connection lifecycle
 
 - One session stays open while the device is reachable. Only recovery, a
-  profile read and a restore open sessions, always after a 1.5 second pause
-  following the previous disconnect (an immediate reconnect sometimes fails
-  once on the device). Live commands use the open session: success is the
+  profile read, a restore and a profile edit open sessions. Before a new
+  session the previous one (including one the device dropped) is fully
+  closed, and the new connect starts at least 2 seconds after that close
+  finished (a connect right after a disconnect fails on the device with
+  "BLE connection was lost"). A link that drops during connect or handshake
+  (`DisconnectedError`, `BleakError`) is retried twice more, again 2 seconds
+  after the close; other connect errors fail at once. Live commands use the open session: success is the
   acknowledged write, and the device pushes the resulting state itself. They
   never open a session, read back or reconnect.
 - Advertisement callbacks mark the device present and schedule one recovery

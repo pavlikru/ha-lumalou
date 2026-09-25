@@ -12,10 +12,11 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from bleak.backends.device import BLEDevice
+from bleak.exc import BleakError
 from bleak_retry_connector import BLEAK_SAFETY_TIMEOUT, MAX_CONNECT_ATTEMPTS
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from lumalou import crypto
-from lumalou.client import FreshSessionRequiredError
+from lumalou.client import DisconnectedError, FreshSessionRequiredError
 from lumalou.profile import (
     ClockSettings,
     MusicPlaylist,
@@ -2506,23 +2507,129 @@ async def test_commands_need_a_pushed_state(rig):
     assert not sends(rig)
 
 
-async def test_reconnect_waits_for_the_hardware_gap(rig):
-    """Hardware: an immediate reconnect after a disconnect sometimes fails."""
-    coordinator = rig.coordinator
-    await coordinator.async_setup()
-    await live(rig)
-    with (
-        patch("custom_components.lumalou.coordinator.RECONNECT_DELAY", 1.5),
-        patch(
-            "custom_components.lumalou.coordinator.asyncio.sleep", new=AsyncMock()
-        ) as sleep,
-    ):
-        await coordinator._disconnect()
-        await live(rig)
+@pytest.fixture
+def fake_clock():
+    """A controllable event-loop clock; sleeping advances it."""
+    clock = SimpleNamespace(now=1000.0, sleeps=[])
 
-    (delay,) = [call.args[0] for call in sleep.await_args_list]
-    assert 0 < delay <= 1.5
+    async def sleep(delay):
+        clock.sleeps.append(delay)
+        clock.now += delay
+
+    with (
+        patch(
+            "custom_components.lumalou.coordinator._monotonic",
+            side_effect=lambda: clock.now,
+        ),
+        patch("custom_components.lumalou.coordinator.asyncio.sleep", new=sleep),
+        patch("custom_components.lumalou.coordinator.RECONNECT_DELAY", 2.0),
+    ):
+        yield clock
+
+
+def slow_disconnects(rig, clock, seconds: float) -> None:
+    """Each session close takes ``seconds`` of the fake clock."""
+    original = rig.client_factory.side_effect
+
+    def create(*args, **kwargs):
+        client = original(*args, **kwargs)
+        close = client.disconnect.side_effect
+
+        async def disconnect():
+            clock.now += seconds
+            await close()
+
+        client.disconnect.side_effect = disconnect
+        return client
+
+    rig.client_factory.side_effect = create
+
+
+async def test_reconnect_gap_counts_from_the_finished_close(rig, fake_clock):
+    """Hardware: a connect right after a disconnect fails; keep 2 s after it."""
+    coordinator = rig.coordinator
+    slow_disconnects(rig, fake_clock, 5.0)
+    await verified_profile(rig)
+    fake_clock.sleeps.clear()
+
+    # A write path that needs a fresh session closes the live one first.
+    await coordinator.async_restore_profile(1, confirmed=True)
+
+    assert fake_clock.sleeps == [2.0]
     assert coordinator.available
+
+
+async def test_lost_session_is_closed_before_the_next_connect(rig, fake_clock):
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    old = rig.clients[-1]
+    old.lost(old)  # the link dropped; the old client still cleans up
+    assert old.connected
+    start = len(rig.journal)
+
+    await coordinator.async_restore_profile(1, confirmed=True)
+
+    events = [item[0] for item in rig.journal[start:]]
+    assert events[:2] == ["disconnect", "connect"]
+    assert not old.connected
+    assert fake_clock.sleeps == [2.0]
+
+
+@pytest.mark.parametrize(
+    "error", [DisconnectedError("BLE connection was lost"), BleakError("lost")]
+)
+async def test_connect_is_retried_twice_after_a_dropped_link(rig, fake_clock, error):
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    original = rig.client_factory.side_effect
+    failures = {"left": 2}
+
+    def flaky(*args, **kwargs):
+        client = original(*args, **kwargs)
+        connect = client.connect.side_effect
+
+        async def maybe_fail(**kwargs):
+            if failures["left"]:
+                failures["left"] -= 1
+                raise error
+            await connect(**kwargs)
+
+        client.connect.side_effect = maybe_fail
+        return client
+
+    rig.client_factory.side_effect = flaky
+    clients = len(rig.clients)
+    fake_clock.sleeps.clear()
+
+    result = await coordinator.async_restore_profile(1, confirmed=True)
+
+    assert result.verified
+    # Three attempts for the read session, then the verification session.
+    assert len(rig.clients) - clients >= 3
+    assert fake_clock.sleeps[:3] == [2.0, 2.0, 2.0]
+
+    failures["left"] = 3
+    with pytest.raises(HomeAssistantError, match="Could not read a complete"):
+        await coordinator.async_restore_profile(1, confirmed=True)
+    assert failures["left"] == 0
+
+
+async def test_other_connect_errors_are_not_retried(rig, fake_clock):
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    original = rig.client_factory.side_effect
+
+    def failing(*args, **kwargs):
+        client = original(*args, **kwargs)
+        client.connect.side_effect = TimeoutError("handshake")
+        return client
+
+    rig.client_factory.side_effect = failing
+    clients = len(rig.clients)
+
+    with pytest.raises(HomeAssistantError, match="Could not read a complete"):
+        await coordinator.async_restore_profile(1, confirmed=True)
+    assert len(rig.clients) == clients + 1
 
 
 @pytest.mark.parametrize("reason", ["maintenance", "absent", "no_device"])
@@ -2710,3 +2817,14 @@ async def test_whole_hour_power_loss_is_a_reset_only_with_factory_defaults(
         assert coordinator.restore_needed is None
     else:
         assert not coordinator.repair_needed.reset
+
+
+async def test_played_source_is_remembered_while_music_plays(rig):
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+
+    await coordinator.async_play(1)
+    assert coordinator.playing_source == 1
+
+    await coordinator.async_stop_audio()  # the pushed state shows no music
+    assert coordinator.playing_source is None

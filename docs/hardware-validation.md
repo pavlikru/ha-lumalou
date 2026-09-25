@@ -15,7 +15,11 @@ replace the earlier design assumptions.
   central.
 - The device advertises after power-on without pairing mode.
 - An immediate reconnect after a disconnect sometimes fails once; a pause of
-  about 1.5 seconds avoids it.
+  about 1.5 seconds avoids it. In Home Assistant (0.1.0b4, Pi 4) a fresh
+  session opened about 0.4 seconds after the live one closed failed twice in
+  a row with "BLE connection was lost", while the recovery reconnect a few
+  seconds later worked; 0.1.0b5 keeps 2 seconds from the finished close and
+  retries twice.
 - `establish_connection` through the Home Assistant Bluetooth stack works on a
   Raspberry Pi 4 onboard adapter.
 
