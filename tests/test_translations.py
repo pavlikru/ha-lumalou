@@ -52,11 +52,7 @@ def test_flow_steps_errors_and_aborts_are_translated() -> None:
         "already_in_progress",
         "reconfigure_successful",
     } <= set(config["abort"])
-    assert _literals(r'"base"\]? ?[:=] ?"(\w+)"', config_source) | {
-        "cannot_connect",
-        "identity_unconfirmed",
-        "unsupported_product_code",
-    } == set(config["error"])
+    assert _literals(r'"base"\]? ?[:=] ?"(\w+)"', config_source) == set(config["error"])
 
     edit_steps = _literals(r'_async_edit\(\s*"(\w+)"', options_source)
     option_steps = (

@@ -21,6 +21,7 @@ from custom_components.lumalou.const import (
 from custom_components.lumalou.transport import (
     RestrictedLumalouTransport,
     SafeLumalouClient,
+    async_read_device_fingerprint,
 )
 
 FINGERPRINT = "a" * 64
@@ -340,3 +341,41 @@ async def test_changed_upstream_command_target_is_blocked_before_write(
 
     assert backend.write_gatt_char.await_count == writes_before
     assert not client.connected
+
+
+async def test_fingerprint_probe_reads_only_factory_and_disconnects(
+    backend, ha_bluetooth
+):
+    backend.read_gatt_char.return_value = bytearray(b"synthetic token")
+    with patch(
+        "custom_components.lumalou.transport.parse_factory_device_fingerprint",
+        return_value=FINGERPRINT,
+    ) as parse:
+        assert await async_read_device_fingerprint(HASS, DEVICE) == FINGERPRINT
+
+    parse.assert_called_once_with(b"synthetic token")
+    backend.read_gatt_char.assert_awaited_once_with(FACTORY)
+    backend.write_gatt_char.assert_not_awaited()
+    backend.start_notify.assert_not_awaited()
+    backend.disconnect.assert_awaited_once()
+
+
+async def test_fingerprint_probe_disconnects_when_the_read_fails(backend, ha_bluetooth):
+    backend.read_gatt_char.side_effect = OSError("synthetic")
+    backend.disconnect.side_effect = OSError("teardown failure is not reported")
+
+    with pytest.raises(OSError, match="synthetic"):
+        await async_read_device_fingerprint(HASS, DEVICE)
+
+    backend.disconnect.assert_awaited_once()
+
+
+async def test_fingerprint_probe_rejects_an_unauthenticated_token(
+    backend, ha_bluetooth
+):
+    backend.read_gatt_char.return_value = bytearray(b"not a signed token")
+
+    with pytest.raises(ValueError):
+        await async_read_device_fingerprint(HASS, DEVICE)
+
+    backend.disconnect.assert_awaited_once()

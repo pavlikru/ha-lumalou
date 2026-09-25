@@ -15,7 +15,7 @@
       },
       "bluetooth_confirm": {
         "title": "Add {name}?",
-        "description": "Confirm that this is your Lumalou. Home Assistant checks standard Bluetooth Device Information for conflicts and verifies the signed device identity. A private fingerprint binds later sessions. Read the complete profile before control is enabled; no identifier is shown or logged.",
+        "description": "Confirm that this is your Lumalou. Home Assistant reads and verifies its signed device identity; nothing on the device is changed. A private fingerprint binds later sessions. Read the complete profile before control is enabled; no identifier is shown or logged.",
         "data": {},
         "data_description": {}
       },
@@ -34,7 +34,6 @@
       "cannot_connect": "Could not connect for the read-only identity probe. Make sure no other app is connected and try again.",
       "device_unavailable": "The selected device is no longer available. Try again.",
       "identity_unconfirmed": "Home Assistant could not verify a supported device identity. No device entry was created.",
-      "unsupported_product_code": "The device explicitly reports a different model. This integration cannot use it.",
       "wrong_device": "The selected Lumalou is not the device bound to this entry. Choose the right device, or add the other one as a new entry."
     },
     "abort": {
