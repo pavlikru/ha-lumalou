@@ -17,17 +17,18 @@ starts its own scanner and never accesses the DFU service.
 
 ```text
 custom_components/lumalou/
-├── __init__.py        Entry setup/unload/removal, restore Repair, daily clock check
+├── __init__.py        Entry setup/unload/removal, restore Repair
 ├── config_flow.py     Discovery, confirmation, reconfigure, options/profile editors
-├── coordinator.py     One serialized BLE session, reconnects, restore, clock sync
+├── coordinator.py     One live BLE session fed by device pushes, reconnects,
+│                      reset detection, restore, clock sync
 ├── restore.py         Pure readback mapping and ordered restore steps (no I/O)
 ├── transport.py       HA connection path, restricted GATT/opcode surface and the
 │                      read-only signed-identity probe
 ├── models.py          Profile schema, validation, revisions
 ├── storage.py         Per-entry profile on Home Assistant's Store helper
 ├── entity.py          Shared entity base and device info
-├── light.py, media_player.py, select.py, switch.py, button.py,
-│   sensor.py, binary_sensor.py
+├── light.py, media_player.py, select.py, switch.py, number.py,
+│   button.py, sensor.py, binary_sensor.py
 ├── services.py        Entry-targeted profile actions
 ├── repairs.py         Fix flow for device settings that differ from the profile
 └── diagnostics.py     Allowlisted, redacted diagnostics
@@ -52,9 +53,11 @@ custom_components/lumalou/
    profile read has been previewed and confirmed by the user. The same signed
    key at a new address (discovery or Reconfigure) only updates the address.
 
-There are no config entry or storage migrations: no version was released. An
-entry without a fingerprint (from an early development build) fails setup with
-a translated error asking to remove and re-add it.
+There are no config entry or storage migrations: no stable version was
+released. A saved profile of an older schema is ignored on load, which locks
+the controls until the device profile is read again. An entry without a
+fingerprint (from an early development build) fails setup with a translated
+error asking to remove and re-add it.
 
 This is per-device enrollment. It does not prove which retail model a device
 is, and it makes no claim about other hardware revisions.
@@ -69,7 +72,7 @@ with a warning. Without a usable saved profile the entry starts empty and
 controls stay locked until a device read is confirmed again.
 
 - `desired_profile` is the last user-confirmed, revisioned profile of
-  persistent configuration only (see `docs/profile-schema.md`). Every edit
+  everything a power loss resets (see `docs/profile-schema.md`). Every edit
   checks the expected revision (compare-and-swap) under the coordinator lock.
 - A revision is **verified** when a fresh complete read on the enrolled device
   key matched it (`verified_revision`, `verified_fingerprint`): a confirmed
@@ -77,15 +80,24 @@ controls stay locked until a device read is confirmed again.
   a pending revision. Editor saves and imports are pending until then.
 - Editors and imports require a complete profile; they never invent default
   values and never drop saved blocks.
-- The observed state is the latest fresh device notification. Light
-  brightness and color, volume and timers live only there; live controls send
-  their command and never change the saved profile. A plain light "on" uses
-  the last non-zero brightness seen (5 before any), because the device
-  reports 0 while the light is off.
-- One-off commands (play, stop, light off) are never queued or replayed.
+- The observed state is the latest GLOBAL_STATE the live session received,
+  pushed by the device after every command and button press. Light color and
+  on/off and the playing state live only there.
+- Volume, light brightness, the timers and the clock settings are also
+  profile settings. When Home Assistant changes one and the next pushed state
+  confirms it, the saved profile is updated in place (same revision, verified
+  status kept), so a power-loss restore brings back the last choice. Changes
+  made with the device buttons are shown but not saved.
+- One-off commands (play, stop, light on/off) are never queued or replayed.
 
 ## Connection lifecycle
 
+- One session stays open while the device is reachable. Only recovery, a
+  profile read and a restore open sessions, always after a 1.5 second pause
+  following the previous disconnect (an immediate reconnect sometimes fails
+  once on the device). Live commands use the open session: success is the
+  acknowledged write, and the device pushes the resulting state itself. They
+  never open a session, read back or reconnect.
 - Advertisement callbacks mark the device present and schedule one recovery
   pass when no session is live: at most one per 30 seconds, with exponential
   backoff up to 15 minutes on failure. A remote link loss of the live session
@@ -96,13 +108,19 @@ controls stay locked until a device read is confirmed again.
   60 seconds off (never when the host clock looks unset), marks a pending
   revision verified if the device already matches it exactly, and compares
   the profile with the current verified revision.
-- At 03:05 local time and when the Home Assistant time zone changes, a
-  connected, verified entry reads the device clock in a fresh session and
-  corrects it the same way (DST and drift during long sessions).
-- A mismatch sets `restore_needed` and raises the `profile_restore_needed`
-  Repair. With the `auto_restore` option on, the coordinator runs the restore
-  executor instead, at most twice per detected event; then the Repair takes
-  over with error severity.
+- The device pushes CURRENT_DATE at least every minute. A pushed clock more
+  than 60 seconds off (DST, drift) is corrected in the live session, at most
+  once an hour; a failed automatic write pauses automatic writes for an hour.
+- A device clock more than 10 minutes off on reconnect is the **reset marker**
+  (a power loss resets it to 05:00 on Sunday). With it, every block is
+  compared; without it, the light and sound block is skipped because the
+  device buttons change it in everyday use. A difference sets
+  `restore_needed` (`reset` stays set until the event is resolved). A reset
+  with the `auto_restore` option on (the default) runs the restore executor,
+  at most twice per event; a failed attempt ends the session so the next one
+  starts fresh. The `profile_restore_needed` Repair is raised for a
+  difference without a reset, with automatic restore off, or once the
+  attempts are used up (error severity).
 - The unavailability callback invalidates state and detaches the session
   synchronously, then closes it in the background.
 - All device operations run under one lock; each connection has a generation
@@ -115,10 +133,12 @@ controls stay locked until a device read is confirmed again.
 `async_restore_profile(expected_revision, confirmed=True)` runs under the
 coordinator lock: revision check, new strict session with a complete read,
 clock correction, the minimal setter writes from `restore.build_restore_steps`
-in a fixed order (clock display, playlist, routine sound and volume, weekly
-times, alarms and routines, then the Ready-to-Rise and routine on/off flags),
-then a new session with a complete read. No light or volume setter is part of
-a restore. Only a full
+in a fixed order (clock settings, playlist, light and playlist timers, volume
+and LED brightness, routine sound and volume, weekly times, alarms and
+routines, then the Ready-to-Rise and routine on/off flags), then a new session
+with a complete read. Color, play/stop, soother, nap and routine start are
+never part of a restore; the timer, volume and brightness setters were
+verified on hardware not to switch light or sound on. Only a full
 match marks the revision verified; otherwise `ProfileRestoreError` reports
 the applied steps and the error (`restore_write`, `restore_verify` or
 `restore_mismatch`). The executor never retries by itself and refuses a
@@ -127,20 +147,22 @@ revision verified on a different device key.
 ## Command policy
 
 Only allowlisted application opcodes are sent: live controls (light, audio,
-volume, timers, clock, state request), the profile setters used by restore,
-and read-only profile queries. User-state refusals (controls locked,
+volume, timers, clock, clock settings, state request), the profile setters
+used by restore, and read-only profile queries (never the nap alarm queries,
+which time out on the device). User-state refusals (controls locked,
 maintenance, untrusted host clock) are `ServiceValidationError`; device
-failures are translated `HomeAssistantError`. Pairing-complete (`0x34`) and time-prescaler
-(`0x52`) are explicitly denied; aggregate state, nap, routine start and
-firmware commands are not in any allowlist. The transport wrapper exposes only
+failures are translated `HomeAssistantError`. Aggregate SET_GLOBAL_STATE (`0x01`), the soother
+SET_GLOBAL_ON (`0x03`), pairing-complete (`0x34`) and time-prescaler (`0x52`)
+are explicitly denied; nap, routine start and firmware commands are not in
+any allowlist. The transport wrapper exposes only
 the factory read, RX subscription, SESSION write and TX write characteristics
 and connects through Home Assistant's `establish_connection`.
 
 ## Apple Home
 
 Only standard entity platforms are used, so HomeKit Bridge can export the light
-(on/off, brightness) and the speaker (on/off switch) without Apple-specific
-code. Configuration and diagnostic entities carry an entity category and are
+(on/off, brightness) and the speaker (on/off switch; on is the soother)
+without Apple-specific code. Configuration and diagnostic entities carry an entity category and are
 excluded from HomeKit by default.
 
 ## Library fork
