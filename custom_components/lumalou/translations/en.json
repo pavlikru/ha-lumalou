@@ -52,7 +52,6 @@
         "description": "Edit the saved profile that Home Assistant keeps for this Lumalou. Saving an editor creates a pending revision and does not change the device; the `lumalou.restore_profile` action writes it to Lumalou and verifies it. Reading the device profile again replaces the saved profile.",
         "menu_options": {
           "read_profile": "Read the device profile",
-          "basic": "Light and audio values",
           "playlist": "Playlist",
           "clock_settings": "Clock settings",
           "routine_settings": "Routine settings",
@@ -71,30 +70,19 @@
       },
       "read_profile_confirm": {
         "title": "Confirm device profile read",
-        "description": "Fresh device read: light brightness {brightness}, color {color}, volume {volume}; {song_count} playlist songs; {wake_count} Ready-to-Rise times, {bedtime_count} Sleepy times and {alarm_count} alarms per week; routines on {routine_days} days with {task_count} tasks. It replaces the saved profile at revision {revision}. Nothing is written to Lumalou.",
+        "description": "Fresh device read: {song_count} playlist songs; {wake_count} Ready-to-Rise times, {bedtime_count} Sleepy times and {alarm_count} alarms per week; routines on {routine_days} days with {task_count} tasks. It replaces the saved profile at revision {revision}. Light brightness, color, volume and timers are current state, not profile settings. Nothing is written to Lumalou.",
         "data": {
           "confirm": "Save this complete device snapshot as the desired profile"
         }
       },
       "behavior": {
         "title": "Behavior options",
-        "description": "Automatic restore is off by default. When it is on and Lumalou reappears with settings that differ from the saved verified profile (for example after a power loss reset them), Home Assistant writes the saved profile back and checks it with a fresh read. Any other change made on the device, including in the Fisher-Price app, is overwritten too. If two attempts fail, a repair is raised instead. When it is off, a repair lets you choose which settings to keep.",
+        "description": "Automatic restore is off by default. When it is on and Lumalou reappears with schedules, routines, playlist, clock or routine settings that differ from the saved verified profile (for example after a power loss reset them), Home Assistant writes the saved profile back and checks it with a fresh read. Light, volume and timers are never restored. Any other change of these settings made on the device, including in the Fisher-Price app, is overwritten too. If two attempts fail, a repair is raised instead. When it is off, a repair lets you choose which settings to keep.",
         "data": {
           "auto_restore": "Restore the saved profile automatically"
         },
         "data_description": {
           "auto_restore": "Applies only to a profile that was verified on this device. Nothing is restored while maintenance mode is on."
-        }
-      },
-      "basic": {
-        "title": "Light and audio values",
-        "description": "Values from the saved profile. Saving creates a pending revision; nothing is sent to the device.",
-        "data": {
-          "brightness": "Light brightness",
-          "color": "Light color",
-          "light_duration": "Light duration",
-          "volume": "Audio volume",
-          "playlist_duration": "Playlist duration"
         }
       },
       "playlist": {
@@ -242,13 +230,6 @@
           "confirm": "Save this routine"
         }
       },
-      "basic_confirm": {
-        "title": "Confirm light and audio values",
-        "description": "Revision {revision}: brightness {brightness}, color {color}, light duration {light_duration}, volume {volume}, playlist duration {playlist_duration}. Saving changes only the private profile; it does not write to the device.",
-        "data": {
-          "confirm": "Save these values"
-        }
-      },
       "playlist_confirm": {
         "title": "Confirm playlist",
         "description": "Revision {revision}: {song_count} song rows: {songs}. Saving changes only the private profile; it does not write to the device.",
@@ -276,7 +257,6 @@
       "invalid_schedule_copy": "Choose supported source and target days for schedule copying.",
       "invalid_schedule_alarm": "Choose a supported alarm offset and sound.",
       "invalid_routine_tasks": "Use no more than 12 supported task rows and a valid minute-resolution time.",
-      "invalid_basic": "Choose supported light and audio values.",
       "invalid_playlist": "Use at most 12 song IDs from 1 through 12.",
       "invalid_clock_settings": "Choose a supported clock display, brightness, and format.",
       "invalid_routine_settings": "Use whole music and volume values from 0 to 15 and supported reward sounds.",
@@ -570,7 +550,6 @@
           "saved": "Saved",
           "pending": "Pending",
           "applying": "Applying",
-          "partial": "Partially applied",
           "error": "Error"
         }
       }

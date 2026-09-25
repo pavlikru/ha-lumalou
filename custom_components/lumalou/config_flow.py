@@ -26,7 +26,6 @@ from .const import (
 )
 from .models import (
     DAYS,
-    PROFILE_RANGES,
     ROUTINE_NIBBLE_MAX,
     RevisionConflictError,
     profile_is_complete,
@@ -40,7 +39,6 @@ MANUFACTURER_PREFIX = b"MB"
 MAX_ROUTINE_TASKS = 12
 MAX_PLAYLIST_SONGS = 12
 EDITORS = (
-    "basic",
     "playlist",
     "clock_settings",
     "routine_settings",
@@ -68,9 +66,6 @@ def _read_profile_placeholders(profile: dict[str, Any]) -> dict[str, str]:
     """Summarize a device read as numbers; the sentence itself is translated."""
     routines = profile["routines"].values()
     counts = {
-        "brightness": profile["brightness"],
-        "color": profile["color"],
-        "volume": profile["volume"],
         "song_count": len(profile["playlist"]),
         "wake_count": sum(
             value is not None for value in profile["ready_to_rise"]["times"].values()
@@ -377,10 +372,6 @@ def _copy_targets(value: Any, source: str) -> list[str]:
     return [day for day in DAYS if day in value and day != source]
 
 
-def _parse_basic(user_input: dict[str, Any]) -> dict[str, Any]:
-    return {name: int(user_input[name]) for name in PROFILE_RANGES}
-
-
 def _parse_playlist(user_input: dict[str, Any]) -> dict[str, Any]:
     rows = (f"song_{index}" for index in range(1, MAX_PLAYLIST_SONGS + 1))
     return {"playlist": [int(user_input[row]) for row in rows if row in user_input]}
@@ -506,14 +497,6 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
         return await self._async_confirm()
 
     # Offline block editors.
-
-    async def async_step_basic(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Edit private light and audio values."""
-        return await self._async_edit(
-            "basic", user_input, self._basic_schema, _parse_basic
-        )
 
     async def async_step_playlist(
         self, user_input: dict[str, Any] | None = None
@@ -731,7 +714,6 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
         )
 
     # Each preview has its own translated step; all submit to one handler.
-    async_step_basic_confirm = _async_confirm
     async_step_playlist_confirm = _async_confirm
     async_step_clock_settings_confirm = _async_confirm
     async_step_routine_settings_confirm = _async_confirm
@@ -744,9 +726,7 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
         assert self._draft is not None
         draft = self._draft
         summary: dict[str, Any] = {"revision": self._revision}
-        if self._editor == "basic":
-            summary |= {name: draft[name] for name in PROFILE_RANGES}
-        elif self._editor == "playlist":
+        if self._editor == "playlist":
             playlist = draft["playlist"]
             summary |= {
                 "song_count": len(playlist),
@@ -852,18 +832,6 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
         return deepcopy(self._draft["routines"])
 
     # Form schemas, prefilled from the complete draft.
-
-    def _basic_schema(self) -> vol.Schema:
-        """Return native selectors for private light and audio values."""
-        assert self._draft is not None
-        return vol.Schema(
-            {
-                vol.Required(name, default=str(self._draft[name])): _select(
-                    _options(first, last)
-                )
-                for name, (first, last) in PROFILE_RANGES.items()
-            }
-        )
 
     def _playlist_schema(self) -> vol.Schema:
         """Return twelve fixed ordered playlist rows, including empty rows."""

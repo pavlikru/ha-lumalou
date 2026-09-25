@@ -114,11 +114,6 @@ def complete_profile() -> dict:
     """Synthetic full device snapshot used only for options-flow tests."""
     empty_week = {day: None for day in DAYS}
     return {
-        "brightness": 5,
-        "color": 2,
-        "light_duration": 1,
-        "volume": 3,
-        "playlist_duration": 2,
         "playlist": [1, 2, 3],
         "clock_settings": {"display": True, "brightness": 2, "format": 1},
         "routine_settings": {
@@ -254,13 +249,13 @@ async def test_new_entry_opens_profile_source_options_flow(
 
 @pytest.mark.parametrize(
     "desired_profile",
-    [{}, {"volume": 2, "playlist": [1]}],
-    ids=["empty", "partial_legacy"],
+    [{}, {"playlist": [1]}],
+    ids=["empty", "partial"],
 )
 async def test_without_a_device_read_only_read_and_behavior_are_offered(
     hass: HomeAssistant, desired_profile: dict[str, Any]
 ) -> None:
-    """Editors never start from fabricated defaults or a partial legacy profile."""
+    """Editors never start from fabricated defaults or a partial profile."""
     entry, coordinator = profile_entry(hass, desired_profile=desired_profile)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
@@ -285,7 +280,6 @@ async def test_read_profile_menu_offers_editors_without_json_import(
     assert result["step_id"] == "init"
     assert result["menu_options"] == [
         "read_profile",
-        "basic",
         "playlist",
         "clock_settings",
         "routine_settings",
@@ -300,14 +294,14 @@ async def test_read_profile_menu_offers_editors_without_json_import(
     [(False, "entry_not_loaded"), (True, "profile_not_read")],
 )
 @pytest.mark.parametrize(
-    "step", ["basic", "playlist", "clock_settings", "routine_settings", "routine"]
+    "step", ["playlist", "clock_settings", "routine_settings", "routine"]
 )
 async def test_editor_step_aborts_without_a_complete_profile(
     hass: HomeAssistant, loaded: bool, reason: str, step: str
 ) -> None:
     """A stale menu cannot open an editor without a loaded, read profile."""
     if loaded:
-        entry, _ = profile_entry(hass, desired_profile={"volume": 2})
+        entry, _ = profile_entry(hass, desired_profile={"playlist": [2]})
     else:
         entry = MockConfigEntry(domain=DOMAIN, unique_id=ADDRESS, data={})
         entry.add_to_hass(hass)
@@ -337,9 +331,6 @@ async def test_first_run_read_previews_and_imports_complete_device_snapshot(
     assert result["step_id"] == "read_profile_confirm"
     assert result["description_placeholders"] == {
         "revision": "7",
-        "brightness": "5",
-        "color": "2",
-        "volume": "3",
         "song_count": "3",
         "wake_count": "0",
         "bedtime_count": "0",
@@ -362,7 +353,7 @@ async def test_first_run_read_previews_and_imports_complete_device_snapshot(
 async def test_failed_device_read_does_not_preview_or_change_profile(
     hass: HomeAssistant,
 ) -> None:
-    entry, coordinator = profile_entry(hass, desired_profile={"volume": 2})
+    entry, coordinator = profile_entry(hass, desired_profile={"playlist": [2]})
     coordinator.async_read_profile_snapshot.side_effect = HomeAssistantError(
         "incomplete device snapshot"
     )
@@ -1259,44 +1250,6 @@ async def test_routine_invalid_and_overlength_input_rejected(
     coordinator.async_edit_profile.assert_not_awaited()
 
 
-async def test_basic_editor_saves_only_confirmed_private_values(
-    hass: HomeAssistant,
-) -> None:
-    """Light and audio values stay in a draft until one final CAS save."""
-    entry, coordinator = profile_entry(hass)
-    result = await start_editor(hass, entry, "basic")
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        user_input={
-            "brightness": "9",
-            "color": "0",
-            "light_duration": "5",
-            "volume": "7",
-            "playlist_duration": "6",
-        },
-    )
-
-    assert result["step_id"] == "basic_confirm"
-    coordinator.async_edit_profile.assert_not_awaited()
-
-    with patch.object(hass.config_entries, "async_schedule_reload") as schedule_reload:
-        result = await hass.config_entries.options.async_configure(
-            result["flow_id"], user_input={"confirm": True}
-        )
-
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    changes, expected_revision = coordinator.async_edit_profile.await_args.args
-    assert expected_revision == 7
-    assert changes == {
-        "brightness": 9,
-        "color": 0,
-        "light_duration": 5,
-        "volume": 7,
-        "playlist_duration": 6,
-    }
-    schedule_reload.assert_not_called()
-
-
 async def test_playlist_fixed_rows_preserve_order_duplicates_and_clear(
     hass: HomeAssistant,
 ) -> None:
@@ -1353,18 +1306,6 @@ async def test_routine_settings_rejects_non_byte_values(
 @pytest.mark.parametrize(
     ("section", "step", "user_input", "error"),
     [
-        (
-            "basic",
-            "async_step_basic",
-            {
-                "brightness": "10",
-                "color": "0",
-                "light_duration": "0",
-                "volume": "0",
-                "playlist_duration": "0",
-            },
-            "invalid_basic",
-        ),
         ("playlist", "async_step_playlist", {"song_1": "13"}, "invalid_playlist"),
         (
             "clock_settings",
@@ -1449,40 +1390,24 @@ async def test_playlist_schema_rejects_unknown_rows(
     coordinator.async_edit_profile.assert_not_awaited()
 
 
-async def test_basic_confirmation_retains_draft_after_cas_conflict(
+async def test_editor_confirmation_retains_draft_after_cas_conflict(
     hass: HomeAssistant,
 ) -> None:
-    """A stale basic editor does not overwrite a newer private profile revision."""
+    """A stale editor does not overwrite a newer private profile revision."""
     save = AsyncMock(side_effect=RevisionConflictError("stale"))
     entry, coordinator = profile_entry(hass, save=save)
-    result = await start_editor(hass, entry, "basic")
+    result = await start_editor(hass, entry, "playlist")
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        user_input={
-            "brightness": "0",
-            "color": "0",
-            "light_duration": "0",
-            "volume": "0",
-            "playlist_duration": "0",
-        },
+        result["flow_id"], user_input={"song_1": "2"}
     )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], user_input={"confirm": True}
     )
 
     assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "basic_confirm"
+    assert result["step_id"] == "playlist_confirm"
     assert result["errors"] == {"base": "revision_conflict"}
-    coordinator.async_edit_profile.assert_awaited_once_with(
-        {
-            "brightness": 0,
-            "color": 0,
-            "light_duration": 0,
-            "volume": 0,
-            "playlist_duration": 0,
-        },
-        7,
-    )
+    coordinator.async_edit_profile.assert_awaited_once_with({"playlist": [2]}, 7)
 
 
 def _probe_patch(fingerprint: str = FINGERPRINT):

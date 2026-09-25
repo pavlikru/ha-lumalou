@@ -63,6 +63,8 @@ ALLOWED_REQUEST_OPCODES = frozenset(
 )
 CONF_AUTO_RESTORE = "auto_restore"
 DEFAULT_AUTO_RESTORE = False
+# Light level (1-9) for a plain "on" before any non-zero level was observed.
+DEFAULT_LIGHT_BRIGHTNESS = 5
 # The device clock has only hour/minute/second/weekday. Deviations within this
 # window are BLE/processing latency, not a reset clock.
 CLOCK_SYNC_TOLERANCE = 60

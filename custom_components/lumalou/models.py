@@ -11,13 +11,6 @@ from .const import PROFILE_SCHEMA_VERSION
 if TYPE_CHECKING:
     from .coordinator import LumalouCoordinator
 
-PROFILE_RANGES = {
-    "brightness": (0, 9),
-    "color": (0, 9),
-    "light_duration": (0, 5),
-    "volume": (0, 9),
-    "playlist_duration": (0, 6),
-}
 DAYS = (
     "sunday",
     "monday",
@@ -29,7 +22,6 @@ DAYS = (
 )
 FULL_PROFILE_FIELDS = frozenset(
     {
-        *PROFILE_RANGES,
         "playlist",
         "clock_settings",
         "routine_settings",
@@ -39,14 +31,16 @@ FULL_PROFILE_FIELDS = frozenset(
         "routines",
     }
 )
-# Intentionally absent: current date/time, light/audio on/off, current song,
-# timer remainder, nap state/alarm, executing alarm, current routine step, and
-# task status. Those are transient or lack a persistent setter/readback contract.
+# Only persistent configuration. Intentionally absent: live state that changes
+# in everyday use (light brightness and colour, which read 0 while the light is
+# off; volume; light and playlist timers, which only GLOBAL_STATE reports; on/off
+# and playing state), current date/time, nap state, executing alarm, current
+# routine step and task status.
 # The `alarm` block is only the established seven alarm nibbles plus sound nibble.
 # GLOBAL_STATE reports routine music and volume as 4-bit values, so only
 # 0..15 can be verified after a restore.
 ROUTINE_NIBBLE_MAX = 15
-SYNC_STATUSES = frozenset({"empty", "saved", "pending", "applying", "partial", "error"})
+SYNC_STATUSES = frozenset({"empty", "saved", "pending", "applying", "error"})
 
 
 class ProfileValidationError(ValueError):
@@ -209,10 +203,8 @@ def validate_profile(value: Any) -> dict[str, Any]:
             result[name] = _week(item, "sleepy times")
         elif name == "alarm":
             result[name] = _alarm(item)
-        elif name == "routines":
-            result[name] = _routines(item)
         else:
-            validate_integer(item, *PROFILE_RANGES[name], name)
+            result[name] = _routines(item)
     return result
 
 

@@ -30,6 +30,7 @@ from .const import (
     CONF_PROTOCOL_VERIFIED,
     CONNECT_TIMEOUT,
     DEFAULT_AUTO_RESTORE,
+    DEFAULT_LIGHT_BRIGHTNESS,
     DOMAIN,
     GLOBAL_STATE_FIELDS,
     RECOVERY_COOLDOWN,
@@ -62,14 +63,6 @@ from .transport import SafeLumalouClient
 
 _LOGGER = logging.getLogger(__name__)
 _MAX_REVISION = 2**63 - 1
-# Profile scalars that GLOBAL_STATE reports back after a live setter.
-_LIVE_STATE_FIELDS = {
-    "brightness": "lightBrightness",
-    "color": "lightColor",
-    "volume": "currentVolume",
-    "light_duration": "lightDuration",
-    "playlist_duration": "playlistDuration",
-}
 _STATE_RANGES = {
     "currentSong": (0, 18),
     "currentVolume": (0, 9),
@@ -151,6 +144,8 @@ class LumalouCoordinator:
         self.device_name = entry.title or "Lumalou"
         self.sw_version: str | None = None
         self.data: dict[str, int] | None = None
+        # Last non-zero light level seen; the device reports 0 while off.
+        self.last_brightness = DEFAULT_LIGHT_BRIGHTNESS
         self.present = False
         self.available = False
         # Runtime-only restore/recovery state for entities, Repairs and
@@ -262,6 +257,8 @@ class LumalouCoordinator:
         """Guard every device mutation, including callers without a connection."""
         if not self.protocol_verified:
             raise _error("control_locked")
+        if self._profile_record.maintenance:
+            raise _error("maintenance_mode")
 
     @callback
     def _set_protocol_verified(self, verified: bool) -> None:
@@ -528,21 +525,10 @@ class LumalouCoordinator:
         self._profile_record = deepcopy(record)
         self._notify()
 
-    async def _save_edit(
-        self, changes: dict[str, Any], expected_revision: int | None = None
-    ) -> None:
-        old = self.profile_record
-        if expected_revision is not None:
-            validate_integer(expected_revision, 0, _MAX_REVISION, "expected revision")
-        if expected_revision is not None and expected_revision != old.revision:
-            raise RevisionConflictError("The saved profile changed; reopen the editor")
-        desired = validate_profile({**old.desired_profile, **changes})
-        await self._save(_new_revision(old, desired))
-
     async def async_edit_profile(
         self, changes: dict[str, Any], expected_revision: int
     ) -> ProfileRecord:
-        """Atomically merge schema-v2 intent changes without using Bluetooth.
+        """Atomically merge profile block changes without using Bluetooth.
 
         `changes` is a partial logical profile, not a protocol payload. The
         supplied revision is mandatory so independent editors cannot silently
@@ -551,11 +537,17 @@ class LumalouCoordinator:
         validated_changes = validate_profile(changes)
         validate_integer(expected_revision, 0, _MAX_REVISION, "expected revision")
         async with self._profile_edit_operation():
-            if not profile_is_complete(self._profile_record.desired_profile):
+            old = self.profile_record
+            if not profile_is_complete(old.desired_profile):
                 raise HomeAssistantError("Read the device profile before editing")
-            # Merges only supplied logical blocks: never removes saved blocks
-            # and never fabricates hardware values.
-            await self._save_edit(validated_changes, expected_revision)
+            if expected_revision != old.revision:
+                raise RevisionConflictError(
+                    "The saved profile changed; reopen the editor"
+                )
+            # Merges only supplied blocks: never removes saved blocks and
+            # never fabricates hardware values.
+            desired = {**old.desired_profile, **validated_changes}
+            await self._save(_new_revision(old, desired))
             return self.profile_record
 
     # ---- BLE session ----
@@ -576,6 +568,8 @@ class LumalouCoordinator:
         self._callback_state = dict(state)
         self._received += 1
         self.data = dict(state)
+        if state["lightBrightness"]:
+            self.last_brightness = state["lightBrightness"]
         self.available = True
         if self._unavailable_logged:
             _LOGGER.info("%s is available again", self.device_name)
@@ -740,56 +734,6 @@ class LumalouCoordinator:
             await client.send(payload, timeout=RESPONSE_TIMEOUT)
         await self._refresh()
 
-    def _live_edit_verified(self, record: ProfileRecord) -> bool:
-        """Return whether a fresh GLOBAL_STATE proves a live scalar edit.
-
-        Only an edit directly on top of a revision verified on this device
-        qualifies, and only if every changed block is a GLOBAL_STATE scalar
-        that the fresh state now reports. Other blocks were not written, so
-        the verified baseline still covers them and power-loss detection
-        stays armed. Anything else stays pending until an explicit restore.
-        """
-        previous, state = record.previous, self.data
-        if (
-            state is None
-            or previous is None
-            or record.verified_revision != previous["revision"]
-            or record.verified_fingerprint != self.device_fingerprint
-            or not profile_is_complete(record.desired_profile)
-        ):
-            return False
-        desired, baseline = record.desired_profile, previous["profile"]
-        changed = {name for name in desired if desired[name] != baseline.get(name)}
-        return changed <= set(_LIVE_STATE_FIELDS) and all(
-            state[_LIVE_STATE_FIELDS[name]] == desired[name] for name in changed
-        )
-
-    async def _apply_edit(self, payloads: list[bytes]) -> None:
-        if self._profile_record.maintenance:
-            return
-        try:
-            await self._send_commands(payloads)
-        except Exception:
-            await self._disconnect()
-            await self._save(
-                replace(
-                    self.profile_record, sync_status="error", last_error="ble_apply"
-                )
-            )
-            return
-        record = self.profile_record
-        if self._live_edit_verified(record):
-            record = replace(
-                record,
-                verified_revision=record.revision,
-                pending=False,
-                sync_status="saved",
-                last_error=None,
-            )
-        else:
-            record = replace(record, sync_status="partial", last_error=None)
-        await self._save(record)
-
     async def _transient(self, payloads: list[bytes]) -> None:
         try:
             await self._send_commands(payloads)
@@ -800,57 +744,42 @@ class LumalouCoordinator:
     async def async_set_light(
         self, on: bool, brightness: int | None = None, color: int | None = None
     ) -> None:
-        """Persist explicit settings; on/off alone never changes saved intent."""
+        """Send live light commands; they never change the saved profile."""
         if type(on) is not bool:
             raise ProfileValidationError("Invalid light state")
-        changes = {}
         if brightness is not None:
-            # Schema v2 can preserve an observed zero, but the live control
-            # path does not write it until its side effect is accepted.
             validate_integer(brightness, 1, 9, "brightness")
-            changes["brightness"] = brightness
         if color is not None:
-            changes["color"] = color
-        validate_profile(changes)
+            validate_integer(color, 0, 9, "color")
         async with self._device_write_operation():
-            if changes:
-                await self._save_edit(changes)
             if not on:
                 await self._transient([commands.turn_off_backlight()])
                 return
             payloads = []
             if color is not None:
                 payloads.append(commands.set_light_color(color))
-            if brightness is not None:
-                payloads.append(commands.set_led_brightness(brightness))
-            if not payloads:
-                # Explicit light on: never SET_GLOBAL_ON (it also affects audio)
-                # and never replay a saved zero brightness here.
-                level = self._profile_record.desired_profile.get("brightness", 1) or 1
+            if brightness is not None or not payloads:
+                # Plain "on" (for example from Apple Home): never
+                # SET_GLOBAL_ON (it also affects audio), and never the zero
+                # the device reports while the light is off.
+                level = brightness or self.last_brightness
                 payloads.append(commands.set_led_brightness(level))
-            if changes:
-                await self._apply_edit(payloads)
-            else:
-                await self._transient(payloads)
+            await self._transient(payloads)
 
     async def async_set_volume(self, level: int) -> None:
-        validate_profile({"volume": level})
+        validate_integer(level, 0, 9, "volume")
         async with self._device_write_operation():
-            await self._save_edit({"volume": level})
-            await self._apply_edit([commands.set_volume(level)])
+            await self._transient([commands.set_volume(level)])
 
     async def async_set_light_duration(self, duration: int) -> None:
-        validate_profile({"light_duration": duration})
+        validate_integer(duration, 0, 5, "light duration")
         async with self._device_write_operation():
-            await self._save_edit({"light_duration": duration})
-            await self._apply_edit([commands.set_light_duration(duration)])
+            await self._transient([commands.set_light_duration(duration)])
 
     async def async_set_playlist_duration(self, duration: int) -> None:
-        """Persist and apply a supported playlist duration setting."""
-        validate_profile({"playlist_duration": duration})
+        validate_integer(duration, 0, 6, "playlist duration")
         async with self._device_write_operation():
-            await self._save_edit({"playlist_duration": duration})
-            await self._apply_edit([commands.set_playlist_duration(duration)])
+            await self._transient([commands.set_playlist_duration(duration)])
 
     async def async_play(self, source: int) -> None:
         validate_integer(source, 0, 7, "audio source")
@@ -997,8 +926,6 @@ class LumalouCoordinator:
         validate_integer(expected_revision, 0, _MAX_REVISION, "expected revision")
         async with self._device_write_operation():
             record = self._profile_record
-            if record.maintenance:
-                raise _error("maintenance_mode")
             if record.revision != expected_revision:
                 raise RevisionConflictError("The saved profile changed")
             if record.verified_fingerprint not in (None, self.device_fingerprint):

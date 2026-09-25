@@ -6,19 +6,19 @@ a profile diff onto payloads from the pinned upstream command builders only,
 in one deterministic write order:
 
 1. ``clock_settings`` - display configuration only, no activation.
-2. ``light_duration``, ``playlist_duration`` - timer configuration.
-3. ``volume``, ``playlist`` - audio configuration.
-4. ``routine_settings.music`` (music byte + reward sounds), then
+2. ``playlist``.
+3. ``routine_settings.music`` (music byte + reward sounds), then
    ``routine_settings.volume``.
-5. ``sleepy_times``, ``ready_to_rise.times``, ``alarm``, then
+4. ``sleepy_times``, ``ready_to_rise.times``, ``alarm``, then
    ``routines.<day>`` Sunday..Saturday - schedule data.
-6. ``color``, ``brightness`` - light configuration (possible visible effect).
-7. ``ready_to_rise.enabled``, ``routine_settings.enabled`` - activation flags
+5. ``ready_to_rise.enabled``, ``routine_settings.enabled`` - activation flags
    last, only after every schedule they activate has been written.
 
-Current device time is not part of the profile. Callers synchronize it from
-Home Assistant before step 1, after a fresh read. Only steps whose logical
-value differs from the fresh device readback are produced.
+Live state (light brightness and colour, volume, timers) is not part of the
+profile, so a restore never turns the light on. Current device time is not
+part of it either; callers synchronize it from Home Assistant before step 1,
+after a fresh read. Only steps whose logical value differs from the fresh
+device readback are produced.
 """
 
 from __future__ import annotations
@@ -139,8 +139,9 @@ def profile_from_readback(
 ) -> dict[str, Any]:
     """Build a complete logical profile from one session's typed responses.
 
-    Scalar settings come from GLOBAL_STATE (nibbles). The dedicated clock
-    settings response must agree with GLOBAL_STATE or the read is rejected.
+    Routine settings and the Ready-to-Rise flag come from GLOBAL_STATE
+    (nibbles). The dedicated clock settings response must agree with
+    GLOBAL_STATE or the read is rejected.
     """
     expected_clock = (
         _wire_boolean(state["clockDisplay"], "clock display"),
@@ -151,11 +152,6 @@ def profile_from_readback(
         raise ProfileValidationError("Clock settings disagree with GLOBAL_STATE")
     return require_complete_profile(
         {
-            "brightness": state["lightBrightness"],
-            "color": state["lightColor"],
-            "light_duration": state["lightDuration"],
-            "volume": state["currentVolume"],
-            "playlist_duration": state["playlistDuration"],
             "playlist": _read_playlist(playlist.slots),
             "clock_settings": {
                 "display": clock.display_on,
@@ -234,13 +230,6 @@ def build_restore_steps(desired: Any, observed: Any) -> tuple[RestoreStep, ...]:
                 ),
             )
         )
-    for name, builder in (
-        ("light_duration", commands.set_light_duration),
-        ("playlist_duration", commands.set_playlist_duration),
-        ("volume", commands.set_volume),
-    ):
-        if differs(name):
-            steps.append(RestoreStep(name, builder(want[name])))
     if differs("playlist"):
         steps.append(
             RestoreStep(
@@ -307,13 +296,6 @@ def build_restore_steps(desired: Any, observed: Any) -> tuple[RestoreStep, ...]:
                     commands.set_day_routine(day, _routine(want["routines"][day])),
                 )
             )
-
-    if differs("color"):
-        steps.append(RestoreStep("color", commands.set_light_color(want["color"])))
-    if differs("brightness"):
-        steps.append(
-            RestoreStep("brightness", commands.set_led_brightness(want["brightness"]))
-        )
 
     if differs("ready_to_rise", "enabled"):
         steps.append(
