@@ -578,11 +578,11 @@ async def test_duplicate_discovery(hass: HomeAssistant) -> None:
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
     assert len(hass.config_entries.async_entries(DOMAIN)) == 1
-    # Control stays locked until the profile is read again at the new address.
+    # The signed key is identical, so controls stay unlocked.
     assert entry.data == {
         CONF_ADDRESS: ADDRESS,
         CONF_DEVICE_FINGERPRINT: FINGERPRINT,
-        CONF_PROTOCOL_VERIFIED: False,
+        CONF_PROTOCOL_VERIFIED: True,
     }
 
 
@@ -715,10 +715,11 @@ async def test_reconfigure_changed_address_preserves_bound_identity_and_options(
     assert entry.entry_id == original_entry_id
     assert entry.unique_id == FINGERPRINT
     assert entry.title == "Nursery"
+    # Same signed key: controls stay unlocked, only the address changes.
     assert entry.data == {
         CONF_ADDRESS: new_address,
         CONF_DEVICE_FINGERPRINT: FINGERPRINT,
-        CONF_PROTOCOL_VERIFIED: False,
+        CONF_PROTOCOL_VERIFIED: True,
     }
     assert entry.options == original_options
 
