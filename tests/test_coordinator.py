@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from bleak.backends.device import BLEDevice
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from lumalou import crypto
 from lumalou.client import FreshSessionRequiredError
 from lumalou.profile import (
@@ -1149,6 +1149,32 @@ async def test_missing_saved_profile_locks_controls(rig):
         await rig.coordinator.async_set_volume(3)
     rig.client_factory.assert_not_called()
     rig.store.async_save.assert_not_awaited()
+
+
+async def test_user_state_errors_are_service_validation_errors(rig):
+    coordinator = rig.coordinator
+    coordinator.protocol_verified = False
+    with pytest.raises(ServiceValidationError) as locked:
+        await coordinator.async_set_volume(3)
+    assert locked.value.translation_key == "control_locked"
+
+    coordinator.protocol_verified = True
+    await coordinator.async_set_maintenance(True)
+    with pytest.raises(ServiceValidationError) as maintenance:
+        await coordinator.async_play(1)
+    assert maintenance.value.translation_key == "maintenance_mode"
+    await coordinator.async_set_maintenance(False)
+
+    with (
+        patch(
+            "custom_components.lumalou.coordinator.dt_util.now",
+            return_value=datetime(2000, 1, 1, tzinfo=ZoneInfo("UTC")),
+        ),
+        pytest.raises(ServiceValidationError) as clock,
+    ):
+        await coordinator.async_sync_clock()
+    assert clock.value.translation_key == "clock_untrusted"
+    rig.client_factory.assert_not_called()
 
 
 async def test_setup_propagates_unexpected_store_errors(rig):
