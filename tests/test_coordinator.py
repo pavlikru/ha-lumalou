@@ -393,12 +393,12 @@ async def test_public_offline_profile_edit_merges_complex_blocks_without_ble(rig
 
 async def test_public_offline_profile_edit_requires_loaded_healthy_store(rig):
     coordinator = rig.coordinator
-    with pytest.raises(HomeAssistantError, match="requires recovery before editing"):
+    with pytest.raises(HomeAssistantError, match="requires recovery"):
         await coordinator.async_edit_profile({"volume": 3}, expected_revision=0)
 
     rig.store.async_load.side_effect = ProfileStorageError("Synthetic corruption")
     await coordinator.async_setup()
-    with pytest.raises(HomeAssistantError, match="requires recovery before editing"):
+    with pytest.raises(HomeAssistantError, match="requires recovery"):
         await coordinator.async_edit_profile({"volume": 3}, expected_revision=0)
 
     rig.store.async_save.assert_not_awaited()
@@ -1412,7 +1412,7 @@ async def test_corrupt_profile_cannot_export_empty_backup_or_overwrite_file(
     assert not coordinator.profile_storage_healthy
     assert coordinator.profile_record.last_error == "storage_load"
 
-    with pytest.raises(HomeAssistantError, match="requires recovery before exporting"):
+    with pytest.raises(HomeAssistantError, match="requires recovery"):
         await coordinator.async_export_profile()
 
     assert path.read_text() == corrupt_document
@@ -1428,7 +1428,7 @@ async def test_queued_export_rechecks_storage_health_under_lock(rig):
         assert not export.done()
         coordinator._storage_healthy = False
 
-    with pytest.raises(HomeAssistantError, match="requires recovery before exporting"):
+    with pytest.raises(HomeAssistantError, match="requires recovery"):
         await export
     rig.store.async_save.assert_not_awaited()
 
@@ -2329,3 +2329,19 @@ async def test_live_edit_over_pending_revision_stays_pending(rig):
     assert record.revision == 3
     assert not record.is_verified
     assert record.sync_status == "partial"
+
+
+async def test_unavailability_and_return_are_logged_once(rig, caplog):
+    """Device loss and recovery are logged at info level exactly once each."""
+    coordinator = rig.coordinator
+    await coordinator.async_setup()
+    caplog.set_level("INFO", logger="custom_components.lumalou.coordinator")
+
+    coordinator._async_handle_unavailable(Mock())
+    coordinator._async_handle_unavailable(Mock())
+    coordinator._receive(coordinator._generation, dict(rig.state))
+    coordinator._receive(coordinator._generation, dict(rig.state))
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert messages.count("Test Lumalou is unavailable") == 1
+    assert messages.count("Test Lumalou is available again") == 1

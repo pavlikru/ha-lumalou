@@ -2072,3 +2072,120 @@ async def test_read_profile_aborts_when_entry_is_unloaded(hass: HomeAssistant) -
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "entry_not_loaded"
+
+
+@pytest.mark.parametrize(
+    ("section", "user_input", "changes", "placeholders"),
+    [
+        (
+            "clock_settings",
+            {"clock_display": False, "clock_brightness": "4", "clock_format": "0"},
+            {"clock_settings": {"display": False, "brightness": 4, "format": 0}},
+            {"display": "False", "brightness": "4", "format": "0"},
+        ),
+        (
+            "routine_settings",
+            {
+                "routine_enabled": True,
+                "routine_music": 3.0,
+                "routine_volume": 4,
+                "task_reward_sfx": "1",
+                "routine_reward_sfx": "2",
+            },
+            {
+                "routine_settings": {
+                    "enabled": True,
+                    "music": 3,
+                    "volume": 4,
+                    "task_reward_sfx": 1,
+                    "routine_reward_sfx": 2,
+                }
+            },
+            {"enabled": "True", "music": "3", "volume": "4"},
+        ),
+    ],
+)
+async def test_block_editors_start_from_the_read_profile(
+    hass: HomeAssistant,
+    section: str,
+    user_input: dict[str, Any],
+    changes: dict[str, Any],
+    placeholders: dict[str, str],
+) -> None:
+    """Block editors are prefilled from the saved profile and save one block."""
+    entry, coordinator = profile_entry(hass)
+    result = await start_editor(hass, entry, section)
+    assert result["step_id"] == section
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input=user_input
+    )
+    assert result["step_id"] == f"{section}_confirm"
+    assert placeholders.items() <= result["description_placeholders"].items()
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"confirm": True}
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    coordinator.async_edit_profile.assert_awaited_once_with(changes, 7)
+
+
+@pytest.mark.parametrize(
+    "value", [None, "07:30:15", "07:30:00+02:00"], ids=["missing", "seconds", "tz"]
+)
+def test_time_parser_requires_plain_minute_resolution(value: Any) -> None:
+    from custom_components.lumalou.config_flow import _parse_time
+
+    with pytest.raises(ValueError):
+        _parse_time(value)
+
+
+@pytest.mark.parametrize(
+    ("value", "source"),
+    [(["monday"], "someday"), ("monday", "sunday"), (["someday"], "sunday")],
+)
+def test_copy_targets_reject_unknown_days(value: Any, source: str) -> None:
+    from custom_components.lumalou.config_flow import _copy_targets
+
+    with pytest.raises(ValueError):
+        _copy_targets(value, source)
+
+
+async def test_reconfigure_probe_failure_keeps_the_form(hass: HomeAssistant) -> None:
+    """A failed identity probe during reconfigure changes nothing."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=FINGERPRINT,
+        data={CONF_ADDRESS: "AA:BB:CC:DD:EE:02", CONF_DEVICE_FINGERPRINT: FINGERPRINT},
+        minor_version=2,
+    )
+    entry.add_to_hass(hass)
+    with patch(
+        "homeassistant.components.bluetooth.async_discovered_service_info",
+        return_value=[service_info()],
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_RECONFIGURE, "entry_id": entry.entry_id}
+        )
+        with patch(
+            "custom_components.lumalou.config_flow.async_read_device_information",
+            new_callable=AsyncMock,
+            side_effect=OSError("synthetic"),
+        ):
+            result = await hass.config_entries.flow.async_configure(
+                result["flow_id"], user_input={CONF_ADDRESS: ADDRESS}
+            )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "cannot_connect"}
+    assert entry.data[CONF_ADDRESS] == "AA:BB:CC:DD:EE:02"
+
+
+def test_routine_task_parser_rejects_task_outside_named_choices() -> None:
+    """Defense in depth behind the selector: task 12 is not a named task."""
+    flow = LumalouOptionsFlow()
+    flow._draft = editable_profile()
+    flow._routine_day = "monday"
+
+    with pytest.raises(ValueError):
+        flow._parse_routine_tasks({"routine_has_time": False, "task_1": "12"})
