@@ -384,3 +384,30 @@ def test_corrupt_record_rejected(field, value):
 def test_record_requires_complete_known_schema(value):
     with pytest.raises(ProfileValidationError):
         ProfileRecord.from_dict(value)
+
+
+def test_record_without_verified_fingerprint_loads_as_unbound():
+    """Records saved before device-key binding stay loadable but unverified."""
+    data = ProfileRecord(revision=2, verified_revision=2).to_dict()
+    del data["verified_fingerprint"]
+
+    record = ProfileRecord.from_dict(data)
+
+    assert record.verified_fingerprint is None
+    assert not record.is_verified
+    bound = ProfileRecord(
+        revision=2, verified_revision=2, verified_fingerprint="c" * 64
+    )
+    assert ProfileRecord.from_dict(bound.to_dict()) == bound
+    assert bound.is_verified
+    assert not ProfileRecord(
+        revision=3, verified_revision=2, verified_fingerprint="c" * 64
+    ).is_verified
+
+
+@pytest.mark.parametrize("fingerprint", ["", "C" * 64, "c" * 63, 7, True])
+def test_record_rejects_invalid_verified_fingerprint(fingerprint):
+    data = ProfileRecord().to_dict()
+    data["verified_fingerprint"] = fingerprint
+    with pytest.raises(ProfileValidationError):
+        ProfileRecord.from_dict(data)

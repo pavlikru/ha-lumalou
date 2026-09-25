@@ -373,3 +373,26 @@ async def test_internally_cancelled_commit_is_not_reported_as_durable(storage):
         pytest.raises(ProfileStorageError, match="cancelled before verification"),
     ):
         await adapter.async_save(ProfileRecord())
+
+
+async def test_remove_deletes_profile_and_its_backups_only(storage):
+    adapter, backend, path = storage
+    await adapter.async_save(ProfileRecord(revision=1))
+    migration = path.with_name(f"{path.name}.v1.backup")
+    corrupt = path.with_name(f"{path.name}.corrupt.0123456789abcdef.backup")
+    other = path.with_name("lumalou.other-entry.profile.v1.backup")
+    for backup in (migration, corrupt, other):
+        backup.write_text("{}")
+
+    async def remove():
+        path.unlink()
+
+    backend.async_remove = AsyncMock(side_effect=remove)
+
+    await adapter.async_remove()
+
+    backend.async_remove.assert_awaited_once_with()
+    assert not path.exists()
+    assert not migration.exists()
+    assert not corrupt.exists()
+    assert other.exists()

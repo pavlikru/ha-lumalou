@@ -11,6 +11,7 @@ from homeassistant.helpers.typing import ConfigType
 from .const import DOMAIN, ISSUE_ID_PROFILE_STORAGE, PLATFORMS
 from .models import LumalouRuntimeData
 from .services import async_setup_services
+from .storage import ProfileStore
 
 type LumalouConfigEntry = ConfigEntry[LumalouRuntimeData]
 
@@ -64,5 +65,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: LumalouConfigEntry) -> 
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: LumalouConfigEntry) -> None:
-    """Remove this entry's Repairs issue without touching private profile storage."""
+    """Remove this entry's Repairs issue and its private profile Store.
+
+    The saved profile is bound to this entry and device key; users keep a copy
+    with the export action before removing the device.
+    """
     ir.async_delete_issue(hass, DOMAIN, f"{entry.entry_id}_{ISSUE_ID_PROFILE_STORAGE}")
+    await ProfileStore(hass, entry.entry_id).async_remove()

@@ -1143,7 +1143,7 @@ dev = [
     { name = "hap-python" },
     { name = "homeassistant" },
     { name = "homekit-audio-proxy" },
-    { name = "lumalou" },
+    { name = "lumalou-gld09" },
     { name = "mypy" },
     { name = "pre-commit" },
     { name = "pyqrcode" },
@@ -1164,7 +1164,7 @@ dev = [
     { name = "hap-python", specifier = "==5.0.0" },
     { name = "homeassistant", specifier = "==2026.9.2" },
     { name = "homekit-audio-proxy", specifier = "==1.2.1" },
-    { name = "lumalou", specifier = "==0.1.0" },
+    { name = "lumalou-gld09", specifier = "==0.2.0" },
     { name = "mypy", specifier = "==1.18.2" },
     { name = "pre-commit", specifier = "==4.3.0" },
     { name = "pyqrcode", specifier = "==1.2.1" },
@@ -1479,16 +1479,16 @@ wheels = [
 ]
 
 [[package]]
-name = "lumalou"
-version = "0.1.0"
+name = "lumalou-gld09"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bleak" },
     { name = "cryptography" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/85/e9/af49fa8db13249fe991be4749fba6d2b38a78e66618642e6eca6f318b1f6/lumalou-0.1.0.tar.gz", hash = "sha256:8248458d3e2400836e4bf2e6fa0dde3dd6b8b89a6d79c157438557db3528474a", size = 12799, upload-time = "2026-07-23T09:41:53.794Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e1/a0/de32bba597ae0fe7e4f2c6fc782335ae8cd38aebcd18f2e29f9cad8038d9/lumalou_gld09-0.2.0.tar.gz", hash = "sha256:37654e619bf3ee31270a12b1bc273cb6123c8902551b9f1cca63ae86935b3907", size = 42001, upload-time = "2026-09-25T12:47:28.858Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cf/5d/f55a5dff1d2a17344c0b4a958700860c707dcd704fe19fb20284066b463a/lumalou-0.1.0-py3-none-any.whl", hash = "sha256:b869ea08c7c832d8bda6d0f5e2be7274b807270d5d68382959b2ed98a700012a", size = 13698, upload-time = "2026-07-23T09:41:52.616Z" },
+    { url = "https://files.pythonhosted.org/packages/f4/2c/5e6228488f246a7d5b7821b2fabc4ba27e5e3eb5e7ef30face4862218b2d/lumalou_gld09-0.2.0-py3-none-any.whl", hash = "sha256:434f8f206aaf5d1f5e53fe153148eabda0c844abd565b1288072b90d5208cc85", size = 30080, upload-time = "2026-09-25T12:47:27.5Z" },
 ]
 
 [[package]]

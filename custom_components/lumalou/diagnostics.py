@@ -11,6 +11,7 @@ from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.core import HomeAssistant
 
 from . import LumalouConfigEntry
+from .const import CONF_AUTO_RESTORE, DEFAULT_AUTO_RESTORE
 
 
 def _package_version(package: str) -> str:
@@ -55,29 +56,68 @@ async def async_get_config_entry_diagnostics(
         or getattr(profile_record, "desired_profile", None)
     )
 
+    restore_needed = getattr(coordinator, "restore_needed", None)
+    last_restore = getattr(coordinator, "last_restore_result", None)
     return {
         "versions": {
             "home_assistant": HA_VERSION,
-            "lumalou_library": _package_version("lumalou"),
+            "lumalou_library": _package_version("lumalou-gld09"),
         },
         "entry": {
             "source": entry.source,
-            "auto_restore_enabled": bool(entry.options.get("auto_restore", False)),
+            "auto_restore_enabled": bool(
+                entry.options.get(CONF_AUTO_RESTORE, DEFAULT_AUTO_RESTORE)
+            ),
         },
         "connection": _selected_attributes(
             coordinator,
             (
                 "present",
                 "available",
-                "connected",
-                "connectable",
+                "protocol_verified",
                 "sw_version",
-                "last_restore_at",
-                "last_verified_restore_at",
+                "last_clock_offset",
+                "last_clock_sync",
             ),
-        )
-        | {
-            "last_error_type": type(last_error).__name__ if last_error else None,
+        ),
+        "restore": {
+            "needed": restore_needed is not None,
+            # Block names only (e.g. "routines"), never schedule values.
+            **(
+                {
+                    "changed_blocks": list(restore_needed.changed_blocks),
+                    **_selected_attributes(
+                        restore_needed,
+                        (
+                            "detected_at",
+                            "auto_restore_attempts",
+                            "auto_restore_exhausted",
+                        ),
+                    ),
+                }
+                if restore_needed is not None
+                else {}
+            ),
+            "last_result": (
+                {
+                    "planned_steps": list(last_restore.planned_steps),
+                    "applied_steps": list(last_restore.applied_steps),
+                    "mismatched_blocks": list(last_restore.mismatched_blocks),
+                    **_selected_attributes(
+                        last_restore,
+                        (
+                            "revision",
+                            "automatic",
+                            "verified",
+                            "clock_synced",
+                            "error",
+                            "finished_at",
+                        ),
+                    ),
+                }
+                if last_restore is not None
+                else None
+            ),
         },
         "profile": {
             "present": profile_present,
@@ -87,9 +127,8 @@ async def async_get_config_entry_diagnostics(
                     "schema_version",
                     "revision",
                     "verified_revision",
-                    "last_verified_revision",
+                    "is_verified",
                     "pending",
-                    "pending_sync",
                     "sync_status",
                     "maintenance",
                 ),
