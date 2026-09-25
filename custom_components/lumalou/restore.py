@@ -385,3 +385,38 @@ def is_factory_clock(device: CurrentDate, window: int) -> bool:
     """
     since_reset = device.hour * 3600 + device.minute * 60 + device.second - 5 * 3600
     return device.weekday == 0 and 0 <= since_reset <= window
+
+
+_MIDNIGHT = {"hour": 0, "minute": 0}
+
+
+def is_factory_default(profile: dict[str, Any]) -> bool:
+    """Return whether a complete device read equals the power-loss defaults.
+
+    Hardware (firmware 0.3.7): playlist 1..12, 12-hour clock shown at
+    brightness 2, all weekly times and routines 00:00 with no tasks, alarms
+    off (9) with sound 0, routine mode and Ready-to-Rise off, routine music
+    and both reward sounds 1, routine volume 5, light timer 4, playlist timer
+    5, volume 5.
+    """
+    week = dict.fromkeys(DAYS, _MIDNIGHT)
+    levels = profile[LIVE_BLOCK]
+    return (
+        profile["playlist"] == list(range(1, 13))
+        and profile["clock_settings"] == {"display": True, "brightness": 2, "format": 0}
+        and profile["ready_to_rise"] == {"enabled": False, "times": week}
+        and profile["sleepy_times"] == week
+        and profile["routines"]
+        == {day: {"time": _MIDNIGHT, "slots": [None] * 12} for day in DAYS}
+        and profile["alarm"] == {"days": dict.fromkeys(DAYS, 9), "sound": 0}
+        and profile["routine_settings"]
+        == {
+            "enabled": False,
+            "music": 1,
+            "volume": 5,
+            "task_reward_sfx": 1,
+            "routine_reward_sfx": 1,
+        }
+        and (levels["light_duration"], levels["playlist_duration"], levels["volume"])
+        == (4, 5, 5)
+    )

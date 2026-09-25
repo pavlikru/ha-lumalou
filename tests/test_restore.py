@@ -230,3 +230,36 @@ def test_whole_hour_offsets_and_the_power_loss_clock():
     assert is_factory_clock(CurrentDate(6, 0, 0, 0), 3600)
     assert not is_factory_clock(CurrentDate(6, 0, 1, 0), 3600)
     assert not is_factory_clock(CurrentDate(5, 0, 0, 1), 3600)
+
+
+def test_factory_default_profile_matches_the_hardware_power_loss_values():
+    from custom_components.lumalou.restore import is_factory_default
+
+    midnight = {"hour": 0, "minute": 0}
+    week = dict.fromkeys(DAYS, midnight)
+    profile = {
+        "playlist": list(range(1, 13)),
+        "clock_settings": {"display": True, "brightness": 2, "format": 0},
+        "routine_settings": {
+            "enabled": False,
+            "music": 1,
+            "volume": 5,
+            "task_reward_sfx": 1,
+            "routine_reward_sfx": 1,
+        },
+        "ready_to_rise": {"enabled": False, "times": dict(week)},
+        "sleepy_times": dict(week),
+        "alarm": {"days": dict.fromkeys(DAYS, 9), "sound": 0},
+        "routines": {day: {"time": midnight, "slots": [None] * 12} for day in DAYS},
+        "light_and_sound": {
+            "volume": 5,
+            "light_brightness": 5,
+            "light_duration": 4,
+            "playlist_duration": 5,
+        },
+    }
+    assert is_factory_default(profile)
+    profile["light_and_sound"]["light_brightness"] = 9  # not compared
+    assert is_factory_default(profile)
+    profile["clock_settings"]["format"] = 1
+    assert not is_factory_default(profile)

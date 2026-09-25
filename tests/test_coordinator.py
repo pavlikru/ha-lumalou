@@ -2660,3 +2660,53 @@ async def test_a_silent_session_is_treated_as_lost(rig):
     coordinator._session_silent(coordinator._generation - 1)
     assert coordinator.maintenance is False
     assert coordinator.sync_status == "empty"
+
+
+def factory_reset(fake: FakeDevice) -> None:
+    """Put the synthetic device into the hardware power-loss defaults."""
+    midnight = WeeklyTimes((ClockTime(0, 0),) * 7)
+    fake.playlist = MusicPlaylist(tuple(range(1, 13)))
+    fake.blocks.update(
+        r2r_times=midnight,
+        sleepy_times=midnight,
+        r2r_alarms=WeeklyAlarms((9,) * 7, 0),
+    )
+    fake.routines = {day: DailyRoutine(ClockTime(0, 0), (None,) * 12) for day in DAYS}
+    fake.state.update(
+        clockDisplay=1,
+        clockBrightness=2,
+        clockFormat=0,
+        routineModeStatus=0,
+        routineMusicStatus=1,
+        taskRewardSfx=1,
+        routineRewardSfx=1,
+        routineVolume=5,
+        ready2RiseStatus=0,
+        lightDuration=4,
+        playlistDuration=5,
+        currentVolume=5,
+    )
+
+
+@pytest.mark.parametrize("defaults", [True, False])
+async def test_whole_hour_power_loss_is_a_reset_only_with_factory_defaults(
+    rig, defaults
+):
+    """Back ~7 hours after 05:00 on the dot: DST-like, but the settings tell."""
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    await coordinator._disconnect()
+    coordinator._last_frame_at = None  # e.g. after a Home Assistant restart
+    rig.fake.clock = CurrentDate(5, 0, 20, 0)  # 6:59:40 behind noon
+    if defaults:
+        factory_reset(rig.fake)
+    else:
+        rig.state.update(routineVolume=5)
+
+    await coordinator._async_recover()
+
+    if defaults:
+        assert coordinator.last_restore_result.verified
+        assert coordinator.restore_needed is None
+    else:
+        assert not coordinator.repair_needed.reset

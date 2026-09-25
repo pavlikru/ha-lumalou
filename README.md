@@ -198,7 +198,7 @@ fresh read with the saved **verified** profile:
   than Home Assistant has not heard from the device (at most 12 hours), more
   than 10 minutes off and not off by whole hours. An offset of whole hours
   (a DST or time zone change while Home Assistant was down) only sets the
-  clock. Home Assistant sets the clock first. With **automatic restore** on
+  clock, unless every setting on the device is also at its factory default. Home Assistant sets the clock first. With **automatic restore** on
   (the default) it then writes only the differing settings back and proves
   the whole profile with a fresh read. After two failed attempts it stops and
   raises the Repair *Lumalou settings differ from the saved profile*. With
