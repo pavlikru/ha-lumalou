@@ -230,6 +230,8 @@ def test_whole_hour_offsets_and_the_power_loss_clock():
     assert is_factory_clock(CurrentDate(6, 0, 0, 0), 3600)
     assert not is_factory_clock(CurrentDate(6, 0, 1, 0), 3600)
     assert not is_factory_clock(CurrentDate(5, 0, 0, 1), 3600)
+    assert is_factory_clock(CurrentDate(4, 59, 7, 0), 0)  # seen on hardware
+    assert not is_factory_clock(CurrentDate(4, 54, 59, 0), 3600)
 
 
 def test_factory_default_profile_matches_the_hardware_power_loss_values():
