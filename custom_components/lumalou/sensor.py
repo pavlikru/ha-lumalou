@@ -27,6 +27,11 @@ class LumalouFirmwareSensor(LumalouEntity, SensorEntity):
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     @property
+    def available(self) -> bool:
+        """Known from advertisements even while no session is connected."""
+        return self.coordinator.sw_version is not None
+
+    @property
     def native_value(self) -> str | None:
         return self.coordinator.sw_version
 

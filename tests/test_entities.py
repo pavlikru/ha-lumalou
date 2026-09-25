@@ -306,11 +306,13 @@ def test_diagnostic_sensor_values_remain_readable_offline():
     assert connection.is_on is False
     assert connection.entity_category is EntityCategory.DIAGNOSTIC
     assert firmware.native_value is None
+    assert firmware.available is False
 
-    coordinator.available = True
-    coordinator.sw_version = "1.2.3"
-    assert connection.is_on is True
+    coordinator.sw_version = "1.2.3"  # advertised while not connected
+    assert firmware.available is True
     assert firmware.native_value == "1.2.3"
+    coordinator.available = True
+    assert connection.is_on is True
 
 
 def test_profile_sync_status_remains_readable_offline():
