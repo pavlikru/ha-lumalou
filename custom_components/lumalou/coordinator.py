@@ -186,11 +186,6 @@ class LumalouCoordinator:
         return deepcopy(self._profile_record)
 
     @property
-    def observed_state(self) -> dict[str, int] | None:
-        """Return a detached observation, never the desired profile."""
-        return deepcopy(self.data)
-
-    @property
     def auto_restore_enabled(self) -> bool:
         """Return the user's opt-in for automatic restore (default off)."""
         return self.entry.options.get(CONF_AUTO_RESTORE, DEFAULT_AUTO_RESTORE) is True

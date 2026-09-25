@@ -310,7 +310,7 @@ async def test_offline_setup_preserves_pending_profile_without_ble(rig):
     remove = rig.coordinator.async_add_listener(listener)
     await rig.coordinator.async_setup()
     assert rig.coordinator.profile_record == saved
-    assert rig.coordinator.observed_state is None
+    assert rig.coordinator.data is None
     assert not rig.coordinator.available
     assert rig.coordinator.sw_version is None
     rig.discovery.assert_not_called()
@@ -1193,9 +1193,6 @@ async def test_fresh_callback_is_observation_not_desired_profile(rig):
     assert coordinator.data == rig.state
     assert coordinator.profile_record.desired_profile == {}
     assert coordinator.profile_record.verified_revision is None
-    copy = coordinator.observed_state
-    copy["currentVolume"] = 9
-    assert coordinator.data["currentVolume"] == 2
     rig.discovery.assert_called_once_with(
         coordinator.hass, rig.device.address, connectable=True
     )
@@ -1218,7 +1215,7 @@ async def test_unsolicited_valid_state_updates_entities_not_saved_intent(rig):
 
     rig.clients[0].on_state(changed)
 
-    assert coordinator.observed_state == changed
+    assert coordinator.data == changed
     assert coordinator.available
     assert coordinator.profile_record.desired_profile == {}
     listener.assert_called_once_with()
