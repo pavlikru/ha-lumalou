@@ -5,8 +5,6 @@ from homeassistant.const import Platform
 DOMAIN = "lumalou"
 # A verified saved profile no longer matches the device (e.g. power loss).
 ISSUE_ID_PROFILE_RESTORE_NEEDED = "profile_restore_needed"
-# Entries created before signed-device enrollment must be reconfigured once.
-ISSUE_ID_IDENTITY_ENROLLMENT = "identity_enrollment"
 CONF_DEVICE_FINGERPRINT = "device_fingerprint"
 CONF_PROTOCOL_VERIFIED = "protocol_verified"
 SUPPORTED_PRODUCT_CODE = "GLD09"

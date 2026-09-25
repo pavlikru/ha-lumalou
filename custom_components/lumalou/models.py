@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -19,10 +18,6 @@ PROFILE_RANGES = {
     "volume": (0, 9),
     "playlist_duration": (0, 6),
 }
-V1_PROFILE_RANGES = {**PROFILE_RANGES, "brightness": (1, 9)}
-V1_PROFILE_FIELDS = frozenset(
-    {"brightness", "color", "light_duration", "volume", "playlist_duration", "playlist"}
-)
 DAYS = (
     "sunday",
     "monday",
@@ -49,10 +44,8 @@ FULL_PROFILE_FIELDS = frozenset(
 # task status. Those are transient or lack a persistent setter/readback contract.
 # The `alarm` block is only the established seven alarm nibbles plus sound nibble.
 # GLOBAL_STATE reports routine music and volume as 4-bit values, so only
-# 0..15 can be verified after a restore. Saved records written by earlier
-# editors may still hold a full setter byte (see `validate_profile`).
+# 0..15 can be verified after a restore.
 ROUTINE_NIBBLE_MAX = 15
-LEGACY_ROUTINE_BYTE_MAX = 255
 SYNC_STATUSES = frozenset({"empty", "saved", "pending", "applying", "partial", "error"})
 
 
@@ -124,7 +117,7 @@ def _clock_settings(value: Any) -> dict[str, Any]:
     }
 
 
-def _routine_settings(value: Any, byte_max: int) -> dict[str, Any]:
+def _routine_settings(value: Any) -> dict[str, Any]:
     fields = {
         "enabled",
         "music",
@@ -136,8 +129,12 @@ def _routine_settings(value: Any, byte_max: int) -> dict[str, Any]:
     return {
         "enabled": _boolean(data["enabled"], "routine mode"),
         # The setters carry a byte, but GLOBAL_STATE reports both as nibbles.
-        "music": validate_integer(data["music"], 0, byte_max, "routine music"),
-        "volume": validate_integer(data["volume"], 0, byte_max, "routine volume"),
+        "music": validate_integer(
+            data["music"], 0, ROUTINE_NIBBLE_MAX, "routine music"
+        ),
+        "volume": validate_integer(
+            data["volume"], 0, ROUTINE_NIBBLE_MAX, "routine volume"
+        ),
         "task_reward_sfx": validate_integer(
             data["task_reward_sfx"], 0, 15, "task reward sound"
         ),
@@ -194,27 +191,8 @@ def _routines(value: Any) -> dict[str, dict[str, Any]]:
     return {day: _routine(data[day], day) for day in DAYS}
 
 
-def _validate_v1_profile(value: Any) -> dict[str, Any]:
-    """Validate the exact v1 subset without inventing newly supported blocks."""
-    if not isinstance(value, dict) or set(value) - V1_PROFILE_FIELDS:
-        raise ProfileValidationError("Unsupported profile fields")
-    result = deepcopy(value)
-    for name, item in result.items():
-        if name == "playlist":
-            result[name] = _playlist(item)
-        else:
-            validate_integer(item, *V1_PROFILE_RANGES[name], name)
-    return result
-
-
-def validate_profile(value: Any, *, stored: bool = False) -> dict[str, Any]:
-    """Copy a strict v2 profile; absent top-level fields remain unknown.
-
-    `stored=True` is only for loading and merging already saved records: it
-    still accepts the full routine music/volume byte that older editors
-    allowed, so such a record loads instead of requiring storage recovery.
-    Every new value, import and restore uses the device-verifiable range.
-    """
+def validate_profile(value: Any) -> dict[str, Any]:
+    """Copy a strict profile; absent top-level fields remain unknown."""
     if not isinstance(value, dict) or set(value) - FULL_PROFILE_FIELDS:
         raise ProfileValidationError("Unsupported profile fields")
     result = deepcopy(value)
@@ -224,8 +202,7 @@ def validate_profile(value: Any, *, stored: bool = False) -> dict[str, Any]:
         elif name == "clock_settings":
             result[name] = _clock_settings(item)
         elif name == "routine_settings":
-            byte_max = LEGACY_ROUTINE_BYTE_MAX if stored else ROUTINE_NIBBLE_MAX
-            result[name] = _routine_settings(item, byte_max)
+            result[name] = _routine_settings(item)
         elif name == "ready_to_rise":
             result[name] = _ready_to_rise(item)
         elif name == "sleepy_times":
@@ -237,10 +214,6 @@ def validate_profile(value: Any, *, stored: bool = False) -> dict[str, Any]:
         else:
             validate_integer(item, *PROFILE_RANGES[name], name)
     return result
-
-
-def _validate_stored_profile(value: Any) -> dict[str, Any]:
-    return validate_profile(value, stored=True)
 
 
 def profile_is_complete(value: Any) -> bool:
@@ -261,14 +234,8 @@ def require_complete_profile(value: Any) -> dict[str, Any]:
 
 
 def export_profile_payload(value: Any) -> dict[str, Any]:
-    """Version an exported partial/full profile without relabelling v2 as v1."""
+    """Wrap a saved profile in the versioned export envelope."""
     result = validate_profile(value)
-    if set(result) <= V1_PROFILE_FIELDS:
-        return {
-            "schema_version": 1,
-            "scope": "supported_subset",
-            "profile": result,
-        }
     return {
         "schema_version": PROFILE_SCHEMA_VERSION,
         "scope": "persistent_profile",
@@ -277,15 +244,13 @@ def export_profile_payload(value: Any) -> dict[str, Any]:
 
 
 def import_profile_payload(value: Any) -> dict[str, Any]:
-    """Validate both the legacy subset envelope and current profile envelope."""
+    """Validate the export envelope and return its profile."""
     data = _strict_mapping(
         value, {"schema_version", "scope", "profile"}, "profile import"
     )
     version = data["schema_version"]
     if type(version) is not int:
         raise ProfileValidationError("Unsupported profile import schema")
-    if version == 1 and data["scope"] == "supported_subset":
-        return _validate_v1_profile(data["profile"])
     if version == PROFILE_SCHEMA_VERSION and data["scope"] == "persistent_profile":
         return validate_profile(data["profile"])
     raise ProfileValidationError("Unsupported profile import schema")
@@ -305,7 +270,7 @@ class ProfileRecord:
     last_error: str | None = None
     maintenance: bool = False
     # Private device-key fingerprint of the session that verified
-    # `verified_revision`. Absent in records written before 0.2.0 support.
+    # `verified_revision`.
     verified_fingerprint: str | None = None
 
     @property
@@ -324,9 +289,7 @@ class ProfileRecord:
     @classmethod
     def from_dict(cls, value: Any) -> ProfileRecord:
         """Reject unsupported schemas and corrupt synchronization metadata."""
-        return cls(
-            **_validate_record(value, PROFILE_SCHEMA_VERSION, _validate_stored_profile)
-        )
+        return cls(**_validate_record(value))
 
 
 @dataclass(frozen=True, slots=True)
@@ -375,14 +338,10 @@ def plan_profile_reconciliation(
     )
 
 
-def _validate_record(
-    value: Any, schema_version: int, profile_validator: Callable[[Any], dict[str, Any]]
-) -> dict[str, Any]:
-    """Validate record metadata while allowing an explicit profile schema."""
-    fields = set(ProfileRecord.__dataclass_fields__)
-    if not isinstance(value, dict) or set(value) not in (
-        fields,
-        fields - {"verified_fingerprint"},
+def _validate_record(value: Any) -> dict[str, Any]:
+    """Validate record metadata and both saved profiles."""
+    if not isinstance(value, dict) or set(value) != set(
+        ProfileRecord.__dataclass_fields__
     ):
         raise ProfileValidationError("Invalid profile record")
     fingerprint = value.get("verified_fingerprint")
@@ -390,7 +349,7 @@ def _validate_record(
         raise ProfileValidationError("Invalid verified device identity")
     if (
         type(value["schema_version"]) is not int
-        or value["schema_version"] != schema_version
+        or value["schema_version"] != PROFILE_SCHEMA_VERSION
     ):
         raise ProfileValidationError("Unsupported profile schema")
     validate_integer(value["revision"], 0, 2**63 - 1, "revision")
@@ -404,22 +363,14 @@ def _validate_record(
     if value["last_error"] is not None and not isinstance(value["last_error"], str):
         raise ProfileValidationError("Invalid error metadata")
     data = deepcopy(value)
-    data.setdefault("verified_fingerprint", None)
-    data["desired_profile"] = profile_validator(data["desired_profile"])
+    data["desired_profile"] = validate_profile(data["desired_profile"])
     previous = data["previous"]
     if previous is not None:
         if not isinstance(previous, dict) or set(previous) != {"revision", "profile"}:
             raise ProfileValidationError("Invalid previous revision")
         validate_integer(previous["revision"], 0, data["revision"], "previous")
-        previous["profile"] = profile_validator(previous["profile"])
+        previous["profile"] = validate_profile(previous["profile"])
     return data
-
-
-def migrate_v1_record(value: Any) -> ProfileRecord:
-    """Upgrade only validated v1 subset data and preserve all record metadata."""
-    data = _validate_record(value, 1, _validate_v1_profile)
-    data["schema_version"] = PROFILE_SCHEMA_VERSION
-    return ProfileRecord.from_dict(data)
 
 
 @dataclass

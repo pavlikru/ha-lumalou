@@ -14,7 +14,6 @@ from homeassistant.config_entries import ConfigFlowResult, FlowType
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import selector
 from homeassistant.helpers.translation import async_get_translations
 
@@ -24,10 +23,8 @@ from .const import (
     CONF_PROTOCOL_VERIFIED,
     DEFAULT_AUTO_RESTORE,
     DOMAIN,
-    ISSUE_ID_IDENTITY_ENROLLMENT,
     SUPPORTED_PRODUCT_CODE,
 )
-from .entity import async_migrate_identifiers
 from .identity import (
     FactoryIdentityProbeError,
     async_read_device_information,
@@ -72,16 +69,6 @@ def _device_title(info: BluetoothServiceInfoBleak) -> str:
     return "Lumalou"
 
 
-def _enrolled_fingerprint(entry: config_entries.ConfigEntry) -> str | None:
-    """Return the signed-device binding, or None for a pre-enrollment entry."""
-    if fingerprint := entry.data.get(CONF_DEVICE_FINGERPRINT):
-        return str(fingerprint)
-    # Pre-enrollment entries use their address as unique ID.
-    if entry.unique_id != entry.data.get(CONF_ADDRESS):
-        return entry.unique_id
-    return None
-
-
 def _read_profile_placeholders(profile: dict[str, Any]) -> dict[str, str]:
     """Summarize a device read as numbers; the sentence itself is translated."""
     routines = profile["routines"].values()
@@ -109,8 +96,6 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle the Lumalou config flow."""
 
     VERSION = 1
-    # 1.2: registry identifiers derive from the entry unique ID, not the address.
-    MINOR_VERSION = 2
 
     def __init__(self) -> None:
         self._discovered: BluetoothServiceInfoBleak | None = None
@@ -232,11 +217,7 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Rebind an entry to its signed device after an address change.
-
-        This also enrolls a pre-enrollment entry and moves its registry
-        identifiers from the address to the fingerprint.
-        """
+        """Rebind an entry to its signed device after an address change."""
         entry = self._get_reconfigure_entry()
         errors: dict[str, str] = {}
         if user_input is not None:
@@ -262,26 +243,15 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def _async_rebind(
         self, entry: config_entries.ConfigEntry, address: str, fingerprint: str
     ) -> ConfigFlowResult:
-        """Update a verified entry without orphaning its entities."""
-        if _enrolled_fingerprint(entry) not in (None, fingerprint):
+        """Update the address only when the signed device key matches."""
+        if fingerprint != entry.data[CONF_DEVICE_FINGERPRINT]:
             return self.async_show_form(
                 step_id="reconfigure",
                 data_schema=self._address_schema(),
                 errors={"base": "wrong_device"},
             )
-        if fingerprint != entry.unique_id:
-            if self.hass.config_entries.async_entry_for_domain_unique_id(
-                DOMAIN, fingerprint
-            ):
-                return self.async_abort(reason="already_configured")
-            await async_migrate_identifiers(
-                self.hass, entry, str(entry.unique_id), fingerprint
-            )
-        ir.async_delete_issue(
-            self.hass, DOMAIN, f"{entry.entry_id}_{ISSUE_ID_IDENTITY_ENROLLMENT}"
-        )
         return self.async_update_reload_and_abort(
-            entry, unique_id=fingerprint, data=_entry_data(address, fingerprint)
+            entry, data=_entry_data(address, fingerprint)
         )
 
     async def _async_probe(

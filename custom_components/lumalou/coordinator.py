@@ -118,7 +118,6 @@ def _new_revision(old: ProfileRecord, desired: dict[str, Any]) -> ProfileRecord:
 _ERRORS = {
     "maintenance_mode": "Lumalou is in maintenance mode",
     "control_locked": "Read and verify the complete Lumalou profile before control",
-    "identity_not_enrolled": "No Lumalou device identity was enrolled",
     "profile_read_failed": "Could not read a complete, consistent Lumalou profile",
     "profile_other_device": "The saved profile was verified on a different device",
     "command_failed": "Lumalou command failed; it will not be replayed",
@@ -149,7 +148,7 @@ class LumalouCoordinator:
         self.hass = hass
         self.entry = entry
         self.address = entry.data["address"]
-        self.device_fingerprint = entry.data.get(CONF_DEVICE_FINGERPRINT)
+        self.device_fingerprint: str = entry.data[CONF_DEVICE_FINGERPRINT]
         self.protocol_verified = entry.data.get(CONF_PROTOCOL_VERIFIED) is True
         self.device_name = entry.title or "Lumalou"
         self.sw_version: str | None = None
@@ -256,19 +255,13 @@ class LumalouCoordinator:
 
     @asynccontextmanager
     async def _device_write_operation(self) -> AsyncIterator[None]:
-        """Serialize a mutation and require a verified, enrolled device."""
+        """Serialize a mutation and require verified controls."""
         async with self._operation():
             self._assert_device_writes_allowed()
             yield
 
-    def _assert_enrolled_device(self) -> None:
-        """Block sessions until setup has bound one verified signed device key."""
-        if not self.device_fingerprint:
-            raise _error("identity_not_enrolled")
-
     def _assert_device_writes_allowed(self) -> None:
         """Guard every device mutation, including callers without a connection."""
-        self._assert_enrolled_device()
         if not self.protocol_verified:
             raise _error("control_locked")
 
@@ -402,7 +395,6 @@ class LumalouCoordinator:
         if (
             self._stopped
             or not self.present
-            or not self.device_fingerprint
             or self._profile_record.maintenance
             or self.available
             or self._recovery_task is not None
@@ -546,9 +538,7 @@ class LumalouCoordinator:
             validate_integer(expected_revision, 0, _MAX_REVISION, "expected revision")
         if expected_revision is not None and expected_revision != old.revision:
             raise RevisionConflictError("The saved profile changed; reopen the editor")
-        # Callers validated `changes` strictly. A value saved by an older editor
-        # must not block unrelated edits; restore still rejects it.
-        desired = validate_profile({**old.desired_profile, **changes}, stored=True)
+        desired = validate_profile({**old.desired_profile, **changes})
         await self._save(_new_revision(old, desired))
 
     async def async_edit_profile(
@@ -595,7 +585,6 @@ class LumalouCoordinator:
         self._notify()
 
     async def _connect(self) -> SafeLumalouClient:
-        self._assert_enrolled_device()
         if self._profile_record.maintenance:
             raise _error("maintenance_mode")
         if self._callbacks_started and not self.present:
@@ -944,7 +933,6 @@ class LumalouCoordinator:
         desired = require_complete_profile(profile)
         validate_integer(expected_revision, 0, _MAX_REVISION, "expected revision")
         async with self._profile_edit_operation():
-            self._assert_enrolled_device()
             if self._previewed_profile is None or desired != self._previewed_profile:
                 raise HomeAssistantError("Read the device profile again to confirm it")
             old = self.profile_record
@@ -974,7 +962,6 @@ class LumalouCoordinator:
         read and leave the private Store unchanged.
         """
         async with self._operation():
-            self._assert_enrolled_device()
             record = self.profile_record
             try:
                 _client, snapshot = await self._async_fresh_snapshot()
@@ -997,7 +984,6 @@ class LumalouCoordinator:
         executor (`async_restore_profile`) re-reads the device itself.
         """
         validate_integer(expected_revision, 0, _MAX_REVISION, "expected revision")
-        self._assert_enrolled_device()
         record = self.profile_record
         if record.maintenance:
             raise _error("maintenance_mode")
@@ -1013,7 +999,6 @@ class LumalouCoordinator:
             record = self.profile_record
             if record.maintenance:
                 raise _error("maintenance_mode")
-            self._assert_enrolled_device()
             return plan_profile_reconciliation(
                 record, observed, expected_revision=expected_revision
             )

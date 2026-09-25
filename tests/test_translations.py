@@ -10,10 +10,7 @@ from typing import Any
 from lumalou import Audio, Color, LightDuration, PlaylistDuration
 
 from custom_components.lumalou.config_flow import EDITORS
-from custom_components.lumalou.const import (
-    ISSUE_ID_IDENTITY_ENROLLMENT,
-    ISSUE_ID_PROFILE_RESTORE_NEEDED,
-)
+from custom_components.lumalou.const import ISSUE_ID_PROFILE_RESTORE_NEEDED
 from custom_components.lumalou.coordinator import _ERRORS
 
 COMPONENT = Path(__file__).parents[1] / "custom_components" / "lumalou"
@@ -89,17 +86,14 @@ def test_flow_steps_errors_and_aborts_are_translated() -> None:
 
 
 def test_issues_and_exceptions_are_translated() -> None:
-    assert {
-        ISSUE_ID_IDENTITY_ENROLLMENT,
-        ISSUE_ID_PROFILE_RESTORE_NEEDED,
-    } == set(STRINGS["issues"])
+    assert {ISSUE_ID_PROFILE_RESTORE_NEEDED} == set(STRINGS["issues"])
     restore_flow = STRINGS["issues"][ISSUE_ID_PROFILE_RESTORE_NEEDED]["fix_flow"]
     menu = set(restore_flow["step"]["init"]["menu_options"])
     assert menu == {"restore", "keep_device"}
     assert {f"{step}_failed" for step in menu} == set(restore_flow["error"])
 
     used = set(_ERRORS)
-    for module in ("media_player.py", "services.py"):
+    for module in ("__init__.py", "media_player.py", "services.py"):
         source = (COMPONENT / module).read_text(encoding="utf-8")
         used |= _literals(r'translation_key="(\w+)"', source)
     # Restore executor outcomes and profile validation from services.py.

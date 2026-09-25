@@ -31,7 +31,7 @@ from homeassistant.core import HomeAssistant, State
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.lumalou.const import DOMAIN
+from custom_components.lumalou.const import CONF_DEVICE_FINGERPRINT, DOMAIN
 from custom_components.lumalou.media_player import LumalouMediaPlayer
 from custom_components.lumalou.models import ProfileRecord
 
@@ -135,8 +135,7 @@ async def loaded_lumalou(hass: HomeAssistant) -> MockConfigEntry:
         domain=DOMAIN,
         title="Lumalou",
         unique_id="f" * 64,
-        data={CONF_ADDRESS: coordinator.address},
-        minor_version=2,
+        data={CONF_ADDRESS: coordinator.address, CONF_DEVICE_FINGERPRINT: "f" * 64},
     )
     entry.add_to_hass(hass)
     hass.http = Mock()  # media_player registers its image proxy view.
