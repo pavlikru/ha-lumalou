@@ -85,6 +85,7 @@ async def async_get_config_entry_diagnostics(
                         restore_needed,
                         (
                             "detected_at",
+                            "reset",
                             "auto_restore_attempts",
                             "auto_restore_exhausted",
                         ),

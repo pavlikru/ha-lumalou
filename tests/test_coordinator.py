@@ -38,7 +38,6 @@ from custom_components.lumalou.const import (
     CONF_DEVICE_FINGERPRINT,
     CONF_PROTOCOL_VERIFIED,
     CONNECT_TIMEOUT,
-    DEFAULT_LIGHT_BRIGHTNESS,
     GLOBAL_STATE_FIELDS,
 )
 from custom_components.lumalou.coordinator import (
@@ -103,13 +102,22 @@ class FakeDevice:
         return self.blocks[name]
 
     def apply(self, payload: bytes) -> None:
+        opcode, args = payload[0], bytes(payload[1:])
+        if opcode == 0x30:
+            self.clock = parse_current_date(args)
+            return
         if not self.retain_writes:
             return
-        opcode, args = payload[0], bytes(payload[1:])
         if opcode in GLOBAL_SETTERS:
             self.state[GLOBAL_SETTERS[opcode]] = args[0]
-        elif opcode == 0x30:
-            self.clock = parse_current_date(args)
+            if opcode == 0x3C:  # a colour switches the light on
+                self.state.update(lightStatus=1, activityState=1)
+        elif opcode == 0x3E:
+            self.state.update(lightStatus=0, activityState=0)
+        elif opcode == 0x3F:  # source 0 is the soother: music and light
+            self.state.update(musicStatus=1, lightStatus=int(args[0] == 0) or 0)
+        elif opcode == 0x38:
+            self.state["musicStatus"] = 0
         elif opcode == 0x40:
             self.playlist = decode_music_playlist_set(args)
         elif opcode == 0x46:
@@ -142,7 +150,8 @@ def rig():
     journal = []
     device = BLEDevice("synthetic-device", "Test Lumalou", {})
     fake = FakeDevice()
-    settings = SimpleNamespace(mode="fresh", fail_opcode=None)
+    # push: the device pushes GLOBAL_STATE after every write (hardware).
+    settings = SimpleNamespace(mode="fresh", fail_opcode=None, push=True)
     store = SimpleNamespace(async_load=AsyncMock(return_value=ProfileRecord()))
 
     async def save(record):
@@ -177,6 +186,7 @@ def rig():
         *,
         expected_device_fingerprint,
         on_state,
+        on_response,
         disconnected_callback,
     ):
         assert _hass is hass
@@ -185,6 +195,7 @@ def rig():
         client = SimpleNamespace(
             connected=False,
             on_state=on_state,
+            on_response=on_response,
             lost=disconnected_callback,
             mode=settings.mode,
             requested=set(),
@@ -212,6 +223,8 @@ def rig():
                 raise OSError("Synthetic write failure")
             journal.append(("send", payload))
             fake.apply(payload)
+            if settings.push and client.connected:
+                on_state(deepcopy(fake.state))
 
         async def request_state(**kwargs):
             assert kwargs["timeout"] > 0
@@ -269,6 +282,9 @@ def rig():
             return_value=Mock(),
         ) as track_unavailable,
         patch("custom_components.lumalou.coordinator.dt_util.now", return_value=NOW),
+        # Tests do not wait out the hardware reconnect gap.
+        patch("custom_components.lumalou.coordinator.RECONNECT_DELAY", 0),
+        patch("custom_components.lumalou.coordinator.STATE_CONFIRM_TIMEOUT", 0.05),
     ):
         yield SimpleNamespace(
             coordinator=coordinator,
@@ -291,6 +307,16 @@ def rig():
 
 def sends(rig, start: int = 0) -> list[bytes]:
     return [item[1] for item in rig.journal[start:] if item[0] == "send"]
+
+
+async def live(rig) -> None:
+    """Open the live session the way background recovery does."""
+    await rig.coordinator._async_recover()
+
+
+def push_clock(client, clock: CurrentDate) -> None:
+    """Deliver a pushed CURRENT_DATE frame from the device."""
+    client.on_response(SimpleNamespace(opcode=0x13, decode=lambda: clock))
 
 
 async def verified_profile(rig) -> dict:
@@ -512,8 +538,8 @@ async def test_preview_read_then_confirm_opens_one_session(rig):
     assert [event[0] for event in rig.journal].count("connect") == 1
     assert coordinator.available and coordinator.protocol_verified
 
-    # The strict session answered GLOBAL_STATE once; a refresh reconnects.
-    await coordinator.async_request_refresh()
+    # A strict session answers GLOBAL_STATE once; another read reconnects.
+    await coordinator.async_read_profile_snapshot()
     assert len(rig.clients) == 2 and coordinator.available
 
 
@@ -544,7 +570,7 @@ async def test_control_unlocks_only_after_confirmed_verified_save(rig):
     await coordinator.async_setup()
 
     with pytest.raises(HomeAssistantError, match="Read and verify the complete"):
-        await coordinator.async_set_volume(3)
+        await coordinator.async_set_level("volume", 3)
     rig.client_factory.assert_not_called()
 
     snapshot, revision = await coordinator.async_read_profile_snapshot()
@@ -553,7 +579,7 @@ async def test_control_unlocks_only_after_confirmed_verified_save(rig):
     assert not coordinator.protocol_verified
     update_entry.assert_not_called()
     with pytest.raises(HomeAssistantError, match="Read and verify the complete"):
-        await coordinator.async_set_volume(3)
+        await coordinator.async_set_level("volume", 3)
     rig.store.async_save.assert_not_awaited()
 
     await coordinator.async_accept_device_profile(snapshot, revision, confirmed=True)
@@ -961,8 +987,8 @@ async def test_failed_recovery_clock_write_pauses_and_recovery_completes(rig, ca
     assert rig.clients[-1].send.await_count == 0
     assert coordinator.available
 
-    # The daily check honours the same pause.
-    coordinator.async_schedule_clock_check(NOW)
+    # Pushed clock frames honour the same pause.
+    push_clock(rig.clients[-1], rig.fake.clock)
     await asyncio.gather(*rig.background_tasks)
     assert rig.clients[-1].send.await_count == 0
 
@@ -1002,7 +1028,8 @@ async def test_restore_clock_write_failure_is_not_paused_or_retried(rig):
     assert not coordinator.available
 
 
-async def test_recovery_flags_reset_device_without_opt_in_and_never_writes(rig):
+async def test_changed_settings_without_reset_raise_a_repair_and_never_write(rig):
+    """E.g. a schedule changed in the Fisher-Price app: the user decides."""
     coordinator = rig.coordinator
     await verified_profile(rig)
     listener = Mock()
@@ -1017,7 +1044,11 @@ async def test_recovery_flags_reset_device_without_opt_in_and_never_writes(rig):
     assert need is not None
     assert need.revision == 1
     assert need.changed_blocks == ("routine_settings", "routines")
+    assert not need.reset
     assert need.auto_restore_attempts == 0
+    # Automatic restore (on by default) only handles a reset.
+    assert coordinator.auto_restore_enabled
+    assert coordinator.repair_needed == need
     assert not sends(rig, start)
     listener.assert_called()
     assert coordinator.profile_record.is_verified
@@ -1029,13 +1060,12 @@ async def test_recovery_flags_reset_device_without_opt_in_and_never_writes(rig):
 
 
 async def test_everyday_live_state_changes_are_not_power_loss(rig):
-    """Light off, other colour, volume or timers never flag or restore anything."""
+    """Light off, colour, volume, brightness, timers: no flag, no restore."""
     coordinator = rig.coordinator
     await verified_profile(rig)
-    coordinator.entry.options = {"auto_restore": True}
     rig.state.update(
         lightStatus=0,
-        lightBrightness=0,
+        lightBrightness=1,
         lightColor=7,
         currentVolume=9,
         musicStatus=1,
@@ -1051,12 +1081,82 @@ async def test_everyday_live_state_changes_are_not_power_loss(rig):
     assert coordinator.profile_record.is_verified
 
 
-async def test_recovery_auto_restores_once_opted_in(rig):
+async def test_power_loss_reset_is_restored_automatically_by_default(rig):
+    """Hardware: a power loss resets the clock to 05:00 Sunday and all settings."""
+    coordinator = rig.coordinator
+    user = {
+        "clockDisplay": 1,
+        "clockBrightness": 2,
+        "clockFormat": 1,
+        "currentVolume": 2,
+        "lightBrightness": 3,
+        "lightDuration": 0,
+        "playlistDuration": 0,
+    }
+    rig.state.update(user)
+    rig.fake.playlist = MusicPlaylist.from_songs([3, 1])
+    await verified_profile(rig)
+    assert coordinator.entry.options == {}  # automatic restore is the default
+    # Factory defaults after the power loss.
+    rig.fake.clock = CurrentDate(5, 0, 7, 0)
+    rig.state.update(
+        clockFormat=0,
+        currentVolume=5,
+        lightBrightness=5,
+        lightDuration=4,
+        playlistDuration=5,
+    )
+    rig.fake.playlist = MusicPlaylist(tuple(range(1, 13)))
+    start = len(rig.journal)
+
+    await coordinator._async_recover()
+
+    assert sends(rig, start) == [
+        bytes([0x30, 0x12, 0, 0, 0]),  # the clock first
+        bytes([0x79, 1, 0x21]),  # 24-hour clock again
+        bytes([0x40, 3, 1] + [0] * 10),
+        bytes([0x6C, 0]),
+        bytes([0x42, 0]),
+        bytes([0x37, 2]),
+        bytes([0x3A, 3]),
+    ]
+    # The restore never switched light or sound on.
+    assert rig.state["lightStatus"] == 0
+    assert rig.state["musicStatus"] == 0
+    assert coordinator.last_restore_result.verified
+    assert coordinator.last_restore_result.automatic
+    assert coordinator.restore_needed is None
+    assert coordinator.repair_needed is None
+    assert coordinator.available
+
+
+async def test_reset_without_automatic_restore_raises_a_repair(rig):
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    coordinator.entry.options = {"auto_restore": False}
+    rig.fake.clock = CurrentDate(5, 0, 0, 0)
+    rig.state.update(currentVolume=5)
+    start = len(rig.journal)
+
+    await coordinator._async_recover()
+
+    assert sends(rig, start) == [bytes([0x30, 0x12, 0, 0, 0])]
+    need = coordinator.restore_needed
+    assert need.reset
+    assert need.changed_blocks == ("light_and_sound",)
+    assert coordinator.repair_needed == need
+
+    # The clock is right now, but the event is still a reset.
+    await coordinator._async_recover()
+    assert coordinator.restore_needed.reset
+
+
+async def test_recovery_auto_restores_a_reset(rig):
     coordinator = rig.coordinator
     snapshot = await verified_profile(rig)
     coordinator.entry.options = {"auto_restore": True}
-    # The light is also off now; live state is never written back.
-    rig.state.update(routineVolume=3, ready2RiseStatus=1, lightBrightness=0)
+    # Brightness was reset too; writing it back leaves the light off.
+    rig.state.update(routineVolume=3, ready2RiseStatus=1, lightBrightness=5)
     rig.fake.clock = CurrentDate(0, 0, 0, 0)
     start = len(rig.journal)
 
@@ -1064,9 +1164,11 @@ async def test_recovery_auto_restores_once_opted_in(rig):
 
     assert sends(rig, start) == [
         bytes([0x30, 0x12, 0, 0, 0]),
+        bytes([0x3A, snapshot["light_and_sound"]["light_brightness"]]),
         bytes([0x77, snapshot["routine_settings"]["volume"]]),
         bytes([0x44, 0]),
     ]
+    assert rig.state["lightStatus"] == 0
     result = coordinator.last_restore_result
     assert result.verified
     assert result.automatic
@@ -1079,15 +1181,21 @@ async def test_recovery_auto_restores_once_opted_in(rig):
 async def test_auto_restore_attempts_are_bounded_per_event(rig):
     coordinator = rig.coordinator
     await verified_profile(rig)
-    coordinator.entry.options = {"auto_restore": True}
     rig.state.update(routineVolume=3)
+    rig.fake.clock = CurrentDate(5, 0, 0, 0)
     rig.fake.retain_writes = False
 
     for attempt in (1, 2):
         with pytest.raises(ProfileRestoreError):
             await coordinator._async_recover()
+        # A failed attempt ends the session; the next one reconnects.
+        assert coordinator._client is None
         assert coordinator.restore_needed.auto_restore_attempts == attempt
+        assert coordinator.restore_needed.reset
+        if attempt == 1:  # automatic restore still handles it: no Repair yet
+            assert coordinator.repair_needed is None
     assert coordinator.restore_needed.auto_restore_exhausted
+    assert coordinator.repair_needed is coordinator.restore_needed
     start = len(rig.journal)
 
     await coordinator._async_recover()
@@ -1114,11 +1222,13 @@ async def test_auto_restore_requires_verified_revision_of_same_device(rig, reaso
             coordinator._profile_record, verified_fingerprint="b" * 64
         )
     rig.state.update(routineVolume=3)
+    rig.fake.clock = CurrentDate(5, 0, 0, 0)
     start = len(rig.journal)
 
     await coordinator._async_recover()
 
-    assert not sends(rig, start)
+    # Only the clock is written.
+    assert sends(rig, start) == [bytes([0x30, 0x12, 0, 0, 0])]
     assert (coordinator.restore_needed is not None) is (reason == "no_option")
 
 
@@ -1189,7 +1299,7 @@ async def test_recovery_read_failure_disconnects_and_raises_for_backoff(rig):
 async def test_session_lost_marks_unavailable_and_schedules_recovery(rig, caplog):
     coordinator = rig.coordinator
     await coordinator.async_setup()
-    await coordinator.async_request_refresh()
+    await live(rig)
     client = rig.clients[0]
     coordinator.present = True
     listener = Mock()
@@ -1210,10 +1320,12 @@ async def test_session_lost_marks_unavailable_and_schedules_recovery(rig, caplog
         recover.assert_awaited_once_with()
 
     # A later callback from a replaced session is ignored.
-    await coordinator.async_request_refresh()
+    await live(rig)
     assert coordinator.available
     client.lost(client)
+    client.on_state(dict(rig.state))
     assert coordinator.available
+    assert coordinator._client is rig.clients[-1]
     await coordinator.async_shutdown()
 
 
@@ -1261,7 +1373,7 @@ async def test_missing_saved_profile_locks_controls(rig):
     assert not rig.coordinator.protocol_verified
     rig.hass.config_entries.async_update_entry.assert_called_once()
     with pytest.raises(HomeAssistantError, match="Read and verify"):
-        await rig.coordinator.async_set_volume(3)
+        await rig.coordinator.async_set_level("volume", 3)
     rig.client_factory.assert_not_called()
     rig.store.async_save.assert_not_awaited()
 
@@ -1270,7 +1382,7 @@ async def test_user_state_errors_are_service_validation_errors(rig):
     coordinator = rig.coordinator
     coordinator.protocol_verified = False
     with pytest.raises(ServiceValidationError) as locked:
-        await coordinator.async_set_volume(3)
+        await coordinator.async_set_level("volume", 3)
     assert locked.value.translation_key == "control_locked"
 
     coordinator.protocol_verified = True
@@ -1302,8 +1414,9 @@ async def test_setup_propagates_unexpected_store_errors(rig):
 
 
 async def test_fresh_callback_is_observation_not_desired_profile(rig):
-    await rig.coordinator.async_request_refresh()
     coordinator = rig.coordinator
+    await coordinator.async_setup()
+    await live(rig)
     assert coordinator.available
     assert coordinator.data == rig.state
     assert coordinator.profile_record.desired_profile == {}
@@ -1312,18 +1425,14 @@ async def test_fresh_callback_is_observation_not_desired_profile(rig):
         coordinator.hass, rig.device.address, connectable=True
     )
     rig.clients[0].send.assert_not_awaited()
-
-    # A strict session answers GLOBAL_STATE once: the next refresh reconnects.
-    await coordinator.async_request_refresh()
-    assert len(rig.clients) == 2
-    assert not rig.clients[0].connected
-    assert rig.clients[1].request_state.await_count == 1
-    assert coordinator.available
+    assert not [item for item in rig.journal if item[0] == "request_named"]
 
 
 async def test_unsolicited_valid_state_updates_entities_not_saved_intent(rig):
+    """E.g. the remote's buttons: pushed, shown, never saved or restored."""
     coordinator = rig.coordinator
-    await coordinator.async_request_refresh()
+    await coordinator.async_setup()
+    await live(rig)
     listener = Mock()
     coordinator.async_add_listener(listener)
     changed = {**rig.state, "currentVolume": 8}
@@ -1337,91 +1446,92 @@ async def test_unsolicited_valid_state_updates_entities_not_saved_intent(rig):
     rig.store.async_save.assert_not_awaited()
 
 
-async def test_stale_cache_does_not_confirm_refresh_and_old_callback_is_ignored(rig):
-    coordinator = rig.coordinator
-    await coordinator.async_request_refresh()
-    old_client = rig.clients[0]
-    rig.settings.mode = "stale"
-    with pytest.raises(HomeAssistantError, match="refresh failed"):
-        await coordinator.async_request_refresh()
-    assert coordinator.data is None
-    assert not coordinator.available
-    old_client.disconnect.assert_awaited_once()
-    received = coordinator._received
-    old_client.on_state(rig.state)
-    assert coordinator._received == received
-    rig.settings.mode = "fresh"
-    await coordinator.async_request_refresh()
-    assert len(rig.clients) == 3
-    assert coordinator.available
-    # Reconnection reads only; no saved or transient action is replayed.
-    assert not sends(rig)
-
-
-@pytest.mark.parametrize("mode", ["generation", "empty", "different"])
-async def test_freshness_requires_matching_session_callback_and_result(rig, mode):
-    coordinator = rig.coordinator
-    await coordinator.async_request_refresh()
-    client = rig.clients[0]
-
-    async def ambiguous_response(**kwargs):
-        client.on_state(rig.state)
-        if mode == "generation":
-            coordinator._generation += 1
-        elif mode == "empty":
-            coordinator._callback_state = None
-        else:
-            return {**rig.state, "currentVolume": 1}
-        return rig.state
-
-    client.request_state.side_effect = ambiguous_response
-    with pytest.raises(HomeAssistantError):
-        await coordinator.async_request_refresh()
-    assert not coordinator.available
-
-
 @pytest.mark.parametrize("invalid", [None, {}, {"unknown": 1}])
 def test_wrong_callback_schema_ignored(rig, invalid):
     coordinator = rig.coordinator
     coordinator._receive(coordinator._generation, invalid)
-    assert coordinator._received == 0
+    assert coordinator.data is None
+    assert not coordinator.available
 
 
 @pytest.mark.parametrize("value", [True, "1", -1, 256, 19])
 def test_invalid_decoded_callback_values_ignored(rig, value):
     rig.state["currentSong"] = value
     rig.coordinator._receive(rig.coordinator._generation, rig.state)
-    assert rig.coordinator._received == 0
+    assert rig.coordinator.data is None
 
 
-async def test_live_controls_never_change_the_saved_profile(rig):
-    """Brightness, colour, volume and timers are current state, not profile."""
+async def test_live_settings_are_kept_in_the_saved_profile_once_confirmed(rig):
+    """Volume, brightness and timers come back after a power loss; colour not."""
     coordinator = rig.coordinator
     await verified_profile(rig)
     record = coordinator.profile_record
+    clients = len(rig.clients)
     start = len(rig.journal)
 
-    await coordinator.async_set_volume(7)
-    await coordinator.async_set_light(True, brightness=5, color=9)
-    await coordinator.async_set_light_duration(5)
-    await coordinator.async_set_playlist_duration(6)
+    await coordinator.async_set_level("volume", 7)
+    await coordinator.async_turn_on_light(brightness=6, color=9)
+    await coordinator.async_set_level("light_duration", 5)
+    await coordinator.async_set_level("playlist_duration", 6)
 
     assert sends(rig, start) == [
         bytes([0x37, 7]),
+        bytes([0x3A, 6]),
         bytes([0x3C, 9]),
-        bytes([0x3A, 5]),
         bytes([0x6C, 5]),
         bytes([0x42, 6]),
     ]
-    assert not [item for item in rig.journal[start:] if item[0] == "save"]
+    # One live session: no reconnect and no read after the commands.
+    assert len(rig.clients) == clients
+    assert not [item for item in rig.journal[start:] if item[0].startswith("request")]
+    saved = coordinator.profile_record
+    assert saved.desired_profile["light_and_sound"] == {
+        "volume": 7,
+        "light_brightness": 6,
+        "light_duration": 5,
+        "playlist_duration": 6,
+    }
+    # Same revision, still verified: restore state and editors are unaffected.
+    assert saved.revision == record.revision
+    assert saved.is_verified
+    assert {
+        key: value
+        for key, value in saved.desired_profile.items()
+        if key != "light_and_sound"
+    } == {
+        key: value
+        for key, value in record.desired_profile.items()
+        if key != "light_and_sound"
+    }
+
+
+async def test_unconfirmed_setting_is_sent_but_not_saved(rig):
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    record = coordinator.profile_record
+    rig.settings.push = False
+
+    await coordinator.async_set_level("volume", 8)
+
+    assert sends(rig)[-1] == bytes([0x37, 8])
     assert coordinator.profile_record == record
-    assert coordinator.profile_record.is_verified
+
+
+async def test_setting_without_a_saved_profile_is_only_sent(rig):
+    coordinator = rig.coordinator
+    await live(rig)
+
+    await coordinator.async_set_level("volume", 8)
+
+    assert sends(rig) == [bytes([0x37, 8])]
+    rig.store.async_save.assert_not_awaited()
 
 
 async def test_concurrent_live_commands_are_serialized(rig):
     coordinator = rig.coordinator
-    await coordinator.async_request_refresh()
+    await live(rig)
     client = rig.clients[0]
+    rig.settings.push = False
     send_started = asyncio.Event()
     release_send = asyncio.Event()
     original = client.send.side_effect
@@ -1433,9 +1543,9 @@ async def test_concurrent_live_commands_are_serialized(rig):
         await original(payload, **kwargs)
 
     client.send.side_effect = delayed_send
-    first = asyncio.create_task(coordinator.async_set_volume(3))
+    first = asyncio.create_task(coordinator.async_set_level("volume", 3))
     await send_started.wait()
-    second = asyncio.create_task(coordinator.async_set_volume(4))
+    second = asyncio.create_task(coordinator.async_set_level("volume", 4))
     await asyncio.sleep(0)
     assert sends(rig) == []
     release_send.set()
@@ -1443,76 +1553,94 @@ async def test_concurrent_live_commands_are_serialized(rig):
     assert sends(rig) == [bytes([0x37, 3]), bytes([0x37, 4])]
 
 
-@pytest.mark.parametrize("failure", ["unavailable", "connect"])
-async def test_failed_live_command_raises_and_cleans_up(rig, failure):
-    """A failed live change is reported to the caller, never swallowed."""
-    original = rig.client_factory.side_effect
-
-    def fail_connect(*args, **kwargs):
-        client = original(*args, **kwargs)
-        client.connect.side_effect = OSError("Synthetic connect error")
-        return client
-
-    if failure == "unavailable":
-        rig.discovery.return_value = None
-    else:
-        rig.client_factory.side_effect = fail_connect
-
+async def test_command_without_a_live_session_never_connects(rig):
+    """Only recovery opens sessions, so every session starts with its checks."""
     with pytest.raises(HomeAssistantError, match="will not be replayed") as caught:
-        await rig.coordinator.async_set_volume(4)
+        await rig.coordinator.async_set_level("volume", 4)
 
     assert caught.value.translation_key == "command_failed"
-    assert rig.coordinator._client is None
+    rig.client_factory.assert_not_called()
     rig.store.async_save.assert_not_awaited()
-    if failure == "connect":
-        rig.clients[0].disconnect.assert_awaited_once()
 
 
-async def test_disconnect_failure_does_not_mask_refresh_error(rig):
+async def test_failed_live_command_raises_and_cleans_up(rig):
+    """A failed live change is reported to the caller, never swallowed."""
     coordinator = rig.coordinator
-    await coordinator.async_request_refresh()
-    client = rig.clients[0]
-    client.mode = "error"
-    client.disconnect.side_effect = OSError("Synthetic teardown failure")
+    await live(rig)
+    rig.settings.fail_opcode = 0x37
 
-    with pytest.raises(HomeAssistantError, match="refresh failed"):
-        await coordinator.async_request_refresh()
+    with pytest.raises(HomeAssistantError, match="will not be replayed") as caught:
+        await coordinator.async_set_level("volume", 4)
+
+    assert caught.value.translation_key == "command_failed"
+    assert coordinator._client is None
+    assert not coordinator.available
+    rig.clients[0].disconnect.assert_awaited_once()
+    rig.store.async_save.assert_not_awaited()
+
+
+async def test_disconnect_failure_does_not_mask_recovery_error(rig):
+    coordinator = rig.coordinator
+    await live(rig)
+    client = rig.clients[0]
+    client.disconnect.side_effect = OSError("Synthetic teardown failure")
+    rig.settings.mode = "error"
+
+    with pytest.raises(HomeAssistantError, match="recovery failed"):
+        await live(rig)
 
     assert coordinator._client is None
     assert not coordinator.available
     assert coordinator.data is None
 
 
-async def test_plain_light_on_uses_the_last_non_zero_brightness(rig):
-    """The device reports 0 while off; "on" must not mean level 0 or 1."""
+async def test_light_on_writes_brightness_before_the_colour(rig):
+    """Hardware: colour switches the light on at the stored brightness."""
     coordinator = rig.coordinator
-    await coordinator.async_set_light(True, brightness=7, color=9)
-    assert sends(rig) == [bytes([0x3C, 9]), bytes([0x3A, 7])]
-    assert coordinator.last_brightness == 7
+    await live(rig)
+    rig.state.update(lightStatus=0, lightBrightness=3, lightColor=4)
+    rig.clients[0].on_state(dict(rig.state))
 
-    await coordinator.async_set_light(False)
+    await coordinator.async_turn_on_light(brightness=7, color=9)
+    assert sends(rig) == [bytes([0x3A, 7]), bytes([0x3C, 9])]
+    assert coordinator.data["lightStatus"] == 1
+
+    await coordinator.async_turn_off_light()
     assert sends(rig)[-1] == bytes([0x3E])
-    rig.state.update(lightStatus=0, lightBrightness=0)
-    await coordinator.async_request_refresh()
-    assert coordinator.data["lightBrightness"] == 0
-    assert coordinator.last_brightness == 7
-
-    await coordinator.async_set_light(True)
-    assert sends(rig)[-1] == bytes([0x3A, 7])
-    rig.store.async_save.assert_not_awaited()
+    # The device keeps brightness and colour while off.
+    assert coordinator.data["lightStatus"] == 0
+    assert coordinator.data["lightBrightness"] == 7
 
 
-async def test_plain_light_on_defaults_before_any_level_was_seen(rig):
-    rig.state.update(lightStatus=0, lightBrightness=0)
+async def test_plain_light_on_uses_the_current_colour(rig):
+    """E.g. Apple Home: "on" means the last colour at the stored brightness."""
+    coordinator = rig.coordinator
+    await live(rig)
+    rig.state.update(lightStatus=0, lightBrightness=3, lightColor=8)
+    rig.clients[0].on_state(dict(rig.state))
 
-    await rig.coordinator.async_set_light(True)
+    await coordinator.async_turn_on_light()
+    assert sends(rig) == [bytes([0x3C, 8])]
 
-    assert sends(rig) == [bytes([0x3A, DEFAULT_LIGHT_BRIGHTNESS])]
-    assert rig.coordinator.last_brightness == DEFAULT_LIGHT_BRIGHTNESS
+    await coordinator.async_turn_off_light()
+    await coordinator.async_turn_on_light(brightness=2)
+    assert sends(rig)[-2:] == [bytes([0x3A, 2]), bytes([0x3C, 8])]
+
+
+async def test_brightness_change_of_a_lit_light_sends_only_brightness(rig):
+    coordinator = rig.coordinator
+    await live(rig)
+    rig.state.update(lightStatus=1, lightBrightness=3, lightColor=8)
+    rig.clients[0].on_state(dict(rig.state))
+
+    await coordinator.async_turn_on_light(brightness=5)
+
+    assert sends(rig) == [bytes([0x3A, 5])]
 
 
 async def test_transient_play_stop_off_never_persist_or_retry(rig):
     coordinator = rig.coordinator
+    await live(rig)
     await coordinator.async_play(7)
     await coordinator.async_stop_audio()
     assert sends(rig) == [bytes([0x3F, 7]), bytes([0x38])]
@@ -1521,33 +1649,51 @@ async def test_transient_play_stop_off_never_persist_or_retry(rig):
     current.send.side_effect = OSError("Ambiguous write")
     with pytest.raises(HomeAssistantError, match="will not be replayed"):
         await coordinator.async_play(1)
-    current.send.assert_awaited_once()
-    await coordinator.async_request_refresh()
+    assert current.send.await_count == 3
+    await live(rig)
     assert coordinator._client is not current
     coordinator._client.send.assert_not_awaited()
     assert sends(rig) == [bytes([0x3F, 7]), bytes([0x38])]
     assert coordinator.profile_record.revision == 0
 
 
+async def test_soother_stop_leaves_its_light_on(rig):
+    """Hardware: source 0 is music plus light; stopping audio keeps the light."""
+    coordinator = rig.coordinator
+    await live(rig)
+
+    await coordinator.async_play(0)
+    assert coordinator.data["musicStatus"] == 1
+    assert coordinator.data["lightStatus"] == 1
+
+    await coordinator.async_stop_audio()
+    assert coordinator.data["musicStatus"] == 0
+    assert coordinator.data["lightStatus"] == 1
+    assert sends(rig) == [bytes([0x3F, 0]), bytes([0x38])]
+
+
 @pytest.mark.parametrize(
     ("method", "arguments"),
     [
-        ("async_set_light", (1,)),
-        ("async_set_light", (True, 0)),
-        ("async_set_light", (True, None, 10)),
-        ("async_set_volume", (True,)),
-        ("async_set_volume", (10,)),
-        ("async_set_light_duration", (6,)),
-        ("async_set_playlist_duration", (7,)),
-        ("async_play", (8,)),
-        ("async_play", (True,)),
-        ("async_set_maintenance", (1,)),
-        ("async_restore_profile", (0,)),
+        ("async_turn_on_light", {"brightness": 0}),
+        ("async_turn_on_light", {"brightness": 10}),
+        ("async_turn_on_light", {"color": 10}),
+        ("async_set_level", {"key": "volume", "value": True}),
+        ("async_set_level", {"key": "volume", "value": 10}),
+        ("async_set_level", {"key": "light_duration", "value": 6}),
+        ("async_set_level", {"key": "playlist_duration", "value": 7}),
+        ("async_set_clock_settings", {"display": 1}),
+        ("async_set_clock_settings", {"brightness": 10}),
+        ("async_set_clock_settings", {"clock_format": 2}),
+        ("async_play", {"source": 8}),
+        ("async_play", {"source": True}),
+        ("async_set_maintenance", {"enabled": 1}),
+        ("async_restore_profile", {"expected_revision": 0}),
     ],
 )
 async def test_method_validation_before_storage_or_ble(rig, method, arguments):
     with pytest.raises(ProfileValidationError):
-        await getattr(rig.coordinator, method)(*arguments)
+        await getattr(rig.coordinator, method)(**arguments)
     rig.store.async_save.assert_not_awaited()
     rig.discovery.assert_not_called()
 
@@ -1560,13 +1706,13 @@ async def test_restore_rejects_non_integer_revision_before_ble(rig):
 
 async def test_maintenance_releases_ble_and_blocks_device_commands(rig):
     coordinator = rig.coordinator
-    await coordinator.async_request_refresh()
+    await live(rig)
     await coordinator.async_set_maintenance(True)
     assert coordinator.profile_record.maintenance
     assert not coordinator.available
     rig.clients[0].disconnect.assert_awaited_once()
     with pytest.raises(HomeAssistantError, match="maintenance"):
-        await coordinator.async_set_volume(8)
+        await coordinator.async_set_level("volume", 8)
     with pytest.raises(HomeAssistantError):
         await coordinator.async_play(1)
     assert len(rig.clients) == 1
@@ -1693,6 +1839,7 @@ async def test_entries_do_not_share_saved_intent(rig):
 
 
 async def test_clock_uses_supplied_ha_timezone_and_never_persists(rig):
+    await live(rig)
     now = datetime(2026, 9, 20, 0, 1, 2, tzinfo=ZONE)
     with patch("custom_components.lumalou.coordinator.dt_util.now", return_value=now):
         await rig.coordinator.async_sync_clock()
@@ -1714,76 +1861,86 @@ async def test_clock_rejects_obviously_invalid_host_time(rig):
     rig.discovery.assert_not_called()
 
 
-async def test_daily_clock_check_corrects_drift_in_a_live_session(rig):
+async def test_pushed_clock_drift_is_corrected_in_the_live_session(rig):
+    """The device pushes CURRENT_DATE every minute: DST and drift, no reconnect."""
     coordinator = rig.coordinator
-    await coordinator.async_request_refresh()
-    rig.fake.clock = CurrentDate(0, 0, 0, 0)  # e.g. after a DST change
+    await live(rig)
+    client = rig.clients[0]
 
-    coordinator.async_schedule_clock_check(NOW)
+    push_clock(client, CurrentDate(11, 0, 0, 0))  # e.g. after a DST change
+    push_clock(client, CurrentDate(11, 0, 0, 0))  # one correction at a time
     await asyncio.gather(*rig.background_tasks)
 
     assert sends(rig) == [bytes([0x30, 0x12, 0, 0, 0])]
     assert coordinator.last_clock_sync == NOW
     assert coordinator.available
-    assert len(rig.clients) == 2  # a strict session answers each query once
+    assert len(rig.clients) == 1
     rig.store.async_save.assert_not_awaited()
 
-
-async def test_daily_clock_check_leaves_a_correct_clock_alone(rig):
-    coordinator = rig.coordinator
-    await coordinator.async_request_refresh()
-
-    coordinator.async_schedule_clock_check(NOW)
+    # At most one automatic correction per hour.
+    push_clock(client, CurrentDate(11, 0, 0, 0))
     await asyncio.gather(*rig.background_tasks)
+    assert len(sends(rig)) == 1
 
+
+async def test_pushed_clock_within_tolerance_or_other_frames_are_ignored(rig):
+    coordinator = rig.coordinator
+    await live(rig)
+    client = rig.clients[0]
+
+    push_clock(client, CurrentDate(12, 0, 59, 0))
+    client.on_response(SimpleNamespace(opcode=0x18, decode=Mock()))
+    client.on_response(SimpleNamespace(opcode=0x13, decode=lambda: None))
+
+    assert not rig.background_tasks
     assert not sends(rig)
-    assert coordinator.last_clock_offset == 0
     assert coordinator.available
 
 
-async def test_daily_clock_check_skips_offline_or_locked_devices(rig):
+async def test_pushed_clock_is_not_corrected_for_locked_or_stale_sessions(rig):
     coordinator = rig.coordinator
-    coordinator.async_schedule_clock_check(NOW)
-    await coordinator.async_request_refresh()
+    await live(rig)
+    client = rig.clients[0]
     coordinator.protocol_verified = False
-    coordinator.async_schedule_clock_check(NOW)
-
+    push_clock(client, CurrentDate(0, 0, 0, 0))
     assert not rig.background_tasks
-    assert len(rig.clients) == 1
+
+    coordinator.protocol_verified = True
+    push_clock(client, CurrentDate(0, 0, 0, 0))
+    # The session is replaced before the correction runs.
+    await live(rig)
+    await asyncio.gather(*rig.background_tasks)
+    assert not sends(rig)
+
+    # A frame of an old session is ignored.
+    push_clock(client, CurrentDate(0, 0, 0, 0))
+    assert len(rig.background_tasks) == 1
 
 
-async def test_queued_clock_check_skips_after_maintenance(rig):
+async def test_queued_clock_correction_skips_after_maintenance(rig):
     coordinator = rig.coordinator
-    await coordinator.async_request_refresh()
-    coordinator.async_schedule_clock_check(NOW)
+    await live(rig)
+    push_clock(rig.clients[0], CurrentDate(0, 0, 0, 0))
     await coordinator.async_set_maintenance(True)
 
     results = await asyncio.gather(*rig.background_tasks, return_exceptions=True)
 
-    # Maintenance cancels the queued automatic check before it can connect.
+    # Maintenance cancels the queued automatic correction.
     assert any(isinstance(result, asyncio.CancelledError) for result in results)
-    assert len(rig.clients) == 1
     assert not sends(rig)
 
 
-async def test_failed_daily_clock_check_only_drops_the_session(rig):
+async def test_failed_pushed_clock_correction_only_drops_the_session(rig):
     coordinator = rig.coordinator
-    await coordinator.async_request_refresh()
-    original = rig.client_factory.side_effect
+    await live(rig)
+    rig.settings.fail_opcode = 0x30
 
-    def failing_read(*args, **kwargs):
-        client = original(*args, **kwargs)
-        client.request_named.side_effect = OSError("synthetic")
-        return client
-
-    rig.client_factory.side_effect = failing_read
-
-    coordinator.async_schedule_clock_check(NOW)
+    push_clock(rig.clients[0], CurrentDate(0, 0, 0, 0))
     await asyncio.gather(*rig.background_tasks)
 
     assert not sends(rig)
-    assert not coordinator.available
-    assert coordinator._client is None
+    assert coordinator.clock_sync_paused
+    assert coordinator.last_clock_sync is None
 
 
 async def test_recovery_never_syncs_from_untrusted_host_time(rig):
@@ -1802,7 +1959,7 @@ async def test_recovery_never_syncs_from_untrusted_host_time(rig):
 async def test_import_export_confirmation_conflicts_and_no_restore(rig):
     coordinator = rig.coordinator
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "scope": "persistent_profile",
         "profile": {**complete_profile(), "playlist": [12, 2, 2]},
     }
@@ -1830,7 +1987,7 @@ async def test_partial_import_never_replaces_a_complete_profile(rig):
     )
     await coordinator.async_setup()
     partial = {
-        "schema_version": 2,
+        "schema_version": 3,
         "scope": "persistent_profile",
         "profile": {"playlist": [1]},
     }
@@ -1994,9 +2151,8 @@ def test_partial_callback_registration_is_rolled_back(rig):
 
 async def test_unavailable_immediately_invalidates_and_closes_old_session(rig):
     coordinator = rig.coordinator
-    await coordinator.async_request_refresh()
+    await live(rig)
     old_client = rig.clients[0]
-    received = coordinator._received
     rig.address_present.return_value = True
     coordinator.async_start()
     unavailable = rig.track_unavailable.call_args.args[1]
@@ -2008,7 +2164,7 @@ async def test_unavailable_immediately_invalidates_and_closes_old_session(rig):
     assert coordinator.data is None
     assert coordinator._client is None
     old_client.on_state(rig.state)
-    assert coordinator._received == received
+    assert coordinator.data is None
     await asyncio.gather(*list(coordinator._background_tasks))
     old_client.disconnect.assert_awaited_once_with()
     await coordinator.async_shutdown()
@@ -2016,7 +2172,7 @@ async def test_unavailable_immediately_invalidates_and_closes_old_session(rig):
 
 async def test_unavailable_cleanup_cannot_close_reconnected_session(rig):
     coordinator = rig.coordinator
-    await coordinator.async_request_refresh()
+    await live(rig)
     old_client = rig.clients[0]
     rig.address_present.return_value = True
     coordinator.async_start()
@@ -2065,30 +2221,37 @@ async def test_shutdown_unregisters_and_cancels_delayed_recovery(rig):
 
 async def test_shutdown_cancels_active_request_and_unregisters_listeners(rig):
     coordinator = rig.coordinator
-    await coordinator.async_request_refresh()
-    client = rig.clients[0]
+    await coordinator.async_setup()
+    await live(rig)
     started = asyncio.Event()
+    original = rig.client_factory.side_effect
 
-    async def hang(**kwargs):
-        started.set()
-        await asyncio.Event().wait()
+    def hanging_read(*args, **kwargs):
+        client = original(*args, **kwargs)
 
-    client.request_state.side_effect = hang
+        async def hang(**kwargs):
+            started.set()
+            await asyncio.Event().wait()
+
+        client.request_state.side_effect = hang
+        return client
+
+    rig.client_factory.side_effect = hanging_read
     listener = Mock()
     coordinator.async_add_listener(listener)
-    task = asyncio.create_task(coordinator.async_request_refresh())
+    task = asyncio.create_task(live(rig))
     await started.wait()
+    client = rig.clients[-1]
     await coordinator.async_shutdown()
     assert task.cancelled()
     assert not coordinator._tasks
     assert not coordinator._listeners
     assert coordinator._client is None
     assert not coordinator.available
-    received = coordinator._received
     client.on_state(rig.state)
-    assert coordinator._received == received
+    assert coordinator.data is None
     with pytest.raises(HomeAssistantError, match="unloaded"):
-        await coordinator.async_request_refresh()
+        await live(rig)
 
 
 async def test_queued_operation_rechecks_unloaded_after_acquiring_lock(rig):
@@ -2135,7 +2298,7 @@ async def test_upstream_connect_receives_current_ble_device_and_only_main_gatt()
             "lumalou.client.parse_factory_device_fingerprint", return_value=FINGERPRINT
         ),
     ):
-        client = await coordinator._connect()
+        client = await coordinator._async_new_session()
         assert establish.await_args.args[1] is device
         raw_bleak.assert_not_called()
         scan.assert_not_awaited()
@@ -2182,7 +2345,7 @@ async def test_connect_failures_are_logged_once_until_available(rig, caplog):
     caplog.set_level("DEBUG", logger="custom_components.lumalou.coordinator")
     for _ in range(2):
         with pytest.raises(HomeAssistantError):
-            await coordinator.async_request_refresh()
+            await live(rig)
 
     records = [
         record
@@ -2203,10 +2366,10 @@ async def test_connect_failures_are_logged_once_until_available(rig, caplog):
     # A successful session logs the return once and re-arms the first log.
     rig.client_factory.side_effect = original
     caplog.clear()
-    await coordinator.async_request_refresh()
+    await live(rig)
     rig.client_factory.side_effect = fail_connect
     with pytest.raises(HomeAssistantError):
-        await coordinator.async_request_refresh()
+        await live(rig)
     messages = [record.getMessage() for record in caplog.records]
     assert messages.count("Test Lumalou is available again") == 1
     assert (
@@ -2220,7 +2383,7 @@ async def test_connect_failures_are_logged_once_until_available(rig, caplog):
 
 async def test_session_connect_uses_the_connector_retry_budget(rig):
     """The coordinator never passes a deadline shorter than the retries."""
-    await rig.coordinator.async_request_refresh()
+    await live(rig)
 
     rig.clients[0].connect.assert_awaited_once_with(timeout=CONNECT_TIMEOUT)
     assert CONNECT_TIMEOUT > MAX_CONNECT_ATTEMPTS * BLEAK_SAFETY_TIMEOUT
@@ -2232,10 +2395,145 @@ async def test_device_write_invalidates_a_pending_preview(rig):
     await verified_profile(rig)
     snapshot, revision = await coordinator.async_read_profile_snapshot()
 
-    await coordinator.async_set_volume(7)
+    await coordinator.async_set_level("volume", 7)
 
     with pytest.raises(HomeAssistantError, match="Read the device profile again"):
         await coordinator.async_accept_device_profile(
             snapshot, coordinator.profile_record.revision, confirmed=True
         )
     assert revision == 1
+
+
+async def test_clock_entities_write_one_field_and_keep_it_in_the_profile(rig):
+    """Owner needs 24 h: format 1; the other fields come from device state."""
+    coordinator = rig.coordinator
+    rig.state.update(clockDisplay=1, clockBrightness=2, clockFormat=0)
+    await verified_profile(rig)
+    revision = coordinator.profile_record.revision
+    start = len(rig.journal)
+
+    await coordinator.async_set_clock_settings(clock_format=1)
+    await coordinator.async_set_clock_settings(brightness=9)
+    await coordinator.async_set_clock_settings(display=False)
+
+    assert sends(rig, start) == [
+        bytes([0x79, 1, 0x21]),
+        bytes([0x79, 1, 0x91]),
+        bytes([0x79, 0, 0x91]),
+    ]
+    record = coordinator.profile_record
+    assert record.desired_profile["clock_settings"] == {
+        "display": False,
+        "brightness": 9,
+        "format": 1,
+    }
+    assert record.revision == revision
+    assert record.is_verified
+
+    # Writing the saved value again changes nothing.
+    saves = rig.store.async_save.await_count
+    await coordinator.async_set_clock_settings(display=False)
+    assert rig.store.async_save.await_count == saves
+
+
+async def test_commands_need_a_pushed_state(rig):
+    coordinator = rig.coordinator
+    await live(rig)
+    coordinator.data = None
+
+    with pytest.raises(HomeAssistantError, match="will not be replayed"):
+        await coordinator.async_turn_on_light()
+    with pytest.raises(HomeAssistantError, match="will not be replayed"):
+        await coordinator.async_set_clock_settings(display=True)
+    assert not sends(rig)
+
+
+async def test_reconnect_waits_for_the_hardware_gap(rig):
+    """Hardware: an immediate reconnect after a disconnect sometimes fails."""
+    coordinator = rig.coordinator
+    await coordinator.async_setup()
+    await live(rig)
+    with (
+        patch("custom_components.lumalou.coordinator.RECONNECT_DELAY", 1.5),
+        patch(
+            "custom_components.lumalou.coordinator.asyncio.sleep", new=AsyncMock()
+        ) as sleep,
+    ):
+        await coordinator._disconnect()
+        await live(rig)
+
+    (delay,) = [call.args[0] for call in sleep.await_args_list]
+    assert 0 < delay <= 1.5
+    assert coordinator.available
+
+
+@pytest.mark.parametrize("reason", ["maintenance", "absent", "no_device"])
+async def test_new_sessions_need_presence_and_no_maintenance(rig, reason):
+    coordinator = rig.coordinator
+    if reason == "maintenance":
+        await coordinator.async_set_maintenance(True)
+    elif reason == "absent":
+        coordinator.async_start()
+    else:
+        rig.discovery.return_value = None
+
+    with pytest.raises(HomeAssistantError, match="Could not read a complete"):
+        await coordinator.async_read_profile_snapshot()
+
+    rig.client_factory.assert_not_called()
+    coordinator.async_stop_callbacks()
+
+
+async def test_profile_read_uses_a_pushed_clock_frame_of_the_same_session(rig):
+    """A minute push can arrive before the current-date request of a read."""
+    coordinator = rig.coordinator
+    original = rig.client_factory.side_effect
+    pushed = {"frame": True}
+
+    def early_push(*args, **kwargs):
+        client = original(*args, **kwargs)
+        request = client.request_named.side_effect
+
+        async def connect(**_kwargs):
+            client.connected = True
+            if pushed["frame"]:
+                push_clock(client, CurrentDate(12, 0, 30, 0))
+
+        async def request_named(name, **kwargs):
+            if name == "current_date":
+                raise FreshSessionRequiredError("pushed first")
+            return await request(name, **kwargs)
+
+        client.connect.side_effect = connect
+        client.request_named.side_effect = request_named
+        return client
+
+    rig.client_factory.side_effect = early_push
+
+    await coordinator.async_read_profile_snapshot()
+    assert coordinator.last_clock_offset is None  # a read never syncs
+
+    pushed["frame"] = False
+    with pytest.raises(HomeAssistantError, match="Could not read a complete"):
+        await coordinator.async_read_profile_snapshot()
+
+
+async def test_exhausted_flag_is_set_once_the_attempts_are_used(rig):
+    """E.g. a final attempt interrupted by an unload never marked itself."""
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    coordinator.entry.options = {"auto_restore": False}
+    rig.state.update(currentVolume=1)
+    rig.fake.clock = CurrentDate(5, 0, 0, 0)
+    await coordinator._async_recover()
+    coordinator._restore_needed = replace(
+        coordinator.restore_needed, auto_restore_attempts=2
+    )
+    coordinator.entry.options = {}
+    start = len(rig.journal)
+
+    await coordinator._async_recover()
+
+    assert coordinator.restore_needed.auto_restore_exhausted
+    assert coordinator.repair_needed is coordinator.restore_needed
+    assert not sends(rig, start)

@@ -459,7 +459,7 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
     async def async_step_behavior(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Configure opt-in automatic restore (off by default)."""
+        """Configure automatic restore after a reset (on by default)."""
         if user_input is not None:
             return self.async_create_entry(data=user_input)
         return self.async_show_form(

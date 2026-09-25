@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EVENT_CORE_CONFIG_UPDATE
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import issue_registry as ir
-from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
@@ -34,7 +31,7 @@ type LumalouConfigEntry = ConfigEntry[LumalouRuntimeData]
 def async_sync_restore_issue(
     hass: HomeAssistant, entry_id: str, need: RestoreNeeded | None
 ) -> None:
-    """Show the restore issue exactly while the coordinator reports a mismatch."""
+    """Show the restore issue exactly while the user must resolve a mismatch."""
     issue_id = f"{entry_id}_{ISSUE_ID_PROFILE_RESTORE_NEEDED}"
     if need is None:
         ir.async_delete_issue(hass, DOMAIN, issue_id)
@@ -61,12 +58,6 @@ def async_sync_restore_issue(
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
-@callback
-def _time_zone_changed(data: Mapping[str, Any]) -> bool:
-    """Match core configuration updates that change the time zone."""
-    return "time_zone" in data
-
-
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up integration-wide actions."""
     async_setup_services(hass)
@@ -87,29 +78,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: LumalouConfigEntry) -> b
     await coordinator.async_setup()
     entry.runtime_data = LumalouRuntimeData(coordinator)
 
-    restore_needed = coordinator.restore_needed
+    repair_needed = coordinator.repair_needed
 
     @callback
     def _async_sync_restore_issue() -> None:
-        nonlocal restore_needed
-        if (need := coordinator.restore_needed) != restore_needed:
-            restore_needed = need
+        nonlocal repair_needed
+        if (need := coordinator.repair_needed) != repair_needed:
+            repair_needed = need
             async_sync_restore_issue(hass, entry.entry_id, need)
 
     entry.async_on_unload(coordinator.async_add_listener(_async_sync_restore_issue))
-    # Reconnects correct the clock; these catch DST and drift in long sessions.
-    entry.async_on_unload(
-        async_track_time_change(
-            hass, coordinator.async_schedule_clock_check, hour=3, minute=5, second=0
-        )
-    )
-    entry.async_on_unload(
-        hass.bus.async_listen(
-            EVENT_CORE_CONFIG_UPDATE,
-            coordinator.async_schedule_clock_check,
-            event_filter=_time_zone_changed,
-        )
-    )
 
     try:
         coordinator.async_start()
