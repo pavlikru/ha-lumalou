@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A power loss was still not restored automatically (0.1.0b6 on hardware).
+  An end-to-end test with the real client, encrypted frames and a device
+  emulator gives exactly the reported diagnostics when a replug resets the
+  settings but leaves the device clock away from 05:00 Sunday: only the clock
+  is set and a Repair is raised (with the 05:00 Sunday clock, with or without
+  a clock push at connect and a dropped first handshake, it restores). A device
+  whose settings are all at their factory defaults is now a reset whatever
+  its clock shows. The raw device clock, the offset and each reset criterion
+  are logged at info level.
+- A restore could fail with `restore_mismatch` on `light_and_sound`: light and
+  sound values the device cannot show at that moment (all while the soother
+  runs, the brightness while the light is off) are no longer compared, and
+  changes made while the soother runs are not saved. Each mismatching field is
+  logged with its saved and device value.
+- Downloading diagnostics failed: the library version is read outside the
+  event loop.
+
 ## [0.1.0b6] - 2026-09-25
 
 Fixes from the second Home Assistant run on hardware (Raspberry Pi 4).
