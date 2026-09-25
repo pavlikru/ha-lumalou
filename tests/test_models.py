@@ -100,6 +100,7 @@ def test_partial_profile_valid_but_never_complete():
     assert validate_profile({"playlist": [2]}) == {"playlist": [2]}
     assert not profile_is_complete({})
     assert not profile_is_complete({"playlist": [2]})
+    assert not profile_is_complete({"brightness": 5})
     with pytest.raises(ProfileValidationError, match="incomplete"):
         require_complete_profile({"playlist": [2]})
 
