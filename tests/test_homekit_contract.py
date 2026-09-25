@@ -138,6 +138,7 @@ async def loaded_lumalou(hass: HomeAssistant) -> MockConfigEntry:
             "routineVolume": 2,
         },
         routine_phase="off",
+        playing_source=None,
         current_task="none",
         async_add_routine_listener=Mock(return_value=lambda: None),
         async_setup=AsyncMock(),

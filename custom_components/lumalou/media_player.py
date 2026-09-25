@@ -12,7 +12,7 @@ from homeassistant.components.media_player import (
 )
 from homeassistant.exceptions import ServiceValidationError
 
-from lumalou import Audio, Song  # type: ignore[attr-defined]
+from lumalou import Audio, Song, Stage  # type: ignore[attr-defined]
 
 from .const import DOMAIN
 from .entity import LumalouControlEntity
@@ -72,10 +72,25 @@ class LumalouMediaPlayer(LumalouControlEntity, MediaPlayerEntity):
 
     @property
     def source(self) -> str | None:
+        """The playing source, as far as the device state tells it.
+
+        Built-in sounds (songs 13..18) name themselves. Both playlists play
+        songs 1..12: the source Home Assistant started is used while it
+        plays; otherwise the soother (sleep playlist, also started by the
+        remote) is recognised by its READY stage (hardware). Else unknown.
+        """
         song = self._song()
-        # Only these built-in sounds have a one-to-one Audio mapping.
         name = song.name.lower() if song is not None else None
-        return name if name in AUDIOS else None
+        if name in AUDIOS:
+            return name
+        if not self.snapshot_value("musicStatus"):
+            return None
+        started = self.coordinator.playing_source
+        if started in (Audio.SLEEP_PLAYLIST, Audio.CUSTOM_PLAYLIST):
+            return Audio(started).name.lower()
+        if self.snapshot_value("currentStage") == Stage.READY:
+            return "sleep_playlist"
+        return None
 
     @property
     def media_title(self) -> str | None:

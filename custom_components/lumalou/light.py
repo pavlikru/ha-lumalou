@@ -54,6 +54,13 @@ class LumalouLight(LumalouControlEntity, LightEntity):
 
     @property
     def effect(self) -> str | None:
+        """The palette colour; none while the soother cycles the colours.
+
+        The soother (and the sleep stages) report a current stage; its light
+        cycles colours, so no palette colour is claimed while it is on.
+        """
+        if self.snapshot_value("lightStatus") and self.snapshot_value("currentStage"):
+            return None
         value = self.snapshot_value("lightColor")
         try:
             return Color(int(value)).name.lower() if value is not None else None

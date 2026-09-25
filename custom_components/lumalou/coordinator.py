@@ -11,6 +11,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
 
+from bleak.exc import BleakError
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -19,7 +20,11 @@ from homeassistant.util import dt as dt_util
 
 from lumalou import commands  # type: ignore[attr-defined]
 from lumalou.advertisement import MANUFACTURER_ID, parse_advertisement
-from lumalou.client import FreshSessionRequiredError, ResponseEnvelope
+from lumalou.client import (
+    DisconnectedError,
+    FreshSessionRequiredError,
+    ResponseEnvelope,
+)
 from lumalou.profile import RoutineMusicSettings
 from lumalou.responses import CurrentDate
 from lumalou.schedules import RoutineTaskStatus
@@ -46,6 +51,7 @@ from .const import (
     ROUTINE_SETTING_FIELDS,
     ROUTINE_START_DELAY,
     ROUTINE_TASKS,
+    SESSION_CONNECT_ATTEMPTS,
     SESSION_SILENCE_TIMEOUT,
     STATE_CONFIRM_TIMEOUT,
     WHOLE_HOUR_TOLERANCE,
@@ -176,6 +182,11 @@ def _all_tasks_done(status: RoutineTaskStatus) -> bool:
     )
 
 
+def _monotonic() -> float:
+    """Event-loop time (patched in tests)."""
+    return asyncio.get_running_loop().time()
+
+
 def _trusted_now() -> datetime | None:
     """Return HA local time, or None when the host clock is obviously unset."""
     now = dt_util.now()
@@ -197,6 +208,9 @@ class LumalouCoordinator:
         self.sw_version: str | None = None
         # Latest GLOBAL_STATE pushed by the live session.
         self.data: dict[str, int] | None = None
+        # Audio source Home Assistant started, while it plays: the playlists
+        # both report songs 1..12, so the song alone cannot tell them apart.
+        self.playing_source: int | None = None
         self.present = False
         self.available = False
         # Runtime-only restore/recovery state for entities, Repairs and
@@ -219,6 +233,8 @@ class LumalouCoordinator:
         self._generation = 0
         # Event-loop time before which no new session is opened.
         self._reconnect_at = 0.0
+        # Detached sessions whose link is not closed yet.
+        self._detached: dict[int, SafeLumalouClient] = {}
         self._state_event = asyncio.Event()
         self._lock = asyncio.Lock()
         self._listeners: set[Callable[[], None]] = set()
@@ -593,7 +609,12 @@ class LumalouCoordinator:
             delay = self._next_recovery_at - asyncio.get_running_loop().time()
             if delay > 0:
                 await asyncio.sleep(delay)
-            if self._stopped or not self.present or self._profile_record.maintenance:
+            if (
+                self._stopped
+                or not self.present
+                or self._profile_record.maintenance
+                or self.available
+            ):
                 return
             try:
                 await self._async_recover()
@@ -833,6 +854,8 @@ class LumalouCoordinator:
             return
         self._heard_from_device(generation)
         previous, self.data = self.data, dict(state)
+        if not state["musicStatus"]:
+            self.playing_source = None
         if (
             previous is not None
             and previous["operationMode"] == ROUTINE_OPERATION_MODE
@@ -1000,10 +1023,37 @@ class LumalouCoordinator:
             raise _error("maintenance_mode")
         if self._callbacks_started and not self.present:
             raise HomeAssistantError("Lumalou is not advertising")
-        await self._disconnect()
-        delay = self._reconnect_at - asyncio.get_running_loop().time()
-        if delay > 0:
-            await asyncio.sleep(delay)
+        for attempt in range(1, SESSION_CONNECT_ATTEMPTS + 1):
+            # The live or a lost session must be fully closed first; the gap
+            # counts from that close.
+            await self._async_close_all()
+            delay = self._reconnect_at - _monotonic()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            try:
+                return await self._async_connect()
+            except (DisconnectedError, BleakError) as err:
+                await self._async_close_all()
+                if attempt == SESSION_CONNECT_ATTEMPTS:
+                    self._log_connect_failure(err)
+                    raise
+                _LOGGER.debug(
+                    "Connecting to %s failed (%s: %s); retrying",
+                    self.device_name,
+                    type(err).__name__,
+                    err,
+                )
+            except Exception as err:
+                await self._async_close_all()
+                self._log_connect_failure(err)
+                raise
+            except BaseException:
+                await self._async_close_all()
+                raise
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    async def _async_connect(self) -> SafeLumalouClient:
+        """Create the session client for the current device and connect it."""
         device = bluetooth.async_ble_device_from_address(
             self.hass, self.address, connectable=True
         )
@@ -1021,16 +1071,14 @@ class LumalouCoordinator:
             ),
         )
         self._client = client
-        try:
-            await client.connect(timeout=CONNECT_TIMEOUT)
-        except Exception as err:
-            await self._disconnect()
-            self._log_connect_failure(err)
-            raise
-        except BaseException:
-            await self._disconnect()
-            raise
+        await client.connect(timeout=CONNECT_TIMEOUT)
         return client
+
+    async def _async_close_all(self) -> None:
+        """Close the current session and any detached one still open."""
+        await self._disconnect()
+        for client in tuple(self._detached.values()):
+            await self._close_client(client)
 
     def _log_connect_failure(self, err: Exception) -> None:
         """Log the first failure while unavailable once; repeats go to debug."""
@@ -1060,14 +1108,19 @@ class LumalouCoordinator:
             self._silence_timer = None
         # Routine progress is only compared within one session.
         self.routine_status = None
+        self.playing_source = None
         self._routine_finished = False
         client, self._client = self._client, None
         if client is not None:
-            self._reconnect_at = asyncio.get_running_loop().time() + RECONNECT_DELAY
+            self._detached[id(client)] = client
+            self._reconnect_at = max(self._reconnect_at, _monotonic() + RECONNECT_DELAY)
         self._notify()
         return client
 
     async def _close_client(self, client: SafeLumalouClient) -> None:
+        """Close a detached session once; the reconnect gap starts after it."""
+        if id(client) not in self._detached:
+            return
         try:
             async with asyncio.timeout(GATT_TIMEOUT):
                 await client.disconnect()
@@ -1075,6 +1128,9 @@ class LumalouCoordinator:
             # Local invalidation is authoritative. Teardown failure must not hide
             # the original command error or prevent config-entry unload.
             pass
+        finally:
+            self._detached.pop(id(client), None)
+            self._reconnect_at = max(self._reconnect_at, _monotonic() + RECONNECT_DELAY)
 
     async def _disconnect(self) -> None:
         if client := self._invalidate():
@@ -1336,6 +1392,7 @@ class LumalouCoordinator:
         validate_integer(source, 0, 7, "audio source")
         async with self._device_write_operation():
             await self._write(commands.play_audio(source))
+            self.playing_source = source
 
     async def async_stop_audio(self) -> None:
         """Stop audio only; a soother light stays on until turned off."""
