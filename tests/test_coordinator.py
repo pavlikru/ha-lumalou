@@ -488,7 +488,50 @@ async def test_complete_profile_read_uses_fresh_typed_blocks_without_saving(rig)
     assert not any(event[0] == "send" for event in rig.journal)
     rig.store.async_save.assert_not_awaited()
     assert not coordinator.profile_record.desired_profile
+    # The read session stays open for push updates instead of being replaced
+    # by an immediate reconnect that reads the same state again.
+    assert coordinator.available
+    assert coordinator.data == rig.state
+    assert rig.clients[0].connected
+    assert len(rig.clients) == 1
+    assert not rig.background_tasks
+
+
+async def test_preview_read_then_confirm_opens_one_session(rig):
+    """Hardware: read + confirm used to reconnect right after the read."""
+    coordinator = rig.coordinator
+    coordinator.protocol_verified = False
+    coordinator.present = True
+    await coordinator.async_setup()
+
+    snapshot, revision = await coordinator.async_read_profile_snapshot()
+    await coordinator.async_accept_device_profile(snapshot, revision, confirmed=True)
+    await asyncio.gather(*rig.background_tasks)
+
+    assert len(rig.clients) == 1
+    assert [event[0] for event in rig.journal].count("connect") == 1
+    assert coordinator.available and coordinator.protocol_verified
+
+    # The strict session answered GLOBAL_STATE once; a refresh reconnects.
+    await coordinator.async_request_refresh()
+    assert len(rig.clients) == 2 and coordinator.available
+
+
+async def test_failed_preview_read_releases_the_session(rig):
+    coordinator = rig.coordinator
+    await coordinator.async_setup()
+    original = rig.client_factory.side_effect
+
+    def failing_read(*args, **kwargs):
+        client = original(*args, **kwargs)
+        client.request_named.side_effect = OSError("synthetic")
+        return client
+
+    rig.client_factory.side_effect = failing_read
+    with pytest.raises(HomeAssistantError):
+        await coordinator.async_read_profile_snapshot()
     assert not coordinator.available
+    assert coordinator._client is None
     assert not rig.clients[0].connected
 
 
@@ -894,6 +937,71 @@ async def test_recovery_syncs_deviating_clock_and_detects_nothing_when_matching(
     assert coordinator.last_clock_offset == 59
 
 
+async def test_failed_recovery_clock_write_pauses_and_recovery_completes(rig, caplog):
+    """Hardware: a failing clock write was repeated on every recovery retry."""
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    rig.fake.clock = CurrentDate(0, 0, 3, 0)  # reset by a power cycle
+    rig.settings.fail_opcode = 0x30
+    clients = len(rig.clients)
+
+    await coordinator._async_recover()
+
+    # One failed write, then one more read without it: available again.
+    assert coordinator.available
+    assert len(rig.clients) == clients + 2
+    assert [client.send.await_count for client in rig.clients[clients:]] == [1, 0]
+    assert coordinator.last_clock_sync is None
+    assert coordinator.last_clock_offset > 60
+    assert "Could not correct the Test Lumalou clock" in caplog.text
+    assert coordinator.clock_sync_paused
+
+    # The next recovery pass reads the device but does not retry the write.
+    await coordinator._async_recover()
+    assert rig.clients[-1].send.await_count == 0
+    assert coordinator.available
+
+    # The daily check honours the same pause.
+    coordinator.async_schedule_clock_check(NOW)
+    await asyncio.gather(*rig.background_tasks)
+    assert rig.clients[-1].send.await_count == 0
+
+
+async def test_clock_write_retries_after_the_pause_and_button_clears_it(rig):
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    rig.fake.clock = CurrentDate(0, 0, 3, 0)
+    rig.settings.fail_opcode = 0x30
+    await coordinator._async_recover()
+    rig.settings.fail_opcode = None
+
+    coordinator._clock_sync_retry_at = asyncio.get_running_loop().time() - 1
+    start = len(rig.journal)
+    await coordinator._async_recover()
+    assert sends(rig, start) == [bytes([0x30, 0x12, 0, 0, 0])]
+    assert not coordinator.clock_sync_paused
+    assert coordinator.last_clock_sync == NOW
+
+    # An explicit sync always writes and clears a pause.
+    coordinator._clock_sync_retry_at = asyncio.get_running_loop().time() + 3600
+    await coordinator.async_sync_clock()
+    assert coordinator._clock_sync_retry_at == 0
+
+
+async def test_restore_clock_write_failure_is_not_paused_or_retried(rig):
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    rig.fake.clock = CurrentDate(0, 0, 3, 0)
+    rig.settings.fail_opcode = 0x30
+
+    with pytest.raises(HomeAssistantError):
+        await coordinator.async_restore_profile(
+            coordinator.profile_record.revision, confirmed=True
+        )
+    assert coordinator._clock_sync_retry_at == 0
+    assert not coordinator.available
+
+
 async def test_recovery_flags_reset_device_without_opt_in_and_never_writes(rig):
     coordinator = rig.coordinator
     await verified_profile(rig)
@@ -1078,7 +1186,7 @@ async def test_recovery_read_failure_disconnects_and_raises_for_backoff(rig):
     assert not coordinator.available
 
 
-async def test_session_lost_marks_unavailable_and_schedules_recovery(rig):
+async def test_session_lost_marks_unavailable_and_schedules_recovery(rig, caplog):
     coordinator = rig.coordinator
     await coordinator.async_setup()
     await coordinator.async_request_refresh()
@@ -1087,8 +1195,13 @@ async def test_session_lost_marks_unavailable_and_schedules_recovery(rig):
     listener = Mock()
     coordinator.async_add_listener(listener)
 
-    with patch.object(coordinator, "_async_recover", new=AsyncMock()) as recover:
+    client.last_error = OSError("synthetic link loss")
+    with (
+        patch.object(coordinator, "_async_recover", new=AsyncMock()) as recover,
+        caplog.at_level("DEBUG", logger="custom_components.lumalou.coordinator"),
+    ):
         client.lost(client)
+        assert "session ended: OSError: synthetic link loss" in caplog.text
         assert not coordinator.available
         assert coordinator.data is None
         listener.assert_called()
@@ -1463,6 +1576,40 @@ async def test_maintenance_releases_ble_and_blocks_device_commands(rig):
     rig.clients[0].send.assert_not_awaited()
 
 
+async def test_maintenance_does_not_wait_for_an_in_flight_recovery(rig):
+    """Hardware: maintenance stayed off while recovery held the lock."""
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    await coordinator._disconnect()
+    original = rig.client_factory.side_effect
+    connecting = asyncio.Event()
+
+    def hanging_connect(*args, **kwargs):
+        client = original(*args, **kwargs)
+
+        async def connect(**_kwargs):
+            connecting.set()
+            await asyncio.Event().wait()  # a connect budget that never ends
+
+        client.connect.side_effect = connect
+        return client
+
+    rig.client_factory.side_effect = hanging_connect
+    coordinator.present = True
+    coordinator._schedule_recovery()
+    recovery = coordinator._recovery_task
+    assert recovery is not None
+    await asyncio.wait_for(connecting.wait(), 1)
+
+    await asyncio.wait_for(coordinator.async_set_maintenance(True), 1)
+
+    assert coordinator.profile_record.maintenance
+    assert recovery.cancelled()
+    assert coordinator._recovery_task is None
+    assert coordinator._client is None
+    rig.clients[-1].disconnect.assert_awaited()
+
+
 async def test_maintenance_survives_new_coordinator_without_reconnecting(rig):
     await rig.coordinator.async_set_maintenance(True)
     record = rig.coordinator.profile_record
@@ -1611,8 +1758,10 @@ async def test_queued_clock_check_skips_after_maintenance(rig):
     coordinator.async_schedule_clock_check(NOW)
     await coordinator.async_set_maintenance(True)
 
-    await asyncio.gather(*rig.background_tasks)
+    results = await asyncio.gather(*rig.background_tasks, return_exceptions=True)
 
+    # Maintenance cancels the queued automatic check before it can connect.
+    assert any(isinstance(result, asyncio.CancelledError) for result in results)
     assert len(rig.clients) == 1
     assert not sends(rig)
 
