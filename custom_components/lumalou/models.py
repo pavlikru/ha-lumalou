@@ -48,6 +48,11 @@ FULL_PROFILE_FIELDS = frozenset(
 # timer remainder, nap state/alarm, executing alarm, current routine step, and
 # task status. Those are transient or lack a persistent setter/readback contract.
 # The `alarm` block is only the established seven alarm nibbles plus sound nibble.
+# GLOBAL_STATE reports routine music and volume as 4-bit values, so only
+# 0..15 can be verified after a restore. Saved records written by earlier
+# editors may still hold a full setter byte (see `validate_profile`).
+ROUTINE_NIBBLE_MAX = 15
+LEGACY_ROUTINE_BYTE_MAX = 255
 SYNC_STATUSES = frozenset({"empty", "saved", "pending", "applying", "partial", "error"})
 
 
@@ -119,7 +124,7 @@ def _clock_settings(value: Any) -> dict[str, Any]:
     }
 
 
-def _routine_settings(value: Any) -> dict[str, Any]:
+def _routine_settings(value: Any, byte_max: int) -> dict[str, Any]:
     fields = {
         "enabled",
         "music",
@@ -130,10 +135,9 @@ def _routine_settings(value: Any) -> dict[str, Any]:
     data = _strict_mapping(value, fields, "routine settings")
     return {
         "enabled": _boolean(data["enabled"], "routine mode"),
-        # The audited setter carries a full music byte, not a known enum.
-        "music": validate_integer(data["music"], 0, 255, "routine music"),
-        # The setter carries one byte. No narrower hardware/UI range is proven.
-        "volume": validate_integer(data["volume"], 0, 255, "routine volume"),
+        # The setters carry a byte, but GLOBAL_STATE reports both as nibbles.
+        "music": validate_integer(data["music"], 0, byte_max, "routine music"),
+        "volume": validate_integer(data["volume"], 0, byte_max, "routine volume"),
         "task_reward_sfx": validate_integer(
             data["task_reward_sfx"], 0, 15, "task reward sound"
         ),
@@ -203,8 +207,14 @@ def _validate_v1_profile(value: Any) -> dict[str, Any]:
     return result
 
 
-def validate_profile(value: Any) -> dict[str, Any]:
-    """Copy a strict v2 profile; absent top-level fields remain unknown."""
+def validate_profile(value: Any, *, stored: bool = False) -> dict[str, Any]:
+    """Copy a strict v2 profile; absent top-level fields remain unknown.
+
+    `stored=True` is only for loading and merging already saved records: it
+    still accepts the full routine music/volume byte that older editors
+    allowed, so such a record loads instead of requiring storage recovery.
+    Every new value, import and restore uses the device-verifiable range.
+    """
     if not isinstance(value, dict) or set(value) - FULL_PROFILE_FIELDS:
         raise ProfileValidationError("Unsupported profile fields")
     result = deepcopy(value)
@@ -214,7 +224,8 @@ def validate_profile(value: Any) -> dict[str, Any]:
         elif name == "clock_settings":
             result[name] = _clock_settings(item)
         elif name == "routine_settings":
-            result[name] = _routine_settings(item)
+            byte_max = LEGACY_ROUTINE_BYTE_MAX if stored else ROUTINE_NIBBLE_MAX
+            result[name] = _routine_settings(item, byte_max)
         elif name == "ready_to_rise":
             result[name] = _ready_to_rise(item)
         elif name == "sleepy_times":
@@ -226,6 +237,10 @@ def validate_profile(value: Any) -> dict[str, Any]:
         else:
             validate_integer(item, *PROFILE_RANGES[name], name)
     return result
+
+
+def _validate_stored_profile(value: Any) -> dict[str, Any]:
+    return validate_profile(value, stored=True)
 
 
 def profile_is_complete(value: Any) -> bool:
@@ -309,7 +324,9 @@ class ProfileRecord:
     @classmethod
     def from_dict(cls, value: Any) -> ProfileRecord:
         """Reject unsupported schemas and corrupt synchronization metadata."""
-        return cls(**_validate_record(value, PROFILE_SCHEMA_VERSION, validate_profile))
+        return cls(
+            **_validate_record(value, PROFILE_SCHEMA_VERSION, _validate_stored_profile)
+        )
 
 
 @dataclass(frozen=True, slots=True)

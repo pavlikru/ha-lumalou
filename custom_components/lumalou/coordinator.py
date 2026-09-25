@@ -566,7 +566,9 @@ class LumalouCoordinator:
             validate_integer(expected_revision, 0, _MAX_REVISION, "expected revision")
         if expected_revision is not None and expected_revision != old.revision:
             raise RevisionConflictError("The saved profile changed; reopen the editor")
-        desired = validate_profile({**old.desired_profile, **changes})
+        # Callers validated `changes` strictly. A value saved by an older editor
+        # must not block unrelated edits; restore still rejects it.
+        desired = validate_profile({**old.desired_profile, **changes}, stored=True)
         await self._save(_new_revision(old, desired))
 
     async def async_edit_profile(

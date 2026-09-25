@@ -113,9 +113,9 @@ Check the device physically and the Home Assistant state after each step.
 - [ ] **A1**: every setter persisted and the verification read returned
       exactly the saved values (`verified: true`); repeat for all seven day
       routines.
-- [ ] **A2**: routine music and routine volume read back as 4-bit values;
-      confirm that a saved value above 15 cannot verify, and keep saved
-      values at 15 or below.
+- [ ] **A2**: routine music and routine volume (limited to 0–15 by the
+      editor) read back exactly as saved; include one low nonzero value for
+      each.
 - [ ] **A4**: enabling Ready-to-Rise and routine mode (written last) does not
       start a routine, alarm or sound immediately.
 - [ ] **A5**: a restore of every block (about 22 writes) succeeds with the
@@ -178,7 +178,8 @@ The code relies on these assumptions; none is proven on hardware yet.
    settings, routine music and rewards, routine volume, weekly times, alarms
    and the seven day routines.
 2. **A2** Routine music and routine volume read back as 4-bit values from
-   the global state, so a saved value above 15 always fails verification.
+   the global state, so the integration limits both to 0–15; values 0–15
+   written by restore read back unchanged.
 3. **A3** Brightness, color and volume setters, including brightness 0, cause
    no unwanted light or sound activation; brightness and color read back
    correctly while the light is off.

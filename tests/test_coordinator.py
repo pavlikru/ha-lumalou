@@ -356,8 +356,8 @@ async def test_public_offline_profile_edit_merges_complex_blocks_without_ble(rig
         "routines": _weekly_routines(),
         "routine_settings": {
             "enabled": True,
-            "music": 255,
-            "volume": 255,
+            "music": 15,
+            "volume": 15,
             "task_reward_sfx": 15,
             "routine_reward_sfx": 0,
         },
@@ -957,6 +957,32 @@ async def test_restore_writes_minimal_diff_in_order_and_verifies_fresh(rig):
     assert statuses == ["applying", "saved"]
     assert coordinator.last_restore_result == result
     assert coordinator.available
+
+
+async def test_legacy_routine_byte_keeps_live_edits_but_blocks_restore(rig):
+    """A byte above 15 saved by an older editor loads, but never reaches BLE."""
+    coordinator = rig.coordinator
+    snapshot = await verified_profile(rig)
+    legacy = deepcopy(snapshot)
+    legacy["routine_settings"]["music"] = 200
+    stored = coordinator.profile_record.to_dict() | {"desired_profile": legacy}
+    coordinator._profile_record = ProfileRecord.from_dict(stored)
+
+    await coordinator.async_set_volume(3)
+    record = coordinator.profile_record
+    assert record.desired_profile["volume"] == 3
+    assert record.desired_profile["routine_settings"]["music"] == 200
+    with pytest.raises(ProfileValidationError):
+        await coordinator.async_edit_profile(
+            {"routine_settings": legacy["routine_settings"]},
+            expected_revision=record.revision,
+        )
+    start = len(rig.journal)
+
+    with pytest.raises(ProfileValidationError):
+        await coordinator.async_restore_profile(record.revision, confirmed=True)
+
+    assert not sends(rig, start)
 
 
 async def test_restore_of_matching_device_only_verifies(rig):

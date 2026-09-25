@@ -132,6 +132,25 @@ async def test_export_is_response_only(hass: HomeAssistant) -> None:
     coordinator.async_export_profile.assert_awaited_once_with()
 
 
+async def test_export_of_unsupported_saved_profile_is_translated(
+    hass: HomeAssistant,
+) -> None:
+    """A saved value outside the device range fails with a translated error."""
+    entry, coordinator = loaded_entry(hass)
+    coordinator.async_export_profile.side_effect = ProfileValidationError("music")
+    async_setup_services(hass)
+
+    with pytest.raises(ServiceValidationError) as caught:
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_EXPORT_PROFILE,
+            {ATTR_CONFIG_ENTRY_ID: entry.entry_id},
+            blocking=True,
+            return_response=True,
+        )
+    assert caught.value.translation_key == "invalid_profile"
+
+
 async def test_import_response_and_revision(hass: HomeAssistant) -> None:
     """Import passes concurrency revision and returns the saved result."""
     entry, coordinator = loaded_entry(hass)

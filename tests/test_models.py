@@ -47,7 +47,7 @@ def full_profile() -> dict:
         "clock_settings": {"display": False, "brightness": 0, "format": 1},
         "routine_settings": {
             "enabled": False,
-            "music": 255,
+            "music": 15,
             "volume": 0,
             "task_reward_sfx": 15,
             "routine_reward_sfx": 0,
@@ -210,7 +210,7 @@ def test_null_is_no_scheduled_time_and_midnight_remains_a_time():
             "routine_settings",
             {
                 "enabled": False,
-                "music": 256,
+                "music": 16,
                 "volume": 0,
                 "task_reward_sfx": 0,
                 "routine_reward_sfx": 0,
@@ -221,7 +221,7 @@ def test_null_is_no_scheduled_time_and_midnight_remains_a_time():
             {
                 "enabled": False,
                 "music": 0,
-                "volume": 256,
+                "volume": 16,
                 "task_reward_sfx": 0,
                 "routine_reward_sfx": 0,
             },
@@ -310,6 +310,39 @@ def test_record_roundtrip_and_runtime_property():
     assert record.desired_profile == {"volume": 2}
     coordinator = SimpleNamespace(profile_record=record)
     assert LumalouRuntimeData(coordinator).profile_record is record
+
+
+@pytest.mark.parametrize("field", ["music", "volume"])
+def test_routine_values_are_limited_to_the_readback_nibble(field):
+    """Only 0..15 round-trips through GLOBAL_STATE; older saved bytes still load."""
+    profile = full_profile()
+    profile["routine_settings"][field] = 15
+    assert validate_profile(profile)["routine_settings"][field] == 15
+
+    profile["routine_settings"][field] = 16
+    with pytest.raises(ProfileValidationError):
+        validate_profile(profile)
+    with pytest.raises(ProfileValidationError):
+        import_profile_payload(
+            {"schema_version": 2, "scope": "persistent_profile", "profile": profile}
+        )
+
+    profile["routine_settings"][field] = 255
+    assert validate_profile(profile, stored=True) == profile
+    record = ProfileRecord.from_dict(
+        ProfileRecord(
+            revision=2,
+            desired_profile=profile,
+            previous={"revision": 1, "profile": deepcopy(profile)},
+        ).to_dict()
+    )
+    assert record.desired_profile == profile
+    assert not profile_is_complete(record.desired_profile)
+    with pytest.raises(ProfileValidationError):
+        require_complete_profile(record.desired_profile)
+    profile["routine_settings"][field] = 256
+    with pytest.raises(ProfileValidationError):
+        validate_profile(profile, stored=True)
 
 
 def test_v1_migration_preserves_metadata_and_partialness():

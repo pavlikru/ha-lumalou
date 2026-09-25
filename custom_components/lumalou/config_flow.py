@@ -35,6 +35,7 @@ from .identity import (
 from .models import (
     DAYS,
     PROFILE_RANGES,
+    ROUTINE_NIBBLE_MAX,
     RevisionConflictError,
     profile_is_complete,
     validate_profile,
@@ -360,11 +361,14 @@ def _select(
     return selector.SelectSelector(config)
 
 
-def _byte_selector() -> selector.NumberSelector:
-    """Return an integer byte selector instead of a guessed music enum."""
+def _nibble_selector() -> selector.NumberSelector:
+    """Return a raw 0..15 selector (the readback range), not a guessed enum."""
     return selector.NumberSelector(
         selector.NumberSelectorConfig(
-            min=0, max=255, step=1, mode=selector.NumberSelectorMode.BOX
+            min=0,
+            max=ROUTINE_NIBBLE_MAX,
+            step=1,
+            mode=selector.NumberSelectorMode.BOX,
         )
     )
 
@@ -935,10 +939,10 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
                     "routine_enabled", default=settings["enabled"]
                 ): selector.BooleanSelector(),
                 vol.Required("routine_music", default=settings["music"]): (
-                    _byte_selector()
+                    _nibble_selector()
                 ),
                 vol.Required("routine_volume", default=settings["volume"]): (
-                    _byte_selector()
+                    _nibble_selector()
                 ),
                 vol.Required(
                     "task_reward_sfx", default=str(settings["task_reward_sfx"])

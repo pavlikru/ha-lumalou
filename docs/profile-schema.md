@@ -14,12 +14,14 @@ The persistent keys are:
   `playlist_duration` (0–6);
 - `clock_settings`: display boolean, brightness 0–9, format 0 (12-hour) or 1
   (24-hour);
-- `routine_settings`: enabled boolean, music byte 0–255, volume byte 0–255, and task
-  and routine reward sound nibbles 0–15. The music byte has no established
-  enum, and neither byte has a proven narrower hardware range, so the model
-  preserves their validated numeric representations. The device reports both
-  as 4-bit values in its global state, so a saved value above 15 cannot pass
-  restore verification (hardware assumption A2);
+- `routine_settings`: enabled boolean, music 0–15, volume 0–15, and task and
+  routine reward sound nibbles 0–15. The setters carry a full byte and music
+  has no established enum, but the device reports music and volume as 4-bit
+  values in its global state, so only 0–15 can pass restore verification
+  (hardware assumption A2). Editors, imports and restore accept only 0–15. A
+  record saved by an earlier editor with a larger byte still loads; it is
+  treated as incomplete (editors and restore stay unavailable) until the
+  device profile is read again or a valid profile is imported;
 - `ready_to_rise`: enabled boolean plus seven Sunday-first times;
 - `sleepy_times`: seven Sunday-first times;
 - `alarm`: seven alarm enum values 0–10 plus sound nibble 0–15;
