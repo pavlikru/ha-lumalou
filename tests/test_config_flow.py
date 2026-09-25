@@ -1438,6 +1438,7 @@ async def test_routine_copy_is_independent_and_preserves_task_zero(
     )
     assert result["step_id"] == "routine_confirm"
     assert result["description_placeholders"]["copy_count"] == "2"
+    assert result["description_placeholders"]["day"] == "Sunday"
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], user_input={"confirm": True}
     )
@@ -1450,6 +1451,26 @@ async def test_routine_copy_is_independent_and_preserves_task_zero(
     routines["monday"]["slots"][1]["task"] = 8
     assert routines["sunday"]["slots"][1]["task"] == 3
     assert routines["tuesday"]["slots"][1]["task"] == 3
+
+
+async def test_routine_confirm_translates_the_day(hass: HomeAssistant) -> None:
+    """The day placeholder uses the configured language, not the storage key."""
+    hass.config.language = "ru"
+    entry, _ = profile_entry(hass)
+    result = await start_editor(hass, entry, "routine")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"routine_day": "friday"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={"routine_has_time": False, "routine_time": "00:00:00"},
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={}
+    )
+
+    assert result["step_id"] == "routine_confirm"
+    assert result["description_placeholders"]["day"] == "Пятница"
 
 
 async def test_routine_existing_task_can_be_cleared(hass: HomeAssistant) -> None:
