@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0b5] - 2026-09-25
+
+Fixes from the first Home Assistant run on hardware (Raspberry Pi 4).
+
 ### Fixed
 
 - Profile edits, `lumalou.set_routine`, restores and profile reads failed with
@@ -238,7 +242,8 @@ Hardware validation: summary of passed phases (anonymized).
 Requires Home Assistant 2026.9.0 or newer and lumalou-gld09==0.2.0.
 -->
 
-[Unreleased]: https://github.com/pavlikru/ha-lumalou/compare/v0.1.0b4...HEAD
+[Unreleased]: https://github.com/pavlikru/ha-lumalou/compare/v0.1.0b5...HEAD
+[0.1.0b5]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b5
 [0.1.0b4]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b4
 [0.1.0b3]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b3
 [0.1.0b2]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b2
