@@ -56,7 +56,6 @@ def test_flow_steps_errors_and_aborts_are_translated() -> None:
     } <= set(config["abort"])
     assert _literals(r'"base"\]? ?[:=] ?"(\w+)"', config_source) | {
         "cannot_connect",
-        "factory_verifier_unavailable",
         "identity_unconfirmed",
         "unsupported_product_code",
     } == set(config["error"])

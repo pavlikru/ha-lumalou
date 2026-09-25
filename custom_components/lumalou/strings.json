@@ -33,7 +33,6 @@
     "error": {
       "cannot_connect": "Could not connect for the read-only identity probe. Make sure no other app is connected and try again.",
       "device_unavailable": "The selected device is no longer available. Try again.",
-      "factory_verifier_unavailable": "The installed Lumalou library cannot verify and privately bind the signed device identity. Update after a compatible verified library release is available.",
       "identity_unconfirmed": "Home Assistant could not verify a supported device identity. No device entry was created.",
       "unsupported_product_code": "The device explicitly reports a different model. This integration cannot use it.",
       "wrong_device": "The selected Lumalou is not the device bound to this entry. Choose the right device, or add the other one as a new entry."
