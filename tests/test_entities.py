@@ -220,11 +220,23 @@ def test_unavailable_semantics_and_no_io_from_properties():
     coordinator.async_request_refresh.assert_not_called()
 
 
-def test_maintenance_remains_usable_offline():
-    entry, _coordinator = make_entry(None, available=False, maintenance=True)
+async def test_maintenance_remains_usable_offline():
+    entry, coordinator = make_entry(None, available=False, maintenance=True)
     entity = LumalouMaintenanceSwitch(entry)
     assert entity.available is True
     assert entity.is_on is True
+    await entity.async_turn_off()
+    coordinator.async_set_maintenance.assert_awaited_with(False)
+    await entity.async_turn_on()
+    coordinator.async_set_maintenance.assert_awaited_with(True)
+
+
+def test_light_effect_is_none_for_unknown_or_missing_color():
+    entry, coordinator = make_entry({"lightStatus": 1})
+    light = LumalouLight(entry)
+    assert light.effect is None
+    coordinator.data = {"lightStatus": 1, "lightColor": 99}
+    assert light.effect is None
 
 
 @pytest.mark.asyncio
