@@ -15,6 +15,7 @@
   "integration_type": "device",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/pavlikru/ha-lumalou/issues",
-  "requirements": ["lumalou==0.1.0"],
+  "loggers": ["lumalou"],
+  "requirements": ["lumalou-gld09==0.2.0"],
   "version": "0.0.0"
 }

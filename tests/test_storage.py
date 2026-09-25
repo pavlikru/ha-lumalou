@@ -1,375 +1,56 @@
-"""Test disk verification separately from Store's in-memory view."""
+"""Profile persistence through Home Assistant's Store helper."""
 
-import asyncio
-import json
-import stat
-from dataclasses import replace
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from typing import Any
 
 import pytest
+from homeassistant.core import HomeAssistant
 
 from custom_components.lumalou.const import PROFILE_SCHEMA_VERSION
-from custom_components.lumalou.models import ProfileRecord, ProfileValidationError
-from custom_components.lumalou.storage import (
-    STORAGE_MINOR_VERSION,
-    ProfileStorageError,
-    ProfileStore,
-)
+from custom_components.lumalou.models import ProfileRecord
+from custom_components.lumalou.storage import ProfileStore
+from tests.test_restore import complete_profile
+
+KEY = "lumalou.synthetic-entry.profile"
 
 
-@pytest.fixture
-def storage(tmp_path):
-    """Use a minimal HA executor and simulated Store, but actual disk reads."""
+async def test_missing_then_saved_profile_survives_new_store(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    store = ProfileStore(hass, "synthetic-entry")
+    assert await store.async_load() == ProfileRecord()
 
-    async def executor(function, *args):
-        return function(*args)
+    record = ProfileRecord(revision=1, desired_profile=complete_profile(), pending=True)
+    await store.async_save(record)
+    await hass.async_block_till_done()
 
-    hass = SimpleNamespace(async_add_executor_job=executor)
-    key = "lumalou.synthetic-entry.profile"
-    path = tmp_path / key
-
-    async def write(data):
-        path.write_text(
-            json.dumps(
-                {
-                    "version": PROFILE_SCHEMA_VERSION,
-                    "minor_version": STORAGE_MINOR_VERSION,
-                    "key": key,
-                    "data": data,
-                }
-            )
-        )
-
-    backend = SimpleNamespace(
-        path=str(path), key=key, async_save=AsyncMock(side_effect=write)
-    )
-    with patch(
-        "custom_components.lumalou.storage.Store", return_value=backend
-    ) as factory:
-        adapter = ProfileStore(hass, "synthetic-entry")
-    factory.assert_called_once_with(
-        hass,
-        PROFILE_SCHEMA_VERSION,
-        key,
-        private=True,
-        atomic_writes=True,
-        minor_version=STORAGE_MINOR_VERSION,
-    )
-    return adapter, backend, path
+    assert hass_storage[KEY]["version"] == PROFILE_SCHEMA_VERSION
+    assert hass_storage[KEY]["data"] == record.to_dict()
+    assert await ProfileStore(hass, "synthetic-entry").async_load() == record
 
 
-async def test_missing_then_saved_profile_survives_new_adapter(storage):
-    adapter, backend, path = storage
-    assert await adapter.async_load() == ProfileRecord()
-    record = ProfileRecord(
-        revision=1, desired_profile={"playlist": [2, 1]}, pending=True
-    )
-    await adapter.async_save(record)
-    assert path.exists()
-    # A second adapter has no copy of the saved record or Store load cache.
-    with patch("custom_components.lumalou.storage.Store", return_value=backend):
-        reopened = ProfileStore(adapter.hass, "synthetic-entry")
-    assert await reopened.async_load() == record
-
-
-def v1_record() -> dict:
-    """Return a complete v1 record whose profile is intentionally partial."""
-    return {
-        "schema_version": 1,
-        "revision": 4,
-        "desired_profile": {"volume": 3, "playlist": [2, 1]},
-        "previous": {"revision": 3, "profile": {"volume": 2}},
-        "verified_revision": 2,
-        "pending": True,
-        "sync_status": "pending",
-        "last_error": "offline",
-        "maintenance": True,
-    }
-
-
-async def test_v1_is_backed_up_migrated_and_verified_without_defaults(storage):
-    adapter, backend, path = storage
-    original = {"version": 1, "key": backend.key, "data": v1_record()}
-    original_text = json.dumps(original, indent=2)
-    path.write_text(original_text)
-
-    migrated = await adapter.async_load()
-
-    assert migrated == ProfileRecord(
-        revision=4,
-        desired_profile={"volume": 3, "playlist": [2, 1]},
-        previous={"revision": 3, "profile": {"volume": 2}},
-        verified_revision=2,
-        pending=True,
-        sync_status="pending",
-        last_error="offline",
-        maintenance=True,
-    )
-    assert json.loads(path.read_text()) == {
+async def test_invalid_record_is_ignored_with_a_warning(
+    hass: HomeAssistant,
+    hass_storage: dict[str, Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    hass_storage[KEY] = {
         "version": PROFILE_SCHEMA_VERSION,
-        "minor_version": STORAGE_MINOR_VERSION,
-        "key": backend.key,
-        "data": migrated.to_dict(),
+        "minor_version": 1,
+        "key": KEY,
+        "data": {"revision": "not a record"},
     }
-    backup = path.with_name(f"{path.name}.v1.backup")
-    assert backup.read_text() == original_text
-    assert stat.S_IMODE(backup.stat().st_mode) == 0o600
-    backend.async_save.assert_awaited_once_with(migrated.to_dict())
+
+    assert await ProfileStore(hass, "synthetic-entry").async_load() == ProfileRecord()
+    assert "Ignoring an invalid saved Lumalou profile" in caplog.text
 
 
-async def test_v1_migration_write_failure_preserves_source_and_backup(storage):
-    adapter, backend, path = storage
-    original = {"version": 1, "key": backend.key, "data": v1_record()}
-    source = json.dumps(original)
-    path.write_text(source)
-    backend.async_save.side_effect = OSError("disk full")
+async def test_remove_deletes_the_saved_profile(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    store = ProfileStore(hass, "synthetic-entry")
+    await store.async_save(ProfileRecord(revision=1))
+    await hass.async_block_till_done()
 
-    with pytest.raises(ProfileStorageError):
-        await adapter.async_load()
+    await store.async_remove()
 
-    assert path.read_text() == source
-    assert path.with_name(f"{path.name}.v1.backup").read_text() == source
-
-
-async def test_conflicting_migration_backup_fails_closed(storage):
-    adapter, backend, path = storage
-    original = {"version": 1, "key": backend.key, "data": v1_record()}
-    source = json.dumps(original)
-    path.write_text(source)
-    backup = path.with_name(f"{path.name}.v1.backup")
-    backup.write_text("different source")
-
-    with pytest.raises(ProfileStorageError, match="migration"):
-        await adapter.async_load()
-
-    assert path.read_text() == source
-    assert backup.read_text() == "different source"
-    backend.async_save.assert_not_awaited()
-
-
-@pytest.mark.parametrize(
-    ("outer_version", "inner_version"), [(1, 2), (2, 1), (3, 3), (True, 1)]
-)
-async def test_schema_downgrade_future_and_cross_version_records_rejected(
-    storage, outer_version, inner_version
-):
-    adapter, backend, path = storage
-    data = v1_record()
-    data["schema_version"] = inner_version
-    document = {"version": outer_version, "key": backend.key, "data": data}
-    source = json.dumps(document)
-    path.write_text(source)
-
-    with pytest.raises(ProfileStorageError):
-        await adapter.async_load()
-
-    assert path.read_text() == source
-    assert not path.with_name(f"{path.name}.v1.backup").exists()
-    backend.async_save.assert_not_awaited()
-
-
-@pytest.mark.parametrize(
-    "document",
-    [
-        "not JSON",
-        "[]",
-        "{}",
-        '{"version":1,"key":"lumalou.synthetic-entry.profile","data":{}}',
-        '{"version":3,"key":"lumalou.synthetic-entry.profile","data":{}}',
-        '{"version":2,"key":"other-entry","data":{}}',
-        '{"version":2,"key":"lumalou.synthetic-entry.profile","data":{}}',
-        '{"version":2,"minor_version":2,"key":"lumalou.synthetic-entry.profile","data":{}}',
-        '{"version":2,"minor_version":true,"key":"lumalou.synthetic-entry.profile","data":{}}',
-    ],
-)
-async def test_corrupt_file_is_preserved(storage, document):
-    adapter, backend, path = storage
-    path.write_text(document)
-    with pytest.raises(ProfileStorageError):
-        await adapter.async_load()
-    assert path.read_text() == document
-    backend.async_save.assert_not_awaited()
-
-
-async def test_confirmed_recovery_backs_up_corrupt_bytes_before_replacement(storage):
-    adapter, backend, path = storage
-    corrupt = b"not JSON\nprivate family profile bytes"
-    path.write_bytes(corrupt)
-    record = ProfileRecord(
-        revision=1, desired_profile={"volume": 4}, pending=True, sync_status="pending"
-    )
-
-    await adapter.async_recover(record)
-
-    backups = list(path.parent.glob(f"{path.name}.corrupt.*.backup"))
-    assert len(backups) == 1
-    assert backups[0].read_bytes() == corrupt
-    assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
-    assert await adapter.async_load() == record
-    backend.async_save.assert_awaited_once_with(record.to_dict())
-
-
-async def test_failed_recovery_preserves_corrupt_source_and_backup(storage):
-    adapter, backend, path = storage
-    corrupt = b"not JSON"
-    path.write_bytes(corrupt)
-    backend.async_save.side_effect = OSError("disk full")
-
-    with pytest.raises(ProfileStorageError):
-        await adapter.async_recover(ProfileRecord(revision=1, pending=True))
-
-    assert path.read_bytes() == corrupt
-    backups = list(path.parent.glob(f"{path.name}.corrupt.*.backup"))
-    assert len(backups) == 1
-    assert backups[0].read_bytes() == corrupt
-
-
-async def test_cancelled_recovery_waits_for_backup_and_commit_contract(storage):
-    adapter, _, _ = storage
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    async def blocked_recovery(_data):
-        started.set()
-        await release.wait()
-
-    with patch.object(adapter, "_async_recover", side_effect=blocked_recovery):
-        recovery = asyncio.create_task(adapter.async_recover(ProfileRecord()))
-        await started.wait()
-        recovery.cancel()
-        await asyncio.sleep(0)
-        assert not recovery.done()
-        release.set()
-        with pytest.raises(asyncio.CancelledError):
-            await recovery
-
-
-async def test_disk_read_error_does_not_become_empty(storage):
-    adapter, _, _ = storage
-    with (
-        patch(
-            "custom_components.lumalou.storage._read_document",
-            side_effect=PermissionError,
-        ),
-        pytest.raises(ProfileStorageError, match="Cannot read"),
-    ):
-        await adapter.async_load()
-
-
-async def test_swallowed_write_failure_cannot_use_old_disk_state(storage):
-    adapter, backend, _ = storage
-    old = ProfileRecord(revision=1, desired_profile={"volume": 1})
-    await adapter.async_save(old)
-    backend.async_save.side_effect = None
-    with pytest.raises(ProfileStorageError, match="could not be verified"):
-        await adapter.async_save(
-            replace(old, revision=2, desired_profile={"volume": 2})
-        )
-    assert await adapter.async_load() == old
-
-
-@pytest.mark.parametrize(
-    "failure", [OSError("disk full"), PermissionError("read only")]
-)
-async def test_write_failure_propagates_without_publishing_success(storage, failure):
-    adapter, backend, path = storage
-    backend.async_save.side_effect = failure
-    with pytest.raises(ProfileStorageError):
-        await adapter.async_save(ProfileRecord())
-    assert not path.exists()
-
-
-@pytest.mark.parametrize(
-    "readback",
-    [
-        {"version": 3},
-        {"version": 2, "key": "wrong"},
-        {"version": 2, "key": "lumalou.synthetic-entry.profile", "data": {}},
-        [],
-    ],
-)
-async def test_independent_disk_readback_mismatch(storage, readback):
-    adapter, _, _ = storage
-    with (
-        patch(
-            "custom_components.lumalou.storage._read_document", return_value=readback
-        ),
-        pytest.raises(ProfileStorageError),
-    ):
-        await adapter.async_save(ProfileRecord())
-
-
-async def test_invalid_record_never_reaches_disk(storage):
-    adapter, backend, _ = storage
-    with pytest.raises(ProfileValidationError):
-        await adapter.async_save(ProfileRecord(desired_profile={"volume": True}))
-    backend.async_save.assert_not_awaited()
-
-
-async def test_cancelled_save_holds_lock_until_commit_finishes(tmp_path):
-    """An executor-backed old write cannot land after a newer revision."""
-
-    async def executor(function, *args):
-        return function(*args)
-
-    hass = SimpleNamespace(async_add_executor_job=executor)
-    key = "lumalou.cancellation.profile"
-    path = tmp_path / key
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    async def write(data):
-        if data["revision"] == 1:
-            started.set()
-            await release.wait()
-        path.write_text(
-            json.dumps(
-                {
-                    "version": PROFILE_SCHEMA_VERSION,
-                    "minor_version": STORAGE_MINOR_VERSION,
-                    "key": key,
-                    "data": data,
-                }
-            )
-        )
-
-    backend = SimpleNamespace(
-        path=str(path), key=key, async_save=AsyncMock(side_effect=write)
-    )
-    with patch("custom_components.lumalou.storage.Store", return_value=backend):
-        adapter = ProfileStore(hass, "cancellation")
-
-    first_record = ProfileRecord(
-        revision=1, desired_profile={"volume": 3}, pending=True
-    )
-    second_record = ProfileRecord(
-        revision=2, desired_profile={"volume": 4}, pending=True
-    )
-    first = asyncio.create_task(adapter.async_save(first_record))
-    await started.wait()
-    first.cancel()
-    second = asyncio.create_task(adapter.async_save(second_record))
-    await asyncio.sleep(0)
-    assert backend.async_save.await_count == 1
-    first.cancel()
-    await asyncio.sleep(0)
-    assert backend.async_save.await_count == 1
-
-    release.set()
-    with pytest.raises(asyncio.CancelledError):
-        await first
-    await second
-    assert await adapter.async_load() == second_record
-
-
-async def test_internally_cancelled_commit_is_not_reported_as_durable(storage):
-    """Only caller cancellation after a completed commit can publish the record."""
-    adapter, _, _ = storage
-    with (
-        patch.object(
-            adapter, "_async_commit", new=AsyncMock(side_effect=asyncio.CancelledError)
-        ),
-        pytest.raises(ProfileStorageError, match="cancelled before verification"),
-    ):
-        await adapter.async_save(ProfileRecord())
+    assert KEY not in hass_storage

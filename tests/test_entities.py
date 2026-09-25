@@ -13,11 +13,12 @@ from homeassistant.components.media_player import (
     MediaPlayerEntityFeature,
     MediaPlayerState,
 )
-from homeassistant.const import ATTR_ENTITY_ID, SERVICE_TURN_ON
+from homeassistant.const import ATTR_ENTITY_ID, SERVICE_TURN_ON, EntityCategory
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH
 from homeassistant.setup import async_setup_component
-from lumalou import Audio, Color
+from lumalou import Audio, Color, Song
 
 from custom_components.lumalou import (
     binary_sensor as binary_sensor_platform,
@@ -40,15 +41,11 @@ from custom_components.lumalou import (
 from custom_components.lumalou import (
     switch as switch_platform,
 )
-from custom_components.lumalou.binary_sensor import (
-    LumalouProfilePendingBinarySensor,
-    LumalouProfilePresentBinarySensor,
-)
+from custom_components.lumalou.binary_sensor import LumalouConnectionBinarySensor
 from custom_components.lumalou.button import (
     LumalouRefreshButton,
     LumalouSyncClockButton,
 )
-from custom_components.lumalou.const import SUPPORTED_PRODUCT_CODE
 from custom_components.lumalou.light import LumalouLight
 from custom_components.lumalou.media_player import LumalouMediaPlayer
 from custom_components.lumalou.select import (
@@ -56,14 +53,12 @@ from custom_components.lumalou.select import (
     LumalouPlaylistDurationSelect,
 )
 from custom_components.lumalou.sensor import (
-    LumalouAvailabilitySensor,
     LumalouFirmwareSensor,
-    LumalouProfileLastErrorSensor,
-    LumalouProfileRevisionSensor,
     LumalouProfileSyncStatusSensor,
-    LumalouProfileVerifiedRevisionSensor,
 )
 from custom_components.lumalou.switch import LumalouMaintenanceSwitch
+
+FINGERPRINT = "f" * 64
 
 
 class FakeCoordinator:
@@ -72,18 +67,17 @@ class FakeCoordinator:
     address = "AA:BB:CC:DD:EE:FF"
     device_name = "Lumalou test"
     sw_version = "test"
-    product_code = SUPPORTED_PRODUCT_CODE
+    protocol_verified = True
 
     def __init__(
         self,
         data: dict | None,
         available: bool = True,
         profile_record=None,
-        profile_storage_healthy: bool = True,
     ) -> None:
         self.data = data
         self.available = available
-        self.profile_storage_healthy = profile_storage_healthy
+        self.profile_record = profile_record
         self.async_set_light = AsyncMock()
         self.async_set_volume = AsyncMock()
         self.async_play = AsyncMock()
@@ -106,7 +100,6 @@ def make_entry(
     revision=0,
     verified_revision=None,
     desired_profile=None,
-    profile_storage_healthy=True,
     pending=False,
     sync_status="empty",
     last_error=None,
@@ -120,14 +113,25 @@ def make_entry(
         sync_status=sync_status,
         last_error=last_error,
     )
-    coordinator = FakeCoordinator(
-        data, available, profile_record, profile_storage_healthy
-    )
+    coordinator = FakeCoordinator(data, available, profile_record)
     runtime = SimpleNamespace(
         coordinator=coordinator,
         profile_record=profile_record,
     )
-    return SimpleNamespace(runtime_data=runtime), coordinator
+    return SimpleNamespace(runtime_data=runtime, unique_id=FINGERPRINT), coordinator
+
+
+def test_homekit_support_controls_are_not_primary_entities():
+    """Default HomeKit export keeps user controls, not maintenance utilities."""
+    entry, _ = make_entry({})
+
+    assert LumalouLight(entry).entity_category is None
+    assert LumalouMediaPlayer(entry).entity_category is None
+    assert LumalouMaintenanceSwitch(entry).entity_category is EntityCategory.CONFIG
+    assert LumalouSyncClockButton(entry).entity_category is EntityCategory.CONFIG
+    assert LumalouRefreshButton(entry).entity_category is EntityCategory.DIAGNOSTIC
+    assert LumalouLightDurationSelect(entry).entity_category is EntityCategory.CONFIG
+    assert LumalouPlaylistDurationSelect(entry).entity_category is EntityCategory.CONFIG
 
 
 @pytest.mark.asyncio
@@ -140,8 +144,9 @@ async def test_light_scale_effects_and_commands():
     assert entity.supported_color_modes == {ColorMode.BRIGHTNESS}
     assert entity.supported_features == LightEntityFeature.EFFECT
     assert entity.brightness == 255
-    assert entity.effect == "BLUE"
-    await entity.async_turn_on(brightness=128, effect="RED")
+    assert entity.effect == "blue"
+    assert entity.effect_list == [color.name.lower() for color in Color]
+    await entity.async_turn_on(brightness=128, effect="red")
     coordinator.async_set_light.assert_awaited_once_with(True, 5, int(Color.RED))
     await entity.async_turn_off()
     coordinator.async_set_light.assert_awaited_with(False)
@@ -161,7 +166,7 @@ async def test_light_service_forwards_fixed_palette_effect(
     await hass.services.async_call(
         LIGHT_DOMAIN,
         SERVICE_TURN_ON,
-        {ATTR_ENTITY_ID: entity.entity_id, ATTR_EFFECT: "RED"},
+        {ATTR_ENTITY_ID: entity.entity_id, ATTR_EFFECT: "red"},
         blocking=True,
     )
 
@@ -189,7 +194,8 @@ async def test_media_controls_and_exact_features():
         | MediaPlayerEntityFeature.SELECT_SOURCE
     )
     assert entity.supported_features == expected
-    assert entity.source == "PINK_NOISE"
+    assert entity.source == "pink_noise"
+    assert entity.media_title == "Pink Noise"
     assert entity.volume_level == pytest.approx(5 / 9)
     await entity.async_turn_on()
     coordinator.async_play.assert_awaited_once_with(int(Audio.SLEEP_PLAYLIST))
@@ -197,7 +203,7 @@ async def test_media_controls_and_exact_features():
     coordinator.async_stop_audio.assert_awaited_once_with()
     await entity.async_set_volume_level(0.5)
     coordinator.async_set_volume.assert_awaited_with(4)
-    await entity.async_select_source("OCEAN")
+    await entity.async_select_source("ocean")
     coordinator.async_play.assert_awaited_with(int(Audio.OCEAN))
 
 
@@ -214,11 +220,23 @@ def test_unavailable_semantics_and_no_io_from_properties():
     coordinator.async_request_refresh.assert_not_called()
 
 
-def test_maintenance_remains_usable_offline():
-    entry, _coordinator = make_entry(None, available=False, maintenance=True)
+async def test_maintenance_remains_usable_offline():
+    entry, coordinator = make_entry(None, available=False, maintenance=True)
     entity = LumalouMaintenanceSwitch(entry)
     assert entity.available is True
     assert entity.is_on is True
+    await entity.async_turn_off()
+    coordinator.async_set_maintenance.assert_awaited_with(False)
+    await entity.async_turn_on()
+    coordinator.async_set_maintenance.assert_awaited_with(True)
+
+
+def test_light_effect_is_none_for_unknown_or_missing_color():
+    entry, coordinator = make_entry({"lightStatus": 1})
+    light = LumalouLight(entry)
+    assert light.effect is None
+    coordinator.data = {"lightStatus": 1, "lightColor": 99}
+    assert light.effect is None
 
 
 @pytest.mark.asyncio
@@ -227,10 +245,12 @@ async def test_device_info_unique_ids_and_buttons():
     light = LumalouLight(entry)
     info = light.device_info
     assert isinstance(info, dict)
-    assert info["identifiers"] == {("lumalou", coordinator.address)}
+    # The signed-device fingerprint is the identity; the address a connection.
+    assert info["identifiers"] == {("lumalou", FINGERPRINT)}
     assert info["connections"] == {(CONNECTION_BLUETOOTH, coordinator.address)}
-    assert info["model"] == "Lumalou (GLD09)"
-    assert light.unique_id == f"{coordinator.address}_light"
+    assert info["model"] == "Lumalou"
+    assert light.unique_id == f"{FINGERPRINT}_light"
+    assert LumalouMediaPlayer(entry).unique_id == f"{FINGERPRINT}_media_player"
 
     await LumalouSyncClockButton(entry).async_press()
     coordinator.async_sync_clock.assert_awaited_once_with()
@@ -238,20 +258,20 @@ async def test_device_info_unique_ids_and_buttons():
     coordinator.async_request_refresh.assert_awaited_once_with()
 
 
-def test_unconfirmed_device_info_does_not_claim_gld09():
-    """Legacy entries remain model-neutral until the label is confirmed."""
-    entry, coordinator = make_entry({})
-    coordinator.product_code = None
-
-    assert LumalouLight(entry).device_info["model"] == "Lumalou"
-
-
 @pytest.mark.asyncio
 async def test_light_duration_select_routes_enum():
     entry, coordinator = make_entry({"lightDuration": 4})
     entity = LumalouLightDurationSelect(entry)
-    assert entity.current_option == "CONTINUOUS"
-    await entity.async_select_option("MIN_15")
+    assert entity.options == [
+        "min_15",
+        "min_30",
+        "min_60",
+        "min_90",
+        "continuous",
+        "min_1",
+    ]
+    assert entity.current_option == "continuous"
+    await entity.async_select_option("min_15")
     coordinator.async_set_light_duration.assert_awaited_once_with(0)
 
 
@@ -260,12 +280,11 @@ async def test_playlist_duration_select_routes_supported_enum():
     entry, coordinator = make_entry({"playlistDuration": 6})
     entity = LumalouPlaylistDurationSelect(entry)
 
-    assert entity.current_option == "MIN_1"
-    await entity.async_select_option("CONTINUOUS")
+    assert entity.current_option == "min_1"
+    await entity.async_select_option("continuous")
     coordinator.async_set_playlist_duration.assert_awaited_once_with(5)
-
-    with pytest.raises(ValueError, match="INVALID"):
-        await entity.async_select_option("INVALID")
+    coordinator.data = {"playlistDuration": 99}
+    assert entity.current_option is None
 
 
 @pytest.mark.asyncio
@@ -285,7 +304,7 @@ async def test_platform_setup_callbacks_add_all_entities():
     ):
         await platform.async_setup_entry(None, entry, add_entities)
 
-    assert sum(len(call.args[0]) for call in add_entities.call_args_list) == 15
+    assert sum(len(call.args[0]) for call in add_entities.call_args_list) == 10
 
 
 def test_diagnostic_sensor_values_remain_readable_offline():
@@ -293,99 +312,55 @@ def test_diagnostic_sensor_values_remain_readable_offline():
     entry, coordinator = make_entry(None, available=False)
     coordinator.sw_version = None
 
-    availability = LumalouAvailabilitySensor(entry)
+    connection = LumalouConnectionBinarySensor(entry)
     firmware = LumalouFirmwareSensor(entry)
-    assert availability.available is True
-    assert availability.native_value == "unavailable"
+    assert connection.available is True
+    assert connection.is_on is False
+    assert connection.entity_category is EntityCategory.DIAGNOSTIC
     assert firmware.native_value is None
+    assert firmware.available is False
 
-    coordinator.available = True
-    coordinator.sw_version = "1.2.3"
-    assert availability.native_value == "available"
+    coordinator.sw_version = "1.2.3"  # advertised while not connected
+    assert firmware.available is True
     assert firmware.native_value == "1.2.3"
+    coordinator.available = True
+    assert connection.is_on is True
 
 
-def test_profile_diagnostics_remain_readable_offline_without_profile_contents():
-    entry, coordinator = make_entry(
-        None,
-        available=False,
-        revision=4,
-        verified_revision=2,
-        desired_profile={"volume": 3},
-        pending=True,
-        sync_status="partial",
-        last_error="ble_apply",
-    )
+def test_profile_sync_status_remains_readable_offline():
+    entry, _coordinator = make_entry(None, available=False, sync_status="pending")
 
-    revision = LumalouProfileRevisionSensor(entry)
-    verified_revision = LumalouProfileVerifiedRevisionSensor(entry)
-    pending = LumalouProfilePendingBinarySensor(entry)
-    present = LumalouProfilePresentBinarySensor(entry)
     status = LumalouProfileSyncStatusSensor(entry)
-    error = LumalouProfileLastErrorSensor(entry)
-    assert revision.available is True
-    assert revision.native_value == 4
-    assert verified_revision.native_value == 2
-    assert pending.available is True
-    assert pending.is_on is True
-    assert present.available is True
-    assert present.is_on is True
-    entry.runtime_data.profile_record.revision = 0
-    assert present.is_on is True
-    entry.runtime_data.profile_record.verified_revision = None
-    assert verified_revision.native_value is None
-    assert status.native_value == "partial"
+    assert status.available is True
+    assert status.native_value == "pending"
+    assert status.entity_category is EntityCategory.DIAGNOSTIC
     assert status.options == [
         "applying",
         "empty",
         "error",
-        "partial",
         "pending",
         "saved",
     ]
-    assert error.native_value == "ble_apply"
-
-    coordinator.data = {"playlistDuration": 3}
-    entry.runtime_data.profile_record.pending = False
-    entry.runtime_data.profile_record.revision = 0
-    entry.runtime_data.profile_record.desired_profile = {}
-    entry.runtime_data.profile_record.last_error = None
-    assert pending.is_on is False
-    assert present.is_on is False
-    assert error.native_value is None
-
-
-def test_profile_present_unavailable_when_profile_storage_is_unhealthy():
-    entry, _coordinator = make_entry(
-        None,
-        revision=4,
-        desired_profile={"volume": 3},
-        profile_storage_healthy=False,
-    )
-    present = LumalouProfilePresentBinarySensor(entry)
-
-    assert present.available is False
 
 
 @pytest.mark.asyncio
 async def test_media_state_sources_volume_steps_and_validation():
     """Media properties and commands handle boundaries and unknown values."""
     entry, coordinator = make_entry(
-        {"musicStatus": 0, "currentVolume": 99, "currentAudio": int(Audio.OCEAN)}
+        {"musicStatus": 0, "currentVolume": 99, "currentSong": int(Song.OCEAN)}
     )
     entity = LumalouMediaPlayer(entry)
 
     assert entity.state is MediaPlayerState.OFF
     assert entity.volume_level == 1.0
-    assert entity.source == "OCEAN"
-    assert "OCEAN" in entity.source_list
+    assert entity.source == "ocean"
+    assert "ocean" in entity.source_list
     await entity.async_volume_up()
     coordinator.async_set_volume.assert_awaited_once_with(9)
 
     coordinator.data = {
         "musicStatus": 1,
         "currentVolume": -5,
-        "currentAudio": 999,
         "currentSong": 999,
     }
     assert entity.state is MediaPlayerState.PLAYING
@@ -395,8 +370,10 @@ async def test_media_state_sources_volume_steps_and_validation():
     await entity.async_volume_down()
     coordinator.async_set_volume.assert_awaited_with(0)
 
-    with pytest.raises(ValueError, match="Unsupported Lumalou source"):
-        await entity.async_select_source("NOT_REAL")
+    with pytest.raises(ServiceValidationError) as err:
+        await entity.async_select_source("not_real")
+    assert err.value.translation_key == "unsupported_source"
+    assert err.value.translation_placeholders == {"source": "not_real"}
 
 
 @pytest.mark.asyncio
@@ -410,3 +387,27 @@ async def test_media_missing_snapshot_commands_are_noops():
     await entity.async_volume_up()
     await entity.async_volume_down()
     coordinator.async_set_volume.assert_not_awaited()
+
+
+def test_controls_stay_unavailable_until_protocol_is_verified():
+    """Write-capable entities follow the coordinator's verified-control gate."""
+    entry, coordinator = make_entry({"lightStatus": 1, "musicStatus": 0})
+    coordinator.protocol_verified = False
+    controls = (
+        LumalouLight(entry),
+        LumalouMediaPlayer(entry),
+        LumalouLightDurationSelect(entry),
+        LumalouPlaylistDurationSelect(entry),
+        LumalouSyncClockButton(entry),
+    )
+
+    assert not any(entity.available for entity in controls)
+    # Read-only and local entities remain usable for recovery.
+    assert LumalouRefreshButton(entry).available is True
+    assert LumalouMaintenanceSwitch(entry).available is True
+    assert LumalouFirmwareSensor(entry).available is True
+
+    coordinator.protocol_verified = True
+    assert all(entity.available for entity in controls)
+    coordinator.available = False
+    assert not any(entity.available for entity in controls)
