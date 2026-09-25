@@ -133,8 +133,10 @@ controls stay locked until a device read is confirmed again.
   (retried after the backoff, then without the paused write).
 - Any frame re-arms a three-minute silence timer; when it expires the session
   is invalidated and closed and recovery is scheduled, as for a link loss.
-- The **reset marker** is the power-loss clock: a power loss restarts the
-  device clock at 05:00:00 on Sunday. On reconnect the clock must be more
+- The **reset marker** is a device read at factory defaults
+  (`restore.is_factory_default`; on hardware a short outage reset the
+  settings while the clock kept running), or the power-loss clock: a power
+  loss restarts the device clock at 05:00:00 on Sunday. On reconnect the clock must be more
   than 10 minutes off, not off by whole hours (±2 minutes: DST or a time
   zone change, which only sets the clock, unless Home Assistant heard the
   device within the last hour or the whole device read equals the power-loss
@@ -151,7 +153,11 @@ controls stay locked until a device read is confirmed again.
   `restore_needed` (`reset` stays set until the event is resolved). A reset
   with the `auto_restore` option on (the default) runs the restore executor,
   at most twice per event; a failed attempt ends the session so the next one
-  starts fresh. The `profile_restore_needed` Repair is raised for a
+  starts fresh. Each fresh read logs the raw device clock, the offset and
+  every criterion at info level. The verification read skips light and
+  sound values the device cannot show then (all while the soother runs, the
+  brightness while the light is off) and logs each mismatching field with
+  its saved and device value. The `profile_restore_needed` Repair is raised for a
   difference without a reset, with automatic restore off, or once the
   attempts are used up (error severity).
 - The unavailability callback invalidates state and detaches the session
