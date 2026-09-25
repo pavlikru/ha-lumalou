@@ -18,7 +18,7 @@ dev = [
   "homekit-audio-proxy==1.2.1",
   "lumalou-gld09==0.3.0",
   "mypy==1.18.2",
-  "pre-commit==4.3.0",
+  "pre-commit==4.6.2",
   "PyTurboJPEG==1.8.3",
   "PyQRCode==1.2.1",
   "pytest==9.0.3",
