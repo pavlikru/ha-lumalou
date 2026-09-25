@@ -49,8 +49,11 @@ Based on a hardware check of every Bluetooth command on firmware 0.3.7.
   from the device's own pushes (also for button presses on the device); a
   command is done when the device acknowledges it, with no reconnect or read
   afterwards. Reconnects wait 1.5 seconds after a disconnect.
-- Power loss: a reconnect that finds the device clock more than 10 minutes off
-  and the settings different is a reset. Home Assistant sets the clock and
+- Power loss: a reconnect that finds the device clock restarted at 05:00 on
+  Sunday (as after a power loss: more than 10 minutes off, not by whole hours,
+  and running no longer than since Home Assistant last heard from the device)
+  and the settings different is a reset. A DST change or a long Home
+  Assistant downtime only sets the clock. Home Assistant sets the clock and
   restores the saved profile automatically (at most two attempts), or raises
   the Repair when automatic restore is off. Settings changed without a reset
   still raise the Repair and are never overwritten automatically.
@@ -61,6 +64,18 @@ Based on a hardware check of every Bluetooth command on firmware 0.3.7.
   sound leaves its light on. `pink_noise` is labelled "White noise".
 - The clock is corrected from the clock the device pushes every minute (DST,
   drift) instead of a daily reconnect.
+- A clock offset of more than 10 minutes seen while connected (for example
+  a DST change) is corrected at once, not after the hourly limit. A failed
+  automatic clock write now fails that reconnect instead of reading the
+  device again.
+- A session that sends nothing for three minutes is closed and reconnected.
+- **Start routine** waits for the device to enter routine mode before making
+  the first task current; if it does not, a one-off routine is written back
+  and an error is shown. The button is unavailable while a routine runs, and
+  a restore is refused while one runs.
+- A one-off routine uses the device clock's weekday, and its marker is kept in
+  the private profile store instead of the config entry.
+- State pushes with an unknown value in one field are no longer dropped.
 - The aggregate state and soother commands (`0x01`, `0x03`) and the nap
   commands (`0x4D`, `0x4F`) are blocked. Routine start (`0x7B`) and routine
   control (`0x6B` codes 0–4) are allowed as exact payloads after their
