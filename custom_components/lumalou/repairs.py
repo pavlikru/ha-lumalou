@@ -7,12 +7,11 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant.components.repairs import RepairsFlow, RepairsFlowResult
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import selector
 
-from .const import DOMAIN, ISSUE_ID_PROFILE_RESTORE_NEEDED, ISSUE_ID_PROFILE_STORAGE
+from .const import ISSUE_ID_PROFILE_RESTORE_NEEDED, ISSUE_ID_PROFILE_STORAGE
 from .models import ProfileValidationError, import_profile_payload
 
 CONF_CONFIRM = "confirm"
@@ -44,32 +43,6 @@ def _coordinator(hass: HomeAssistant, entry_id: str) -> Any | None:
     entry = hass.config_entries.async_get_entry(entry_id)
     runtime_data = getattr(entry, "runtime_data", None)
     return None if runtime_data is None else runtime_data.coordinator
-
-
-@callback
-def async_sync_restore_issue(hass: HomeAssistant, entry_id: str, need: Any) -> None:
-    """Show the restore issue exactly while the coordinator reports a mismatch."""
-    issue_id = f"{entry_id}_{ISSUE_ID_PROFILE_RESTORE_NEEDED}"
-    if need is None:
-        ir.async_delete_issue(hass, DOMAIN, issue_id)
-        return
-    ir.async_create_issue(
-        hass,
-        DOMAIN,
-        issue_id,
-        data={"entry_id": entry_id},
-        is_fixable=True,
-        severity=(
-            ir.IssueSeverity.ERROR
-            if need.auto_restore_exhausted
-            else ir.IssueSeverity.WARNING
-        ),
-        translation_key=ISSUE_ID_PROFILE_RESTORE_NEEDED,
-        translation_placeholders={
-            "block_count": str(len(need.changed_blocks)),
-            "attempts": str(need.auto_restore_attempts),
-        },
-    )
 
 
 class ProfileRestoreRepairFlow(RepairsFlow):
