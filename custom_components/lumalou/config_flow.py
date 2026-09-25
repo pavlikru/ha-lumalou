@@ -157,11 +157,8 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if fingerprint is None:
             return None, errors
         await self.async_set_unique_id(fingerprint)
-        # The same signed device at a new address: follow it, but keep
-        # control locked until its profile is read again.
-        self._abort_if_unique_id_configured(
-            updates={CONF_ADDRESS: info.address, CONF_PROTOCOL_VERIFIED: False}
-        )
+        # The same signed device key at a new address: only the address changes.
+        self._abort_if_unique_id_configured(updates={CONF_ADDRESS: info.address})
         return (
             self.async_create_entry(
                 title=_device_title(info),
@@ -241,7 +238,7 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors={"base": "wrong_device"},
             )
         return self.async_update_reload_and_abort(
-            entry, data=_entry_data(address, fingerprint)
+            entry, data_updates={CONF_ADDRESS: address}
         )
 
     async def _async_probe(
