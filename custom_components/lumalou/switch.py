@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
+from homeassistant.const import EntityCategory
 
 from .entity import LumalouEntity
 
@@ -16,6 +17,8 @@ async def async_setup_entry(hass: Any, entry: Any, async_add_entities: Any) -> N
 
 class LumalouMaintenanceSwitch(LumalouEntity, SwitchEntity):
     """Release Bluetooth and block integration device operations."""
+
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, entry: Any) -> None:
         super().__init__(entry, "Maintenance", "maintenance")

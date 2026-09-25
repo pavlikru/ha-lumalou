@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.components.button import ButtonEntity
+from homeassistant.const import EntityCategory
 
 from .entity import LumalouEntity
 
@@ -17,6 +18,8 @@ async def async_setup_entry(hass: Any, entry: Any, async_add_entities: Any) -> N
 class LumalouSyncClockButton(LumalouEntity, ButtonEntity):
     """Synchronize the device clock."""
 
+    _attr_entity_category = EntityCategory.CONFIG
+
     def __init__(self, entry: Any) -> None:
         super().__init__(entry, "Synchronize clock", "sync_clock")
         self._attr_translation_key = "sync_clock"
@@ -27,6 +30,8 @@ class LumalouSyncClockButton(LumalouEntity, ButtonEntity):
 
 class LumalouRefreshButton(LumalouEntity, ButtonEntity):
     """Request a fresh state snapshot."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, entry: Any) -> None:
         super().__init__(entry, "Refresh", "refresh")

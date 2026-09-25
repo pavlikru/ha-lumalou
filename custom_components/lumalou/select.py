@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.components.select import SelectEntity
+from homeassistant.const import EntityCategory
 
 from lumalou import LightDuration, PlaylistDuration  # type: ignore[attr-defined]
 
@@ -20,6 +21,8 @@ async def async_setup_entry(hass: Any, entry: Any, async_add_entities: Any) -> N
 
 class LumalouLightDurationSelect(LumalouEntity, SelectEntity):
     """Select the persistent light timer."""
+
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, entry: Any) -> None:
         super().__init__(entry, "Light duration", "light_duration")
@@ -50,6 +53,8 @@ class LumalouLightDurationSelect(LumalouEntity, SelectEntity):
 
 class LumalouPlaylistDurationSelect(LumalouEntity, SelectEntity):
     """Select the persistent audio playlist timer."""
+
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, entry: Any) -> None:
         super().__init__(entry, "Playlist duration", "playlist_duration")
