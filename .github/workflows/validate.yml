@@ -52,4 +52,3 @@ jobs:
           category: integration
           # Remove once the GitHub repository has a description and topics.
           ignore: description topics
-
