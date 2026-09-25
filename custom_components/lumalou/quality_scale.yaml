@@ -2,7 +2,7 @@
 # https://developers.home-assistant.io/docs/core/integration-quality-scale/
 # hassfest only enforces this file for core integrations; it is kept here as an
 # honest checklist. Mark a rule `done` only when the code in this directory
-# satisfies it.
+# satisfies it. Bronze and Silver: every rule is done or exempt (0.1.0).
 rules:
   # Bronze
   action-setup:
