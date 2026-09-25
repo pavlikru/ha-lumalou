@@ -253,8 +253,8 @@ def test_record_roundtrip_is_detached():
     record = ProfileRecord(
         revision=2,
         desired_profile={"playlist": [2]},
-        previous={"revision": 1, "profile": {"playlist": [1]}},
         verified_revision=1,
+        temporary_routine_day="friday",
         pending=True,
         sync_status="pending",
         last_error="synthetic",
@@ -299,10 +299,8 @@ def test_routine_values_are_limited_to_the_readback_nibble(field):
         ("maintenance", "false"),
         ("last_error", 42),
         ("desired_profile", {"unknown": 0}),
-        ("previous", []),
-        ("previous", {"profile": {}}),
-        ("previous", {"revision": -1, "profile": {}}),
-        ("previous", {"revision": 0, "profile": {"playlist": [13]}}),
+        ("temporary_routine_day", "someday"),
+        ("temporary_routine_day", 0),
     ],
 )
 def test_corrupt_record_rejected(field, value):

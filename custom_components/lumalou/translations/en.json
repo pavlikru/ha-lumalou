@@ -77,7 +77,7 @@
       },
       "behavior": {
         "title": "Behavior options",
-        "description": "Automatic restore is on by default. A power loss resets Lumalou to factory settings: the clock, playlist, schedules, routines, timers, volume and brightness. When Home Assistant reconnects and finds the clock far off and the settings different from the saved verified profile, it sets the clock and writes the saved profile back, then checks it with a fresh read. It never turns light or sound on. If two attempts fail, a repair is raised instead. When automatic restore is off, a repair lets you choose which settings to keep. Settings changed on the device without a reset (for example in the Fisher-Price app) always raise the repair.",
+        "description": "Automatic restore is on by default. A power loss resets Lumalou to factory settings: the clock, playlist, schedules, routines, timers, volume and brightness. When Home Assistant reconnects and finds the clock restarted at 05:00 on Sunday (as after a power loss) and the settings different from the saved profile, it sets the clock and writes the saved profile back, then checks it with a fresh read. It never turns light or sound on. If two attempts fail, a repair is raised instead. When automatic restore is off, a repair lets you choose which settings to keep. Settings changed on the device without a reset (for example in the Fisher-Price app) always raise the repair.",
         "data": {
           "auto_restore": "Restore the saved profile automatically"
         },
@@ -470,6 +470,9 @@
     },
     "profile_saved_not_applied": {
       "message": "The change was saved in Home Assistant but could not be written to Lumalou (not reachable, or Maintenance on). It stays pending; when Home Assistant reconnects, Repairs offers to write it."
+    },
+    "routine_not_started": {
+      "message": "Lumalou did not start the routine. Nothing was changed; try again."
     }
   },
   "issues": {

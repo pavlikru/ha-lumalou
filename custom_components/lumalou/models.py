@@ -311,7 +311,6 @@ class ProfileRecord:
     schema_version: int = PROFILE_SCHEMA_VERSION
     revision: int = 0
     desired_profile: dict[str, Any] = field(default_factory=dict)
-    previous: dict[str, Any] | None = None
     verified_revision: int | None = None
     pending: bool = False
     sync_status: str = "empty"
@@ -320,6 +319,10 @@ class ProfileRecord:
     # Private device-key fingerprint of the session that verified
     # `verified_revision`.
     verified_fingerprint: str | None = None
+    # Weekday whose device routine a one-off routine replaced; the saved
+    # routine of that day is written back when it ends (runtime marker, kept
+    # here so a restart still writes it back).
+    temporary_routine_day: str | None = None
 
     @property
     def is_verified(self) -> bool:
@@ -341,7 +344,7 @@ class ProfileRecord:
 
 
 def _validate_record(value: Any) -> dict[str, Any]:
-    """Validate record metadata and both saved profiles."""
+    """Validate record metadata and the saved profile."""
     if not isinstance(value, dict) or set(value) != set(
         ProfileRecord.__dataclass_fields__
     ):
@@ -364,14 +367,10 @@ def _validate_record(value: Any) -> dict[str, Any]:
         raise ProfileValidationError("Invalid boolean metadata")
     if value["last_error"] is not None and not isinstance(value["last_error"], str):
         raise ProfileValidationError("Invalid error metadata")
+    if value["temporary_routine_day"] not in (None, *DAYS):
+        raise ProfileValidationError("Invalid temporary routine day")
     data = deepcopy(value)
     data["desired_profile"] = validate_profile(data["desired_profile"])
-    previous = data["previous"]
-    if previous is not None:
-        if not isinstance(previous, dict) or set(previous) != {"revision", "profile"}:
-            raise ProfileValidationError("Invalid previous revision")
-        validate_integer(previous["revision"], 0, data["revision"], "previous")
-        previous["profile"] = validate_profile(previous["profile"])
     return data
 
 

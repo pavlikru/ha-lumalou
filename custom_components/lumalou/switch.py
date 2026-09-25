@@ -7,15 +7,8 @@ from typing import Any
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.const import EntityCategory
 
+from .const import ROUTINE_SETTING_FIELDS
 from .entity import LumalouControlEntity, LumalouEntity
-
-# Routine settings profile key -> GLOBAL_STATE field.
-_ROUTINE_FIELDS = {
-    "enabled": "routineModeStatus",
-    "music": "routineMusicStatus",
-    "task_reward_sfx": "taskRewardSfx",
-    "routine_reward_sfx": "routineRewardSfx",
-}
 
 PARALLEL_UPDATES = 0
 
@@ -47,7 +40,7 @@ class LumalouMaintenanceSwitch(LumalouEntity, SwitchEntity):
 
     @property
     def is_on(self) -> bool:
-        return self.coordinator.profile_record.maintenance
+        return self.coordinator.maintenance
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self.coordinator.async_set_maintenance(True)
@@ -82,7 +75,7 @@ class _LumalouRoutineSettingSwitch(LumalouControlEntity, SwitchEntity):
 
     @property
     def is_on(self) -> bool | None:
-        value = self.snapshot_value(_ROUTINE_FIELDS[self._setting])
+        value = self.snapshot_value(ROUTINE_SETTING_FIELDS[self._setting])
         return None if value is None else bool(value)
 
     async def _async_set(self, on: bool) -> None:

@@ -56,12 +56,17 @@ EXACT_SEND_PAYLOADS: dict[int, frozenset[bytes]] = {
     0x7B: frozenset({bytes([0x7B])}),
     0x6B: frozenset(bytes([0x6B, code]) for code in range(5)),
 }
-# Live controls: clock 0x30, volume 0x37, audio off 0x38, brightness 0x3A,
-# colour 0x3C, light off 0x3E, play 0x3F, playlist timer 0x42, light timer 0x6C,
-# routine mode status 0x58, routine music/rewards 0x69, routine volume 0x77,
-# routine start 0x7B and routine control 0x6B (0x53 is the state request).
-# No firmware or nap commands.
-ALLOWED_OPCODES = frozenset(
+# Every application command that is ever sent (0x53 is the state request):
+# - live controls: clock 0x30, volume 0x37, audio off 0x38, brightness 0x3A,
+#   colour 0x3C, light off 0x3E, play 0x3F, playlist timer 0x42, light timer
+#   0x6C, routine start 0x7B and routine control 0x6B;
+# - profile setters (restore executor, clock and routine setting entities):
+#   playlist 0x40, ready-to-rise status 0x44/times 0x46, sleepy times 0x48,
+#   ready-to-rise alarms 0x4A, routine mode status 0x58, the seven day-routine
+#   setters 0x5A..0x66, routine music/rewards 0x69, routine volume 0x77 and
+#   clock settings 0x79.
+# Never nap start/alarm 0x4D/0x4F or anything firmware/DFU related.
+ALLOWED_SEND_OPCODES = frozenset(
     {
         0x30,
         0x37,
@@ -70,28 +75,13 @@ ALLOWED_OPCODES = frozenset(
         0x3C,
         0x3E,
         0x3F,
-        0x42,
-        0x53,
-        0x58,
-        0x69,
-        0x6C,
-        0x77,
-        *EXACT_SEND_PAYLOADS,
-    }
-)
-# Profile setters used by the restore executor (clock settings 0x79 also by
-# the clock entities): playlist 0x40, ready-to-rise status 0x44/times 0x46,
-# sleepy times 0x48, ready-to-rise alarms 0x4A, routine mode status 0x58, the
-# seven day-routine setters 0x5A..0x66, routine music/rewards 0x69, routine
-# volume 0x77 and clock settings 0x79. The light and sound block uses the
-# live setters above.
-PROFILE_SETTER_OPCODES = frozenset(
-    {
         0x40,
+        0x42,
         0x44,
         0x46,
         0x48,
         0x4A,
+        0x53,
         0x58,
         0x5A,
         0x5C,
@@ -101,12 +91,12 @@ PROFILE_SETTER_OPCODES = frozenset(
         0x64,
         0x66,
         0x69,
+        0x6C,
         0x77,
         0x79,
+        *EXACT_SEND_PAYLOADS,
     }
 )
-# Never nap start/alarm 0x4D/0x4F or anything firmware/DFU related.
-ALLOWED_SEND_OPCODES = ALLOWED_OPCODES | PROFILE_SETTER_OPCODES
 # Read-only queries used by strict readback (never the nap alarm queries,
 # which time out on the device): global state 0x53, current date 0x31,
 # playlist 0x41, ready-to-rise times 0x47, sleepy times 0x49, alarms 0x4C,
@@ -121,23 +111,38 @@ DEFAULT_AUTO_RESTORE = True
 # The device clock has only hour/minute/second/weekday. Deviations within this
 # window are BLE/processing latency, not a reset clock.
 CLOCK_SYNC_TOLERANCE = 60
-# A power loss resets the device clock to 05:00 on Sunday. A clock further off
-# than this on reconnect is the reset marker.
+# A power loss resets the device clock to 05:00:00 on Sunday, from where it
+# runs on. A reset needs all of: a clock further off than RESET_CLOCK_OFFSET,
+# an offset that is not whole hours (within WHOLE_HOUR_TOLERANCE; that is DST
+# or a time zone change, only the clock is set), and a device clock on Sunday
+# between 05:00 and 05:00 plus the time since Home Assistant last heard from
+# the device (plus RESET_CLOCK_OFFSET slack), at most RESET_WINDOW_MAX.
 RESET_CLOCK_OFFSET = 10 * 60
+WHOLE_HOUR_TOLERANCE = 2 * 60
+RESET_WINDOW_MAX = 12 * 60 * 60
 # Automatic clock writes pause this long (seconds) after a failed one, and
-# corrections of drift seen in pushed CURRENT_DATE happen at most this often.
+# corrections of drift seen in pushed CURRENT_DATE happen at most this often
+# (except offsets above RESET_CLOCK_OFFSET, such as a DST change).
 # The clock-sync button and a profile restore still write immediately.
 CLOCK_SYNC_RETRY_INTERVAL = 60 * 60
+# The device pushes CURRENT_DATE every minute; an open session without any
+# frame for this long is treated as lost.
+SESSION_SILENCE_TIMEOUT = 3 * 60
 # Automatic restore attempts per detected power-loss/reset event.
 AUTO_RESTORE_MAX_ATTEMPTS = 2
-# Entry data key: weekday whose device routine is temporarily replaced by a
-# manually started routine; the saved routine is written back when it ends.
-CONF_TEMPORARY_ROUTINE_DAY = "temporary_routine_day"
 # GLOBAL_STATE operationMode while a routine runs (preview or tasks).
 ROUTINE_OPERATION_MODE = 7
 # A manual start shows a silent preview (step 0); the first "complete task"
 # after this pause makes task 1 current with its music, like a scheduled start.
 ROUTINE_START_DELAY = 1.0
+# Routine settings profile key -> GLOBAL_STATE field.
+ROUTINE_SETTING_FIELDS = {
+    "enabled": "routineModeStatus",
+    "music": "routineMusicStatus",
+    "task_reward_sfx": "taskRewardSfx",
+    "routine_reward_sfx": "routineRewardSfx",
+    "volume": "routineVolume",
+}
 # Routine task ids 1..11 as translation keys (device face icons).
 ROUTINE_TASKS = (
     "get_dressed",

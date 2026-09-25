@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import pytest
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from lumalou.responses import CurrentDate
 from lumalou.schedules import (
     ClockTime,
     DailyRoutine,
@@ -21,7 +22,6 @@ from lumalou.schedules import (
 from custom_components.lumalou.const import (
     CONF_DEVICE_FINGERPRINT,
     CONF_PROTOCOL_VERIFIED,
-    CONF_TEMPORARY_ROUTINE_DAY,
 )
 from custom_components.lumalou.coordinator import LumalouCoordinator
 from custom_components.lumalou.models import (
@@ -71,12 +71,9 @@ def events(coordinator) -> list[tuple[str, dict[str, str]]]:
     return fired
 
 
-def saved_data(rig) -> list[dict]:
-    """Entry data written through async_update_entry, oldest first."""
-    return [
-        call.kwargs["data"]
-        for call in rig.hass.config_entries.async_update_entry.call_args_list
-    ]
+def saved_marker(rig) -> str | None:
+    """The one-off routine day in the last record written to the Store."""
+    return rig.store.async_save.await_args.args[0].temporary_routine_day
 
 
 async def drain(rig) -> None:
@@ -161,12 +158,12 @@ async def test_start_routine_starts_then_makes_the_first_task_current(rig):
 
     assert sends(rig, start) == [START, COMPLETE]
     assert not coordinator.temporary_routine_active
-    rig.hass.config_entries.async_update_entry.reset_mock()
+    saves = rig.store.async_save.await_count
 
     with pytest.raises(ServiceValidationError) as err:
         await coordinator.async_start_routine()
     assert err.value.translation_key == "routine_running"
-    rig.hass.config_entries.async_update_entry.assert_not_called()
+    assert rig.store.async_save.await_count == saves
 
 
 async def test_routine_progress_events_and_sensor_values(rig):
@@ -251,7 +248,7 @@ async def test_one_off_routine_runs_once_then_the_saved_routine_returns(rig):
         COMPLETE,
     ]
     assert coordinator.temporary_routine_active
-    assert saved_data(rig)[-1][CONF_TEMPORARY_ROUTINE_DAY] == "sunday"
+    assert saved_marker(rig) == "sunday"
     assert rig.fake.routines["sunday"].slots[:2] == (
         RoutineTask(1, 8),
         RoutineTask(2, 7),
@@ -264,7 +261,7 @@ async def test_one_off_routine_runs_once_then_the_saved_routine_returns(rig):
 
     assert sends(rig, start) == [day_routine_payload("sunday", SAVED_SUNDAY)]
     assert not coordinator.temporary_routine_active
-    assert CONF_TEMPORARY_ROUTINE_DAY not in saved_data(rig)[-1]
+    assert saved_marker(rig) is None
     assert (
         decode_daily_routine(day_routine_payload("sunday", SAVED_SUNDAY)[1:])
         == (rig.fake.routines["sunday"])
@@ -297,7 +294,7 @@ async def test_one_off_routine_is_written_back_after_a_dropped_session(rig):
     assert not coordinator.temporary_routine_active
 
     # Already back (e.g. after a restore): only the marker is cleared.
-    coordinator._set_temporary_routine_day("sunday")
+    await coordinator._set_temporary_routine_day("sunday")
     await coordinator._disconnect()
     start = len(rig.journal)
     await coordinator._async_recover()
@@ -306,11 +303,13 @@ async def test_one_off_routine_is_written_back_after_a_dropped_session(rig):
 
 
 async def test_one_off_routine_marker_survives_a_restart(rig):
-    entry = rig.coordinator.entry
-    entry.data = {**entry.data, CONF_TEMPORARY_ROUTINE_DAY: "friday"}
-    assert LumalouCoordinator(rig.hass, entry, rig.store).temporary_routine_active
-    entry.data[CONF_TEMPORARY_ROUTINE_DAY] = "someday"
-    assert not LumalouCoordinator(rig.hass, entry, rig.store).temporary_routine_active
+    """The marker lives in the private Store with the saved profile."""
+    rig.store.async_load.return_value = ProfileRecord(
+        revision=1, temporary_routine_day="friday"
+    )
+    coordinator = LumalouCoordinator(rig.hass, rig.coordinator.entry, rig.store)
+    await coordinator.async_setup()
+    assert coordinator.temporary_routine_active
 
 
 async def test_failed_write_back_drops_the_session_and_keeps_the_marker(rig):
@@ -333,15 +332,19 @@ async def test_write_back_waits_for_a_usable_session(rig):
     await coordinator.async_start_routine([8, 7])
     start = len(rig.journal)
 
+    async def no_marker() -> None:
+        await coordinator._set_temporary_routine_day(None)
+
     for prepare in (
-        lambda: coordinator._set_temporary_routine_day(None),
+        no_marker,
         lambda: setattr(coordinator, "_client", None),
         lambda: setattr(coordinator, "data", None),
         lambda: coordinator.data.update(operationMode=7),
     ):
-        coordinator._set_temporary_routine_day("sunday")
+        await coordinator._set_temporary_routine_day("sunday")
         client, data = coordinator._client, deepcopy(coordinator.data)
-        prepare()
+        if (pending := prepare()) is not None:
+            await pending
         await coordinator._async_end_temporary_routine()
         coordinator._client, coordinator.data = client, data
 
@@ -363,7 +366,7 @@ async def test_one_off_routine_equal_to_the_saved_one_changes_nothing(rig):
 async def test_start_writes_back_an_earlier_one_off_routine_first(rig):
     coordinator = rig.coordinator
     await verified_with_routine(rig)
-    coordinator._set_temporary_routine_day("saturday")
+    await coordinator._set_temporary_routine_day("saturday")
     saturday = coordinator.profile_record.desired_profile["routines"]["saturday"]
     start = len(rig.journal)
 
@@ -402,7 +405,7 @@ async def test_one_off_routine_needs_trusted_time_and_a_profile(rig):
     with pytest.raises(ServiceValidationError, match="Read and verify"):
         await coordinator.async_start_routine([3])
     # An earlier one-off day without a saved profile is only forgotten.
-    coordinator._set_temporary_routine_day("monday")
+    await coordinator._set_temporary_routine_day("monday")
     start = len(rig.journal)
     await coordinator.async_start_routine()
     assert sends(rig, start) == [START, COMPLETE]
@@ -548,7 +551,7 @@ async def test_set_routines_refusals_and_unreachable_device(rig):
 async def test_keeping_the_device_profile_forgets_a_one_off_routine(rig):
     coordinator = rig.coordinator
     await verified_with_routine(rig)
-    coordinator._set_temporary_routine_day("sunday")
+    await coordinator._set_temporary_routine_day("sunday")
 
     snapshot, revision = await coordinator.async_read_profile_snapshot()
     await coordinator.async_accept_device_profile(snapshot, revision, confirmed=True)
@@ -587,3 +590,60 @@ async def test_undecodable_task_status_is_ignored(rig):
     push_mode(rig, 7)
     rig.clients[-1].on_response(SimpleNamespace(opcode=0x94, decode=lambda: b"\x00"))
     assert rig.coordinator.routine_status is None
+
+
+async def test_start_that_the_device_does_not_take_puts_the_day_back(rig):
+    """No pushed routine mode after 0x7B: no first-task command, day restored."""
+    coordinator = rig.coordinator
+    await verified_with_routine(rig)
+    rig.settings.push = False
+    start = len(rig.journal)
+
+    with pytest.raises(HomeAssistantError) as err:
+        await coordinator.async_start_routine([8, 7])
+
+    assert err.value.translation_key == "routine_not_started"
+    assert sends(rig, start) == [
+        day_routine_payload(
+            "sunday", routine_from_tasks({"hour": 20, "minute": 0}, [8, 7])
+        ),
+        START,
+        day_routine_payload("sunday", SAVED_SUNDAY),
+    ]
+    assert not coordinator.temporary_routine_active
+
+    # Without tasks there is nothing to put back.
+    start = len(rig.journal)
+    with pytest.raises(HomeAssistantError):
+        await coordinator.async_start_routine()
+    assert sends(rig, start) == [START]
+
+
+async def test_one_off_routine_uses_the_device_weekday(rig):
+    """The device clock (pushed every minute) decides which day is today."""
+    coordinator = rig.coordinator
+    await verified_with_routine(rig)
+    rig.clients[-1].on_response(
+        SimpleNamespace(opcode=0x13, decode=lambda: CurrentDate(12, 0, 0, 5))
+    )
+    start = len(rig.journal)
+
+    await coordinator.async_start_routine([8])
+
+    assert sends(rig, start)[0] == day_routine_payload(
+        "friday", routine_from_tasks(None, [8])
+    )
+    assert coordinator.profile_record.temporary_routine_day == "friday"
+
+
+async def test_restore_is_refused_while_a_routine_runs(rig):
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    rig.state["operationMode"] = 7
+    start = len(rig.journal)
+
+    with pytest.raises(ServiceValidationError) as err:
+        await coordinator.async_restore_profile(1, confirmed=True)
+
+    assert err.value.translation_key == "routine_running"
+    assert not sends(rig, start)
