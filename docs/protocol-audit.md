@@ -414,10 +414,16 @@ GLOBAL_STATE, the 12-byte playlist, 2-byte clock settings, two weekly time
 blocks, weekly alarms and seven 14-byte routines. No real token or schedule
 capture is in the repository. No settings write has been made through it.
 
-The target's standard Model Number characteristic is absent, so Model Number is
-only a conflict check. The HA flow asks the user to confirm the candidate and
-binds its sessions to the fingerprint of the verified signed key without
-exposing identity material.
+The target's standard Model Number characteristic is absent, so the HA flow
+does not read Device Information at all. It asks the user to confirm the
+candidate, reads only the signed FACTORY token and binds its sessions to the
+fingerprint of the verified signed key without exposing identity material.
+
+Light and playlist timers have dedicated queries (`6D → 95`, `43 → 1A`), but the
+pinned library has no typed decoder for those responses, so the HA side can read
+them only from GLOBAL_STATE nibbles. Together with brightness, colour and volume
+(brightness reads 0 while the light is off) they are treated as live state and
+kept out of the saved profile, power-loss detection and restore.
 
 ### Automatable once the upstream contract is released
 

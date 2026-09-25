@@ -20,27 +20,31 @@ notes.
   new Bluetooth address only for the same signed device.
 - Controls unlock only after one complete, strict profile read from the device
   has been confirmed.
-- Light (on/off, brightness, palette effects), media player (play/stop, volume,
-  built-in sources), light and playlist duration selects, maintenance switch,
-  clock-sync and refresh buttons, connectivity binary sensor and diagnostic
-  sensors.
-- Private, revisioned profile per entry, read from the device, with editors
-  for light and audio values, playlist, clock settings, routine settings,
-  weekly schedules, alarms and all seven daily routines; JSON export/import
-  actions with a revision check.
+- Light (on/off, brightness, palette effects; a plain "on" uses the last
+  brightness seen), media player (play/stop, volume, built-in sources), light
+  and playlist duration selects, maintenance switch, clock-sync and refresh
+  buttons, connectivity binary sensor, firmware sensor and profile sync
+  status sensor.
+- Private, revisioned profile per entry with the persistent configuration
+  (playlist, clock settings, routine settings, weekly schedules, alarms and
+  all seven daily routines), read from the device, with editors for every
+  block; JSON export/import actions with a revision check. Light brightness
+  and color, volume and timers are live state, not profile settings.
 - Verified profile restore (`lumalou.restore_profile`, optional
   `expected_revision`): fresh read, clock correction, minimal ordered setter
-  writes with activation flags last, and a fresh verification read.
+  writes with activation flags last, and a fresh verification read. A restore
+  never writes light or volume.
 - Power-loss handling: every reconnect of a verified entry reads the full
   profile, corrects a device clock that is more than 60 seconds off and
   raises a Repair (restore saved profile or keep device settings) when the
-  device no longer matches the verified profile. Optional automatic restore,
-  off by default, limited to two attempts per event.
+  device no longer matches the verified profile. A pending revision the device
+  already matches becomes verified. Optional automatic restore, off by
+  default, limited to two attempts per event.
+- Daily clock check at 03:05 and on Home Assistant time zone changes.
 - Push updates while connected; reconnect on advertisement at most every
   30 seconds with bounded backoff; device loss and return logged once.
-- Repairs for unreadable profile storage and for differing device settings;
-  redacted diagnostics; translated errors; English and Russian translations;
-  local brand icons.
+- Repair for differing device settings; redacted diagnostics; translated
+  errors; English and Russian translations; local brand icons.
 - Standard entities for Apple Home through HomeKit Bridge; configuration and
   diagnostic entities are excluded from HomeKit by default.
 - CI with lint, type checks, tests, hassfest and HACS validation; tag-based
@@ -48,17 +52,27 @@ notes.
 
 ### Changed
 
-For users of earlier development builds:
+For users of earlier development builds (there are no migrations; remove the
+old Lumalou entry and add the device again):
 
-- Entity and device registry IDs now derive from the verified device
-  fingerprint instead of the Bluetooth address (config entry 1.2). Existing
-  entities keep their history; entries created before signed enrollment must
-  be reconfigured once, as a Repair explains.
+- An entry without a verified device identity fails setup and asks to be
+  removed and added again.
+- Light brightness and color, volume and the light and playlist timers are no
+  longer saved in the profile, compared for power loss or restored; the
+  "Light and audio values" editor is gone. A light that is off (brightness 0)
+  no longer raises a *settings differ* Repair.
+- `lumalou.import_profile` accepts only a complete profile.
+- The profile revision, verified revision and last error sensors and the
+  profile pending and present binary sensors are removed; their data is in the
+  diagnostics download.
+- The profile is stored with Home Assistant's `Store` helper; the storage
+  recovery Repair and custom backups are gone.
+- Setup no longer reads Bluetooth Device Information; only the signed
+  identity is read.
+- The same signed device at a new address keeps its unlocked controls.
 - **Breaking:** light effects, media player sources and duration select
   options are lower-case keys (for example `warm` instead of `WARM`); update
   automations and scripts.
-- The text Connection sensor is replaced by a connectivity binary sensor; the
-  old sensor is removed from the entity registry.
 - Removed the Create menu and the JSON import from the options flow: editors
   appear only after a device read, and JSON import remains available as the
   `lumalou.import_profile` action.
@@ -67,7 +81,8 @@ For users of earlier development builds:
 - Manual setup no longer asks for a second confirmation after the device is
   chosen.
 - Removing an entry now deletes its private saved profile; export it first.
-- The requirement is the published `lumalou-gld09==0.2.0` release.
+- The requirement is the published `lumalou-gld09==0.2.0` release; Home
+  Assistant 2026.9.0 or newer.
 
 ### Security
 
@@ -80,8 +95,9 @@ For users of earlier development builds:
 ### Known limitations
 
 - Not yet validated on hardware; see `docs/hardware-validation.md`.
-- Power-loss detection is a heuristic; automatic restore overwrites every
-  other change made on the device.
+- Power-loss detection is a heuristic over the persistent profile settings;
+  automatic restore overwrites every other change of them made on the device.
+  Light, volume and timers are not restored after a power loss.
 - Palette colors are not available in Apple Home.
 
 <!-- Release section template:
@@ -94,7 +110,7 @@ For users of earlier development builds:
 ### Known limitations
 
 Hardware validation: summary of passed phases (anonymized).
-Requires Home Assistant 2026.9.2 or newer and lumalou-gld09==0.2.0.
+Requires Home Assistant 2026.9.0 or newer and lumalou-gld09==0.2.0.
 -->
 
 [Unreleased]: https://github.com/pavlikru/ha-lumalou/commits/main
