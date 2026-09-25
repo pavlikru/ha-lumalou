@@ -199,7 +199,10 @@ controls stay locked until a device read is confirmed again.
   is `routine_cancelled` when Home Assistant sent the cancel code, else
   `routine_expired` (ended by the device). Nothing is inferred across a
   reconnect. Every pushed status is logged at debug level.
-- Start (button or action) sends `0x7B`, waits for the pushed state to show
+- Start (button or action) is refused (`routine_mode_off`) before any write
+  while routine mode (`routineModeStatus`, the Routines switch) is off: the
+  device ignores `0x7B` then (hardware). Otherwise it sends `0x7B`, waits for
+  the pushed state to show
   routine mode (else writes a one-off day back and raises
   `routine_not_started`), waits one second and sends `0x6B 0`, so task 1
   becomes current with its music like a scheduled start. The start button is
@@ -207,6 +210,10 @@ controls stay locked until a device read is confirmed again.
   runs.
   Control buttons send `0x6B` 0 (complete, the remote's check-mark), 1
   (previous) or 4 (cancel) and are refused unless routine mode is on.
+- In routine mode the device acknowledges but ignores light and audio
+  commands (hardware), so light on/off, play and stop are refused
+  (`routine_blocks_control`) instead of reporting a success. Volume and timer
+  settings keep their confirmed writes.
 - One-off routine (`start_routine` with tasks): the tasks are written as
   today's routine (today's saved time) in the live session, then started. The
   saved profile is not changed. "Today" is the weekday of the device clock

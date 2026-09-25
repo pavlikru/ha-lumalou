@@ -100,6 +100,13 @@ replace the earlier design assumptions.
 - Manual start `0x7B` (no argument): `operationMode` 0 → 7 at step 0 (icons
   blink, silent). The first `routine_control 0` makes task 1 current with
   sound and music, so finishing N tasks takes a start plus N+1 check presses.
+- `0x7B` is ignored while routine mode (`0x58`) is off: `operationMode` stays
+  0. With routine mode on and every day routine empty, a one-off routine
+  (tasks written for today, started, today's saved routine written back)
+  works.
+- In routine mode (`operationMode` 7) the device ignores light and audio
+  commands (a rainbow light on, a source change, sound off): acknowledged,
+  no effect.
 - `routine_control` (`0x6B`) codes: 0 complete task/advance; 1 previous task;
   2 restart (no visible change at step 1); 3 complete the whole sequence
   (completion sound and animation, mode 0, statuses reset); 4 cancel (silent,
@@ -165,7 +172,11 @@ the anonymized summary.
       current after about 1.3 seconds; **Cancel routine** ended it.
 - [x] **HomeKit Bridge** (2026-09-25): Apple Home shows the lightbulb and the
       audio switch; no configuration or routine entities.
-- [ ] Not yet checked on hardware: **Previous task**; a one-off routine
-      (`lumalou.start_routine` with tasks) and its write-back after a
-      disconnect; a manual start on a day whose saved routine has no time;
-      the diagnostics download after its 0.1.0b7 fix; Bluetooth proxies.
+- [x] **One-off routine** (2026-09-25, 0.1.0): with **Routines** on and all
+      day routines empty, `lumalou.start_routine` with a meal task started;
+      the check-mark fired `task_completed` and `routine_completed`, and the
+      empty day was written back. With **Routines** off the device ignored
+      the start (refused since 0.1.1).
+- [ ] Not yet checked on hardware: **Previous task**; a one-off routine's
+      write-back after a disconnect; the diagnostics download after its
+      0.1.0b7 fix; Bluetooth proxies.
