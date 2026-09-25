@@ -10,7 +10,7 @@ dependencies = []
 
 [dependency-groups]
 dev = [
-  "homeassistant==2026.9.2",
+  "homeassistant==2026.9.3",
   "HAP-python==5.0.0",
   "base36==0.1.1",
   "ha-ffmpeg==3.2.2",
