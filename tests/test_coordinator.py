@@ -2285,3 +2285,47 @@ async def test_upstream_connect_receives_current_ble_device_and_only_main_gatt()
         backend.start_notify.assert_awaited_once()
         await coordinator._disconnect()
         backend.disconnect.assert_awaited_once()
+
+
+async def test_confirmed_live_scalar_edit_keeps_restore_detection_armed(rig):
+    """A live volume change on a verified profile stays verified after readback."""
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+
+    await coordinator.async_set_volume(7)
+
+    record = coordinator.profile_record
+    assert record.revision == 2
+    assert record.is_verified
+    assert record.pending is False
+    assert record.sync_status == "saved"
+    assert record.verified_fingerprint == FINGERPRINT
+
+
+async def test_unconfirmed_live_edit_stays_pending(rig):
+    """If fresh GLOBAL_STATE does not show the new value, nothing is verified."""
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    rig.fake.retain_writes = False
+
+    await coordinator.async_set_volume(7)
+
+    record = coordinator.profile_record
+    assert record.revision == 2
+    assert not record.is_verified
+    assert record.pending is True
+    assert record.sync_status == "partial"
+
+
+async def test_live_edit_over_pending_revision_stays_pending(rig):
+    """A pending offline edit is never promoted by a live scalar readback."""
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    await coordinator.async_edit_profile({"playlist": [4]}, expected_revision=1)
+
+    await coordinator.async_set_volume(7)
+
+    record = coordinator.profile_record
+    assert record.revision == 3
+    assert not record.is_verified
+    assert record.sync_status == "partial"

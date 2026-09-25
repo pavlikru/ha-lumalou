@@ -64,6 +64,14 @@ from .transport import SafeLumalouClient
 
 _LOGGER = logging.getLogger(__name__)
 _MAX_REVISION = 2**63 - 1
+# Profile scalars that GLOBAL_STATE reports back after a live setter.
+_LIVE_STATE_FIELDS = {
+    "brightness": "lightBrightness",
+    "color": "lightColor",
+    "volume": "currentVolume",
+    "light_duration": "lightDuration",
+    "playlist_duration": "playlistDuration",
+}
 _STATE_RANGES = {
     "currentSong": (0, 18),
     "currentVolume": (0, 9),
@@ -753,9 +761,31 @@ class LumalouCoordinator:
             await client.send(payload, timeout=RESPONSE_TIMEOUT)
         await self._refresh()
 
+    def _live_edit_verified(self, record: ProfileRecord) -> bool:
+        """Return whether a fresh GLOBAL_STATE proves a live scalar edit.
+
+        Only an edit directly on top of a revision verified on this device
+        qualifies, and only if every changed block is a GLOBAL_STATE scalar
+        that the fresh state now reports. Other blocks were not written, so
+        the verified baseline still covers them and power-loss detection
+        stays armed. Anything else stays pending until an explicit restore.
+        """
+        previous, state = record.previous, self.data
+        if (
+            state is None
+            or previous is None
+            or record.verified_revision != previous["revision"]
+            or record.verified_fingerprint != self.device_fingerprint
+            or not profile_is_complete(record.desired_profile)
+        ):
+            return False
+        desired, baseline = record.desired_profile, previous["profile"]
+        changed = {name for name in desired if desired[name] != baseline.get(name)}
+        return changed <= set(_LIVE_STATE_FIELDS) and all(
+            state[_LIVE_STATE_FIELDS[name]] == desired[name] for name in changed
+        )
+
     async def _apply_edit(self, payloads: list[bytes]) -> None:
-        # A live setter plus a GLOBAL_STATE callback is not a full-profile
-        # verification; the edited revision stays pending until a restore.
         if self._profile_record.maintenance:
             return
         try:
@@ -767,10 +797,19 @@ class LumalouCoordinator:
                     self.profile_record, sync_status="error", last_error="ble_apply"
                 )
             )
-        else:
-            await self._save(
-                replace(self.profile_record, sync_status="partial", last_error=None)
+            return
+        record = self.profile_record
+        if self._live_edit_verified(record):
+            record = replace(
+                record,
+                verified_revision=record.revision,
+                pending=False,
+                sync_status="saved",
+                last_error=None,
             )
+        else:
+            record = replace(record, sync_status="partial", last_error=None)
+        await self._save(record)
 
     async def _transient(self, payloads: list[bytes]) -> None:
         try:
