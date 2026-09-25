@@ -1,9 +1,11 @@
 # Persistent profile schema
 
 Storage schema 2 is a Home Assistant-side logical model. It validates and
-persists user intent but does not encode BLE payloads, enable restore, or claim
-hardware acceptance. Top-level keys may be absent, meaning that block is
-unknown or was never saved. An absent key is not replaced by a default.
+persists user intent but does not encode BLE payloads or claim hardware
+acceptance; `restore.py` maps it to setter payloads. Top-level keys may be
+absent, meaning that block is unknown or was never saved (for example a
+legacy v1 subset or an imported subset). An absent key is not replaced by a
+default. The options-flow editors are offered only for a complete profile.
 
 The persistent keys are:
 
@@ -15,7 +17,9 @@ The persistent keys are:
 - `routine_settings`: enabled boolean, music byte 0–255, volume byte 0–255, and task
   and routine reward sound nibbles 0–15. The music byte has no established
   enum, and neither byte has a proven narrower hardware range, so the model
-  preserves their validated numeric representations;
+  preserves their validated numeric representations. The device reports both
+  as 4-bit values in its global state, so a saved value above 15 cannot pass
+  restore verification (hardware assumption A2);
 - `ready_to_rise`: enabled boolean plus seven Sunday-first times;
 - `sleepy_times`: seven Sunday-first times;
 - `alarm`: seven alarm enum values 0–10 plus sound nibble 0–15;
@@ -29,10 +33,11 @@ the established `FF FF` no-scheduled-time encoding. It does not by itself prove
 that a routine with task slots is disabled. `{hour: 0, minute: 0}` is midnight
 and remains distinct. Top-level absence is unknown.
 
-`require_complete_profile()` is a structural prerequisite for a future restore.
+`require_complete_profile()` is the structural prerequisite for a restore.
 It accepts only a valid profile containing every persistent key and all seven
 days/slots. It does not prove complete readback, persistence, setter safety, or
-hardware acceptance. Partial profiles remain valid saved intent but are never
+hardware acceptance; only the restore executor's fresh verification read marks
+a revision verified. Partial profiles remain valid saved intent but are never
 structurally complete. V1 migration
 preserves its subset, revision, previous revision, verified revision, pending
 state, sync status, error, and maintenance flag without synthesizing fields.
@@ -43,7 +48,9 @@ block list is for preview and deterministic tests only; it is not a BLE write
 order and does not execute setters or advance verification metadata. The
 coordinator's `async_plan_profile_restore()` obtains a fresh strict readback,
 checks the entry identity, maintenance state, and revision both before and after
-readback, then returns only this diff. It still does not authorize setters.
+readback, then returns only this diff. It does not authorize setters; the
+separate restore executor (`async_restore_profile`) derives its own ordered
+setter steps from a fresh read (see `docs/architecture.md`).
 
 Not persistent: current clock time/date, light/audio on/off, current source or
 song, timer remainder, nap state/alarm, executing alarm, current routine step,

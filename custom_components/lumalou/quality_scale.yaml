@@ -18,12 +18,12 @@ rules:
     status: done
     comment: coordinator.py owns BLE I/O; entity.py holds the shared base entity.
   config-flow-test-coverage:
-    status: todo
-    comment: Discovery, user, error and reconfigure paths are tested, but config_flow.py is not yet at 100% line coverage.
+    status: done
+    comment: config_flow.py has 100% line and branch coverage, including discovery, manual, error, reconfigure and options paths.
   config-flow: done
   dependency-transparency:
-    status: todo
-    comment: Switch the requirement to the published lumalou-gld09 release (public source, tagged, built in CI).
+    status: done
+    comment: Exact pin lumalou-gld09==0.2.0 from PyPI; public MIT source at github.com/pavlikru/lumalou with a v0.2.0 tag.
   docs-actions: done
   docs-conditions:
     status: exempt
@@ -36,8 +36,8 @@ rules:
     comment: The integration provides no triggers.
   entity-event-setup: done
   entity-unique-id:
-    status: todo
-    comment: Entities have unique IDs, but they are still derived from the BLE address; unify them on the verified device fingerprint.
+    status: done
+    comment: Unique IDs derive from the entry unique ID (verified device fingerprint); config entry 1.2 migrates older address-based IDs, and pre-enrollment entries migrate on Reconfigure.
   has-entity-name: done
   runtime-data: done
   test-before-configure:
@@ -47,37 +47,37 @@ rules:
     status: exempt
     comment: The BLE night light may be unpowered or out of range at startup. The entry loads offline, entities stay unavailable until Home Assistant Bluetooth sees the device, and unreadable profile storage raises a Repairs issue.
   unique-config-entry:
-    status: todo
-    comment: Entries are unique by device fingerprint, but Bluetooth discovery is still deduplicated by address before the identity probe.
+    status: done
+    comment: Entries are unique by verified device fingerprint; flows also abort early for an already configured address before any connection.
 
   # Silver
   action-exceptions:
-    status: todo
-    comment: Device failures raise HomeAssistantError, but media_player.select_source and select.select_option still raise a bare ValueError for invalid input.
+    status: done
+    comment: Invalid input raises ServiceValidationError (actions, media_player.select_source); device and restore failures raise translated HomeAssistantError.
   config-entry-unloading: done
   docs-configuration-parameters: done
   docs-installation-parameters: done
   entity-unavailable: done
   integration-owner: done
   log-when-unavailable:
-    status: todo
-    comment: Loss and recovery of the device are only logged at debug level.
+    status: done
+    comment: The coordinator logs device loss and return once each at info level.
   parallel-updates:
-    status: todo
-    comment: The coordinator serializes device I/O, but platforms do not declare PARALLEL_UPDATES.
+    status: done
+    comment: Every platform sets PARALLEL_UPDATES = 0; the coordinator lock serializes all device I/O.
   reauthentication-flow:
     status: exempt
     comment: No credentials. A changed or replaced device is handled by the reconfigure flow.
   test-coverage:
     status: todo
-    comment: Overall coverage is below 95%.
+    comment: Overall coverage is above 95%, but storage.py, identity.py, switch.py, light.py and entity.py are still below 95% each.
 
   # Gold
   devices: done
   diagnostics: done
   discovery-update-info:
     status: todo
-    comment: A known device that reappears at a new BLE address is not yet updated from discovery; the reconfigure flow handles it manually.
+    comment: A known device at a new BLE address is updated only after the user confirms the discovery and its signed identity is verified, or through Reconfigure; there is no automatic update from the advertisement alone.
   discovery: done
   docs-data-update: done
   docs-examples: done
@@ -91,15 +91,15 @@ rules:
     comment: One config entry represents exactly one Lumalou.
   entity-category: done
   entity-device-class:
-    status: todo
-    comment: The connection sensor reports free-text available/unavailable instead of an enum or connectivity binary sensor.
+    status: done
+    comment: Connection is a connectivity binary sensor; sync status and last error are enum sensors.
   entity-disabled-by-default:
     status: todo
     comment: Profile revision and error diagnostics are enabled by default.
   entity-translations: done
   exception-translations:
-    status: todo
-    comment: Service lookup errors are translated; coordinator and entity errors are not.
+    status: done
+    comment: Action, entity and coordinator errors shown to users are translated; only internal errors that are wrapped before reaching users stay English.
   icon-translations:
     status: todo
     comment: No icons.json yet.
