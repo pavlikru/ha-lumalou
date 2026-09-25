@@ -28,6 +28,21 @@ uv run pytest
 uv run pre-commit run --all-files
 ```
 
+Automated tests mock Bluetooth and must never contact a real Lumalou or a
+Home Assistant installation. Tests against real hardware are manual and
+opt-in; follow [docs/hardware-validation.md](docs/hardware-validation.md).
+
+## Releases
+
+1. Update `CHANGELOG.md`: move the Unreleased entries under
+   `## [X.Y.Z] - YYYY-MM-DD`.
+2. Set `version` in `custom_components/lumalou/manifest.json` to `X.Y.Z` and
+   merge to `main`.
+3. Tag the merge commit on `main` as `vX.Y.Z` and push the tag. The release
+   workflow checks the tag, runs validation and publishes the GitHub release
+   with the CHANGELOG section as notes. Versions such as `0.1.0b1` become
+   pre-releases.
+
 ## Pull requests
 
 - Keep each pull request focused.
