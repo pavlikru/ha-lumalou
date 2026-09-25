@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0b7] - 2026-09-25
+
+Fixes from the third Home Assistant run on hardware (Raspberry Pi 4).
+
 ### Fixed
 
 - A power loss was still not restored automatically (0.1.0b6 on hardware).
@@ -284,7 +288,8 @@ Hardware validation: summary of passed phases (anonymized).
 Requires Home Assistant 2026.9.0 or newer and lumalou-gld09==0.2.0.
 -->
 
-[Unreleased]: https://github.com/pavlikru/ha-lumalou/compare/v0.1.0b6...HEAD
+[Unreleased]: https://github.com/pavlikru/ha-lumalou/compare/v0.1.0b7...HEAD
+[0.1.0b7]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b7
 [0.1.0b6]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b6
 [0.1.0b5]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b5
 [0.1.0b4]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b4
