@@ -103,6 +103,7 @@ async def test_restore_state_is_summarized_without_identity_or_values(
         sw_version="0.3.7",
         last_clock_offset=12,
         last_clock_sync=detected,
+        clock_sync_paused=True,
         device_fingerprint="f" * 64,
         restore_needed=RestoreNeeded(1, ("routines", "volume"), detected, 2, True),
         last_restore_result=ProfileRestoreResult(
@@ -129,6 +130,7 @@ async def test_restore_state_is_summarized_without_identity_or_values(
 
     assert diagnostics["entry"]["auto_restore_enabled"] is True
     assert diagnostics["connection"]["last_clock_sync"] == detected.isoformat()
+    assert diagnostics["connection"]["clock_sync_paused"] is True
     assert diagnostics["restore"]["needed"] is True
     assert diagnostics["restore"]["changed_blocks"] == ["routines", "volume"]
     assert diagnostics["restore"]["auto_restore_exhausted"] is True

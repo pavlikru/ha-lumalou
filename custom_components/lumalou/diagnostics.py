@@ -72,6 +72,7 @@ async def async_get_config_entry_diagnostics(
                 "sw_version",
                 "last_clock_offset",
                 "last_clock_sync",
+                "clock_sync_paused",
             ),
         ),
         "restore": {
