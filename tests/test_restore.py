@@ -48,11 +48,6 @@ def test_readback_with_wrong_block_shapes_is_rejected(broken):
 def complete_profile() -> dict:
     """A complete synthetic profile; no real family schedule."""
     return {
-        "brightness": 3,
-        "color": 4,
-        "light_duration": 1,
-        "volume": 2,
-        "playlist_duration": 2,
         "playlist": [1, 2, 3],
         "clock_settings": {"display": True, "brightness": 2, "format": 1},
         "routine_settings": {
@@ -74,14 +69,7 @@ def complete_profile() -> dict:
 
 def everything_changed() -> dict:
     desired = complete_profile()
-    desired.update(
-        brightness=5,
-        color=9,
-        light_duration=4,
-        volume=6,
-        playlist_duration=5,
-        playlist=[12, 2, 2],
-    )
+    desired["playlist"] = [12, 2, 2]
     desired["clock_settings"] = {"display": False, "brightness": 9, "format": 0}
     desired["routine_settings"] = {
         "enabled": True,
@@ -116,9 +104,6 @@ def test_full_diff_uses_documented_order_and_only_allowlisted_setters():
 
     assert [step.name for step in steps] == [
         "clock_settings",
-        "light_duration",
-        "playlist_duration",
-        "volume",
         "playlist",
         "routine_settings.music",
         "routine_settings.volume",
@@ -126,8 +111,6 @@ def test_full_diff_uses_documented_order_and_only_allowlisted_setters():
         "ready_to_rise.times",
         "alarm",
         *(f"routines.{day}" for day in DAYS),
-        "color",
-        "brightness",
         "ready_to_rise.enabled",
         "routine_settings.enabled",
     ]
@@ -146,7 +129,10 @@ def test_full_diff_uses_documented_order_and_only_allowlisted_setters():
     assert payloads["routines.saturday"][0] == 0x66
     assert payloads["ready_to_rise.enabled"] == bytes([0x44, 1])
     assert payloads["routine_settings.enabled"] == bytes([0x58, 1])
-    assert payloads["brightness"] == bytes([0x3A, 5])
+    # Live light and audio setters are never part of a restore.
+    assert not {0x37, 0x3A, 0x3C, 0x3E, 0x3F, 0x42, 0x6C} & {
+        step.payload[0] for step in steps
+    }
 
 
 def test_only_differing_sub_blocks_are_written():
@@ -179,7 +165,7 @@ def test_midnight_and_no_time_stay_distinct():
     assert step.payload == bytes([0x48, 0xFF, 0xFF, 0, 0] + [0xFF] * 10)
 
 
-@pytest.mark.parametrize("partial", [{}, {"volume": 1}])
+@pytest.mark.parametrize("partial", [{}, {"playlist": [1]}])
 def test_incomplete_profiles_are_never_planned(partial):
     with pytest.raises(ProfileValidationError):
         build_restore_steps(partial, complete_profile())

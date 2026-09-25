@@ -324,7 +324,6 @@ def test_profile_sync_status_remains_readable_offline():
         "applying",
         "empty",
         "error",
-        "partial",
         "pending",
         "saved",
     ]
