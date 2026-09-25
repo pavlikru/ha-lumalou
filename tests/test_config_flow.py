@@ -24,17 +24,18 @@ from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType, InvalidData
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.lumalou.config_flow import CONF_AUTO_RESTORE, _device_title
 from custom_components.lumalou.const import (
     CONF_DEVICE_FINGERPRINT,
-    CONF_FACTORY_ITEM_CODE,
-    CONF_IDENTIFICATION_SOURCE,
     CONF_PRODUCT_CODE,
     CONF_PROTOCOL_VERIFIED,
     DOMAIN,
-    IDENTIFICATION_SOURCE_FACTORY_TOKEN,
+    ISSUE_ID_IDENTITY_ENROLLMENT,
     SUPPORTED_PRODUCT_CODE,
 )
 from custom_components.lumalou.identity import (
@@ -192,10 +193,6 @@ async def start_editor(
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "init"
-    if section not in result["menu_options"] and "create" in result["menu_options"]:
-        result = await hass.config_entries.options.async_configure(
-            result["flow_id"], user_input={"next_step_id": "create"}
-        )
     return await hass.config_entries.options.async_configure(
         result["flow_id"], user_input={"next_step_id": section}
     )
@@ -236,7 +233,6 @@ async def test_bluetooth_discovery_confirm(hass: HomeAssistant) -> None:
     assert result["data"] == {
         CONF_ADDRESS: ADDRESS,
         CONF_DEVICE_FINGERPRINT: FINGERPRINT,
-        CONF_IDENTIFICATION_SOURCE: IDENTIFICATION_SOURCE_FACTORY_TOKEN,
         CONF_PROTOCOL_VERIFIED: False,
     }
     assert result["result"].data[CONF_PROTOCOL_VERIFIED] is False
@@ -278,7 +274,6 @@ async def test_new_entry_opens_profile_source_options_flow(
     assert result["data"] == {
         CONF_ADDRESS: ADDRESS,
         CONF_DEVICE_FINGERPRINT: FINGERPRINT,
-        CONF_IDENTIFICATION_SOURCE: IDENTIFICATION_SOURCE_FACTORY_TOKEN,
         CONF_PROTOCOL_VERIFIED: False,
     }
     assert result["options"] == {CONF_AUTO_RESTORE: False}
@@ -287,14 +282,15 @@ async def test_new_entry_opens_profile_source_options_flow(
 async def test_empty_profile_offers_source_choices_without_creating_defaults(
     hass: HomeAssistant,
 ) -> None:
-    """An empty private Store offers Create, Import, and unavailable Read."""
+    """An empty private Store offers Read, Import, and offline editors."""
     entry, coordinator = profile_entry(hass, desired_profile={})
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
 
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "init"
-    assert {"create", "import_profile", "read_profile"} <= set(result["menu_options"])
+    assert result["menu_options"][:2] == ["read_profile", "import_profile"]
+    assert {"basic", "schedule", "routine", "behavior"} <= set(result["menu_options"])
     assert entry.data == {CONF_ADDRESS: ADDRESS}
     assert entry.options == {CONF_AUTO_RESTORE: False}
     coordinator.async_edit_profile.assert_not_awaited()
@@ -312,18 +308,14 @@ async def test_existing_profile_options_keeps_import_and_read_available(
     assert {"import_profile", "read_profile"} <= set(result["menu_options"])
 
 
-async def test_first_run_create_routes_to_offline_editor(hass: HomeAssistant) -> None:
-    """Create only opens the normal private-profile editor tree."""
+async def test_first_run_editor_starts_from_empty_draft(hass: HomeAssistant) -> None:
+    """An editor for an empty profile shows new draft values without saving."""
     entry, coordinator = profile_entry(hass, desired_profile={})
-    result = await hass.config_entries.options.async_init(entry.entry_id)
 
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"next_step_id": "create"}
-    )
+    result = await start_editor(hass, entry, "basic")
 
-    assert result["type"] is FlowResultType.MENU
-    assert result["step_id"] == "create"
-    assert "basic" in result["menu_options"]
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "basic"
     coordinator.async_edit_profile.assert_not_awaited()
 
 
@@ -578,7 +570,6 @@ async def test_signed_device_fingerprint_needs_no_model_input(
     assert result["data"] == {
         CONF_ADDRESS: ADDRESS,
         CONF_DEVICE_FINGERPRINT: FINGERPRINT,
-        CONF_IDENTIFICATION_SOURCE: IDENTIFICATION_SOURCE_FACTORY_TOKEN,
         CONF_PROTOCOL_VERIFIED: False,
     }
 
@@ -679,7 +670,6 @@ async def test_standard_model_still_requires_signed_factory_identity(
     assert result["data"] == {
         CONF_ADDRESS: ADDRESS,
         CONF_DEVICE_FINGERPRINT: FINGERPRINT,
-        CONF_IDENTIFICATION_SOURCE: IDENTIFICATION_SOURCE_FACTORY_TOKEN,
         CONF_PROTOCOL_VERIFIED: False,
     }
     probe.assert_awaited_once_with(info.device, "Lumalou test")
@@ -896,12 +886,17 @@ async def test_bluetooth_discovery_rejected(
 
 
 async def test_duplicate_discovery(hass: HomeAssistant) -> None:
-    """The same signed key cannot enroll twice after an address change."""
-    MockConfigEntry(
+    """The same signed key at a new address updates, not duplicates, its entry."""
+    entry = MockConfigEntry(
         domain=DOMAIN,
         unique_id=FINGERPRINT,
-        data={CONF_ADDRESS: "different-synthetic-address"},
-    ).add_to_hass(hass)
+        data={
+            CONF_ADDRESS: "different-synthetic-address",
+            CONF_DEVICE_FINGERPRINT: FINGERPRINT,
+            CONF_PROTOCOL_VERIFIED: True,
+        },
+    )
+    entry.add_to_hass(hass)
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": SOURCE_BLUETOOTH},
@@ -925,6 +920,13 @@ async def test_duplicate_discovery(hass: HomeAssistant) -> None:
         )
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
+    assert len(hass.config_entries.async_entries(DOMAIN)) == 1
+    # Control stays locked until the profile is read again at the new address.
+    assert entry.data == {
+        CONF_ADDRESS: ADDRESS,
+        CONF_DEVICE_FINGERPRINT: FINGERPRINT,
+        CONF_PROTOCOL_VERIFIED: False,
+    }
 
 
 async def test_same_address_with_different_fingerprint_aborts_before_probe(
@@ -1016,7 +1018,6 @@ async def test_manual_flow_also_requires_signed_identity(hass: HomeAssistant) ->
     assert result["data"] == {
         CONF_ADDRESS: ADDRESS,
         CONF_DEVICE_FINGERPRINT: FINGERPRINT,
-        CONF_IDENTIFICATION_SOURCE: IDENTIFICATION_SOURCE_FACTORY_TOKEN,
         CONF_PROTOCOL_VERIFIED: False,
     }
     setup.assert_awaited_once()
@@ -1069,7 +1070,6 @@ async def test_legacy_entry_reconfigure_uses_automatic_identity(
     assert result["reason"] == "reconfigure_successful"
     assert entry.unique_id == FINGERPRINT
     assert entry.data[CONF_DEVICE_FINGERPRINT] == FINGERPRINT
-    assert entry.data[CONF_IDENTIFICATION_SOURCE] == IDENTIFICATION_SOURCE_FACTORY_TOKEN
     assert entry.data[CONF_PROTOCOL_VERIFIED] is False
 
 
@@ -1083,7 +1083,7 @@ async def test_legacy_entry_reconfigure_replaces_obsolete_identity_fields(
         title="Friendly Lumalou",
         data={
             CONF_ADDRESS: ADDRESS,
-            CONF_FACTORY_ITEM_CODE: "synthetic-legacy-item",
+            "factory_item_code": "synthetic-legacy-item",
             CONF_PRODUCT_CODE: SUPPORTED_PRODUCT_CODE,
         },
         options={CONF_AUTO_RESTORE: False},
@@ -1126,7 +1126,6 @@ async def test_legacy_entry_reconfigure_replaces_obsolete_identity_fields(
     assert entry.data == {
         CONF_ADDRESS: ADDRESS,
         CONF_DEVICE_FINGERPRINT: FINGERPRINT,
-        CONF_IDENTIFICATION_SOURCE: IDENTIFICATION_SOURCE_FACTORY_TOKEN,
         CONF_PROTOCOL_VERIFIED: False,
     }
     discover.assert_called_once_with(hass, connectable=True)
@@ -1181,7 +1180,6 @@ async def test_legacy_entry_reconfigure_without_model_number(
     assert entry.unique_id == OTHER_FINGERPRINT
     assert entry.data[CONF_ADDRESS] == new_address
     assert entry.data[CONF_DEVICE_FINGERPRINT] == OTHER_FINGERPRINT
-    assert entry.data[CONF_IDENTIFICATION_SOURCE] == IDENTIFICATION_SOURCE_FACTORY_TOKEN
     assert entry.data[CONF_PROTOCOL_VERIFIED] is False
 
 
@@ -1198,7 +1196,6 @@ async def test_reconfigure_changed_address_preserves_bound_identity_and_options(
         data={
             CONF_ADDRESS: ADDRESS,
             CONF_DEVICE_FINGERPRINT: FINGERPRINT,
-            CONF_IDENTIFICATION_SOURCE: IDENTIFICATION_SOURCE_FACTORY_TOKEN,
             CONF_PROTOCOL_VERIFIED: True,
         },
         options={CONF_AUTO_RESTORE: False, "user_preference": "keep"},
@@ -1246,7 +1243,6 @@ async def test_reconfigure_changed_address_preserves_bound_identity_and_options(
     assert entry.data == {
         CONF_ADDRESS: new_address,
         CONF_DEVICE_FINGERPRINT: FINGERPRINT,
-        CONF_IDENTIFICATION_SOURCE: IDENTIFICATION_SOURCE_FACTORY_TOKEN,
         CONF_PROTOCOL_VERIFIED: False,
     }
     assert entry.options == original_options
@@ -1293,7 +1289,7 @@ async def test_reconfigure_rejects_different_signed_device(
         )
 
     assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {"base": "identity_unconfirmed"}
+    assert result["errors"] == {"base": "wrong_device"}
     assert entry.data == {
         CONF_ADDRESS: ADDRESS,
         **({CONF_DEVICE_FINGERPRINT: FINGERPRINT} if fingerprint_in_data else {}),
@@ -1344,7 +1340,7 @@ async def test_reconfigure_rejects_stale_candidate_without_probe(
 async def test_reconfigure_rejects_address_claimed_after_form_opened(
     hass: HomeAssistant,
 ) -> None:
-    """A second entry cannot acquire a candidate address during the flow."""
+    """An address claimed by another entry during the flow aborts before a probe."""
     new_address = "AA:BB:CC:DD:EE:02"
     info = service_info(address=new_address)
     entry = MockConfigEntry(
@@ -1375,8 +1371,8 @@ async def test_reconfigure_rejects_address_claimed_after_form_opened(
             result["flow_id"], user_input={CONF_ADDRESS: new_address}
         )
 
-    assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {"base": "already_configured"}
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
     factory_probe.assert_not_awaited()
     assert entry.data[CONF_ADDRESS] == ADDRESS
 
@@ -1426,14 +1422,14 @@ async def test_reconfigure_legacy_entry_rejects_another_enrolled_fingerprint(
             result["flow_id"], user_input={CONF_ADDRESS: new_address}
         )
 
-    assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {"base": "already_configured"}
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
     assert entry.data == {CONF_ADDRESS: ADDRESS}
     assert entry.unique_id == ADDRESS
 
 
-async def test_auto_restore_cannot_be_enabled(hass: HomeAssistant) -> None:
-    """Do not persist an option whose behavior is not implemented."""
+async def test_auto_restore_is_opt_in(hass: HomeAssistant) -> None:
+    """Automatic restore defaults off and is saved only when the user enables it."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         unique_id=ADDRESS,
@@ -1442,17 +1438,14 @@ async def test_auto_restore_cannot_be_enabled(hass: HomeAssistant) -> None:
     )
     entry.add_to_hass(hass)
 
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"next_step_id": "behavior"}
-    )
+    result = await start_editor(hass, entry, "behavior")
+    assert result["data_schema"]({})[CONF_AUTO_RESTORE] is False
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], user_input={CONF_AUTO_RESTORE: True}
     )
 
-    assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {CONF_AUTO_RESTORE: "auto_restore_unavailable"}
-    assert entry.options[CONF_AUTO_RESTORE] is False
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options[CONF_AUTO_RESTORE] is True
 
 
 async def test_behavior_options_flow_still_completes(hass: HomeAssistant) -> None:
@@ -1787,7 +1780,7 @@ async def test_confirm_after_unload_aborts_cleanly(hass: HomeAssistant) -> None:
     )
 
     assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "profile_editor_unavailable"
+    assert result["reason"] == "entry_not_loaded"
     coordinator.async_edit_profile.assert_not_awaited()
 
 
@@ -1981,7 +1974,7 @@ async def test_new_profile_editors_abort_without_runtime_data(
     for section in ("basic", "playlist", "clock_settings", "routine_settings"):
         result = await start_editor(hass, entry, section)
         assert result["type"] is FlowResultType.ABORT
-        assert result["reason"] == "profile_editor_unavailable"
+        assert result["reason"] == "entry_not_loaded"
 
 
 @pytest.mark.parametrize(
@@ -2117,3 +2110,270 @@ async def test_basic_confirmation_retains_draft_after_cas_conflict(
         },
         7,
     )
+
+
+def _probe_patches(fingerprint: str = FINGERPRINT):
+    """Patch both read-only identity probes and return them."""
+    return (
+        patch(
+            "custom_components.lumalou.config_flow.async_read_device_information",
+            new_callable=AsyncMock,
+            return_value=DeviceInformation(),
+        ),
+        patch(
+            "custom_components.lumalou.config_flow.async_read_factory_device_fingerprint",
+            new_callable=AsyncMock,
+            return_value=fingerprint,
+        ),
+    )
+
+
+async def test_repeated_discovery_does_not_start_a_second_flow(
+    hass: HomeAssistant,
+) -> None:
+    """The provisional address ID deduplicates discovery flows without I/O."""
+    device_probe, factory_probe = _probe_patches()
+    with device_probe as device_mock, factory_probe as factory_mock:
+        first = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_BLUETOOTH}, data=service_info()
+        )
+        second = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_BLUETOOTH}, data=service_info()
+        )
+
+    assert first["type"] is FlowResultType.FORM
+    assert second["type"] is FlowResultType.ABORT
+    assert second["reason"] == "already_in_progress"
+    assert len(hass.config_entries.flow.async_progress_by_handler(DOMAIN)) == 1
+    device_mock.assert_not_awaited()
+    factory_mock.assert_not_awaited()
+
+
+async def test_discovery_of_pre_enrollment_entry_address_aborts(
+    hass: HomeAssistant,
+) -> None:
+    """A pre-enrollment entry is matched by its address unique ID."""
+    MockConfigEntry(
+        domain=DOMAIN, unique_id=ADDRESS, data={CONF_ADDRESS: ADDRESS}
+    ).add_to_hass(hass)
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_BLUETOOTH}, data=service_info()
+    )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+
+
+async def test_confirm_aborts_without_probe_if_address_was_configured_meanwhile(
+    hass: HomeAssistant,
+) -> None:
+    """A discovery card left open never probes an address configured since."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_BLUETOOTH}, data=service_info()
+    )
+    MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=OTHER_FINGERPRINT,
+        data={CONF_ADDRESS: ADDRESS, CONF_DEVICE_FINGERPRINT: OTHER_FINGERPRINT},
+    ).add_to_hass(hass)
+
+    device_probe, factory_probe = _probe_patches()
+    with device_probe as device_mock, factory_probe as factory_mock:
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input={}
+        )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+    device_mock.assert_not_awaited()
+    factory_mock.assert_not_awaited()
+
+
+async def test_manual_setup_proceeds_while_discovery_is_pending(
+    hass: HomeAssistant,
+) -> None:
+    """A user may pick a candidate that also has an open discovery card."""
+    await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_BLUETOOTH}, data=service_info()
+    )
+    with patch(
+        "homeassistant.components.bluetooth.async_discovered_service_info",
+        return_value=[service_info()],
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_USER}
+        )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={CONF_ADDRESS: ADDRESS}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "bluetooth_confirm"
+
+
+async def test_reconfigure_enrolls_pre_enrollment_entry_without_orphans(
+    hass: HomeAssistant,
+) -> None:
+    """Enrollment moves registry IDs to the fingerprint and clears the Repair."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=ADDRESS,
+        data={CONF_ADDRESS: ADDRESS},
+        minor_version=2,
+    )
+    entry.add_to_hass(hass)
+    entity_registry = er.async_get(hass)
+    device_registry = dr.async_get(hass)
+    light = entity_registry.async_get_or_create(
+        "light", DOMAIN, f"{ADDRESS}_light", config_entry=entry
+    )
+    device = device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={(DOMAIN, ADDRESS)}
+    )
+    issue_id = f"{entry.entry_id}_{ISSUE_ID_IDENTITY_ENROLLMENT}"
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        issue_id,
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key=ISSUE_ID_IDENTITY_ENROLLMENT,
+    )
+
+    device_probe, factory_probe = _probe_patches()
+    with (
+        patch(
+            "homeassistant.components.bluetooth.async_discovered_service_info",
+            return_value=[service_info()],
+        ),
+        device_probe,
+        factory_probe,
+        patch("custom_components.lumalou.async_setup_entry", return_value=True),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_RECONFIGURE, "entry_id": entry.entry_id}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input={CONF_ADDRESS: ADDRESS}
+        )
+        await hass.async_block_till_done()
+
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.unique_id == FINGERPRINT
+    migrated = entity_registry.async_get(light.entity_id)
+    assert migrated is not None
+    assert migrated.unique_id == f"{FINGERPRINT}_light"
+    assert migrated.id == light.id
+    assert device_registry.async_get(device.id).identifiers == {(DOMAIN, FINGERPRINT)}
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+
+
+async def test_reconfigure_address_change_keeps_registry_identifiers(
+    hass: HomeAssistant,
+) -> None:
+    """Fingerprint-keyed identifiers do not change with the BLE address."""
+    new_address = "AA:BB:CC:DD:EE:02"
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=FINGERPRINT,
+        data={CONF_ADDRESS: ADDRESS, CONF_DEVICE_FINGERPRINT: FINGERPRINT},
+        minor_version=2,
+    )
+    entry.add_to_hass(hass)
+    entity_registry = er.async_get(hass)
+    light = entity_registry.async_get_or_create(
+        "light", DOMAIN, f"{FINGERPRINT}_light", config_entry=entry
+    )
+
+    device_probe, factory_probe = _probe_patches()
+    with (
+        patch(
+            "homeassistant.components.bluetooth.async_discovered_service_info",
+            return_value=[service_info(address=new_address)],
+        ),
+        device_probe,
+        factory_probe,
+        patch("custom_components.lumalou.async_setup_entry", return_value=True),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_RECONFIGURE, "entry_id": entry.entry_id}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input={CONF_ADDRESS: new_address}
+        )
+        await hass.async_block_till_done()
+
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data[CONF_ADDRESS] == new_address
+    assert entity_registry.async_get(light.entity_id).unique_id == (
+        f"{FINGERPRINT}_light"
+    )
+
+
+async def test_reconfigure_without_candidates_aborts(hass: HomeAssistant) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN, unique_id=FINGERPRINT, data={CONF_ADDRESS: ADDRESS}
+    )
+    entry.add_to_hass(hass)
+    with patch(
+        "homeassistant.components.bluetooth.async_discovered_service_info",
+        return_value=[],
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_RECONFIGURE, "entry_id": entry.entry_id}
+        )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "no_devices_found"
+
+
+async def test_invalid_profile_import_json_shows_error(hass: HomeAssistant) -> None:
+    entry, coordinator = profile_entry(hass)
+    result = await start_editor(hass, entry, "import_profile")
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"profile_json": "[1, 2]"}
+    )
+
+    assert result["errors"] == {"base": "invalid_profile_import"}
+    coordinator.async_import_profile.assert_not_awaited()
+
+
+async def test_confirmation_checkbox_is_required_and_failures_keep_draft(
+    hass: HomeAssistant,
+) -> None:
+    """Saving needs the explicit checkbox; a failed save leaves nothing applied."""
+    entry, coordinator = profile_entry(
+        hass, save=AsyncMock(side_effect=HomeAssistantError("disk"))
+    )
+    result = await start_editor(hass, entry, "playlist")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"song_1": "3"}
+    )
+    assert result["description_placeholders"] == {
+        "revision": "7",
+        "song_count": "1",
+        "songs": "3",
+    }
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"confirm": False}
+    )
+    assert result["errors"] == {"confirm": "confirmation_required"}
+    coordinator.async_edit_profile.assert_not_awaited()
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"confirm": True}
+    )
+    assert result["errors"] == {"base": "profile_save_failed"}
+
+
+async def test_read_profile_aborts_when_entry_is_unloaded(hass: HomeAssistant) -> None:
+    entry = MockConfigEntry(domain=DOMAIN, unique_id=FINGERPRINT, data={})
+    entry.add_to_hass(hass)
+
+    result = await start_editor(hass, entry, "read_profile")
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "entry_not_loaded"

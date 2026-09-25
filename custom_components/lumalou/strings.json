@@ -22,85 +22,128 @@
       "reconfigure": {
         "title": "Reconnect Lumalou",
         "description": "Select the discovered Lumalou to reconnect. Home Assistant verifies its signed device identity; an enrolled device must match its private fingerprint. Read the complete profile before control is enabled.",
-        "data": {"address": "Device"},
-        "data_description": {"address": "Choose the connectable Lumalou candidate you want to use."}
+        "data": {
+          "address": "Device"
+        },
+        "data_description": {
+          "address": "Choose the connectable Lumalou candidate you want to use."
+        }
       }
     },
     "error": {
       "cannot_connect": "Could not connect for the read-only identity probe. Make sure no other app is connected and try again.",
-      "already_configured": "This device is already assigned to another Lumalou entry.",
       "device_unavailable": "The selected device is no longer available. Try again.",
       "factory_verifier_unavailable": "The installed Lumalou library cannot verify and privately bind the signed device identity. Update after a compatible verified library release is available.",
       "identity_unconfirmed": "Home Assistant could not verify a supported device identity. No device entry was created.",
-      "unsupported_product_code": "The device explicitly reports a different model. This integration cannot use it."
+      "unsupported_product_code": "The device explicitly reports a different model. This integration cannot use it.",
+      "wrong_device": "The selected Lumalou is not the device bound to this entry. Choose the right device, or add the other one as a new entry."
     },
     "abort": {
       "already_configured": "This device is already configured.",
       "already_in_progress": "Configuration for this device is already in progress.",
       "no_devices_found": "No connectable advertisements matching the known Lumalou pattern were found.",
       "not_connectable": "This Bluetooth path cannot connect to the device.",
-      "unsupported_device": "The advertisement does not match the known Lumalou pattern."
+      "unsupported_device": "The advertisement does not match the known Lumalou pattern.",
+      "reconfigure_successful": "The Lumalou entry was updated."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "Edit Lumalou",
-        "description": "Choose behavior options or a private profile editor. Profile edits are saved offline and are not sent to the device.",
+        "description": "Read the complete device profile first: after you confirm it, it becomes the saved profile and device control is unlocked. You can also import an exported profile, or edit private profile blocks offline; edits are saved in Home Assistant and not sent to the device.",
         "menu_options": {
-          "behavior": "Behavior options",
+          "read_profile": "Read the device profile",
+          "import_profile": "Import an exported profile",
           "basic": "Light and audio values",
           "playlist": "Playlist",
           "clock_settings": "Clock settings",
           "routine_settings": "Routine settings",
           "schedule": "Weekly schedule",
           "routine": "Daily routines",
-          "create": "Create an offline profile",
-          "import_profile": "Import an exported profile",
-          "read_profile": "Read the device profile"
-        }
-      },
-      "create": {
-        "title": "Create an offline profile",
-        "description": "Choose the first private profile block to create. It is saved only after that editor's final confirmation and is never sent to the device.",
-        "menu_options": {
-          "basic": "Light and audio values",
-          "playlist": "Playlist",
-          "clock_settings": "Clock settings",
-          "routine_settings": "Routine settings",
-          "schedule": "Weekly schedule",
-          "routine": "Daily routines"
+          "behavior": "Behavior options"
         }
       },
       "import_profile": {
         "title": "Import an exported profile",
         "description": "Paste a schema-v1 or schema-v2 profile export. It is validated and previewed before the private Store changes; nothing is sent to Lumalou.",
-        "data": {"profile_json": "Exported profile JSON"}
+        "data": {
+          "profile_json": "Exported profile JSON"
+        }
       },
       "import_profile_confirm": {
         "title": "Confirm profile import",
         "description": "Schema v{schema_version} {scope}: {field_count} persistent fields. This replaces the entire profile at current revision {revision}; {removed_count} current fields absent from the import will be removed: {removed_fields}. The previous revision remains recoverable in storage. Nothing is sent to Lumalou.",
-        "data": {"confirm": "Replace the entire profile with this import"}
+        "data": {
+          "confirm": "Replace the entire profile with this import"
+        }
       },
       "read_profile_confirm": {
         "title": "Confirm device profile read",
         "description": "A complete fresh snapshot contains {field_count} persistent profile blocks: {summary}. It will replace the saved profile at revision {revision}. No settings are sent to Lumalou during this read or confirmation.",
-        "data": {"confirm": "Save this complete device snapshot as the desired profile"}
+        "data": {
+          "confirm": "Save this complete device snapshot as the desired profile"
+        }
       },
       "behavior": {
         "title": "Behavior options",
-        "description": "Automatic restore is unavailable until full profile readback and hardware validation are complete. Maintenance mode is controlled separately on the device page.",
+        "description": "Automatic restore is off by default. When enabled, Home Assistant reapplies the saved profile after Lumalou reconnects, for example after a power loss, and verifies it with a fresh read. Maintenance mode is controlled separately on the device page.",
         "data": {
-          "auto_restore": "Enable automatic restore"
+          "auto_restore": "Restore the saved profile automatically"
         },
         "data_description": {
-          "auto_restore": "Reserved for a future verified implementation. It cannot currently be enabled."
+          "auto_restore": "Only for a device whose control is unlocked. Nothing is restored while maintenance mode is on."
         }
       },
-      "basic": {"title": "Light and audio values", "description": "These are private saved-profile values only. If a value was never saved, 0 is shown as a new draft value; it remains unknown until you confirm this editor. Nothing is sent to the device.", "data": {"brightness": "Light brightness", "color": "Light color", "light_duration": "Light duration", "volume": "Audio volume", "playlist_duration": "Playlist duration"}},
-      "playlist": {"title": "Ordered playlist", "description": "Use fixed rows to preserve order and duplicates. Clear every row for an empty playlist. If no playlist was saved, these rows are a new empty draft and stay unknown until confirmation. Nothing is sent to the device.", "data": {"song_1": "Song row 1", "song_2": "Song row 2", "song_3": "Song row 3", "song_4": "Song row 4", "song_5": "Song row 5", "song_6": "Song row 6", "song_7": "Song row 7", "song_8": "Song row 8", "song_9": "Song row 9", "song_10": "Song row 10", "song_11": "Song row 11", "song_12": "Song row 12"}},
-      "clock_settings": {"title": "Clock settings", "description": "This editor saves one complete private clock-settings block. If absent, shown defaults are new draft values: display off, brightness 0, 12-hour format. Nothing is sent to the device.", "data": {"clock_display": "Show clock", "clock_brightness": "Clock brightness", "clock_format": "Clock format (0 = 12-hour, 1 = 24-hour)"}},
-      "routine_settings": {"title": "Routine settings", "description": "This editor saves one complete private routine-settings block. If absent, shown defaults are new draft values: disabled and numeric values 0. Music and volume are raw validated bytes, not named modes. Nothing is sent to the device.", "data": {"routine_enabled": "Enable routine mode", "routine_music": "Routine music byte", "routine_volume": "Routine volume byte", "task_reward_sfx": "Task reward sound", "routine_reward_sfx": "Routine reward sound"}},
+      "basic": {
+        "title": "Light and audio values",
+        "description": "These are private saved-profile values only. If a value was never saved, 0 is shown as a new draft value; it remains unknown until you confirm this editor. Nothing is sent to the device.",
+        "data": {
+          "brightness": "Light brightness",
+          "color": "Light color",
+          "light_duration": "Light duration",
+          "volume": "Audio volume",
+          "playlist_duration": "Playlist duration"
+        }
+      },
+      "playlist": {
+        "title": "Ordered playlist",
+        "description": "Use fixed rows to preserve order and duplicates. Clear every row for an empty playlist. If no playlist was saved, these rows are a new empty draft and stay unknown until confirmation. Nothing is sent to the device.",
+        "data": {
+          "song_1": "Song row 1",
+          "song_2": "Song row 2",
+          "song_3": "Song row 3",
+          "song_4": "Song row 4",
+          "song_5": "Song row 5",
+          "song_6": "Song row 6",
+          "song_7": "Song row 7",
+          "song_8": "Song row 8",
+          "song_9": "Song row 9",
+          "song_10": "Song row 10",
+          "song_11": "Song row 11",
+          "song_12": "Song row 12"
+        }
+      },
+      "clock_settings": {
+        "title": "Clock settings",
+        "description": "This editor saves one complete private clock-settings block. If absent, shown defaults are new draft values: display off, brightness 0, 12-hour format. Nothing is sent to the device.",
+        "data": {
+          "clock_display": "Show clock",
+          "clock_brightness": "Clock brightness",
+          "clock_format": "Clock format (0 = 12-hour, 1 = 24-hour)"
+        }
+      },
+      "routine_settings": {
+        "title": "Routine settings",
+        "description": "This editor saves one complete private routine-settings block. If absent, shown defaults are new draft values: disabled and numeric values 0. Music and volume are raw validated bytes, not named modes. Nothing is sent to the device.",
+        "data": {
+          "routine_enabled": "Enable routine mode",
+          "routine_music": "Routine music byte",
+          "routine_volume": "Routine volume byte",
+          "task_reward_sfx": "Task reward sound",
+          "routine_reward_sfx": "Routine reward sound"
+        }
+      },
       "schedule": {
         "title": "Weekly Ready-to-Rise and Sleepy times",
         "description": "A disabled time is stored as no time. An enabled 00:00 time is stored as midnight. The time control remains visible when disabled; the switch determines which value is saved.",
@@ -163,7 +206,9 @@
       "routine": {
         "title": "Choose a routine day",
         "description": "Each day stores an independent routine.",
-        "data": {"routine_day": "Day"}
+        "data": {
+          "routine_day": "Day"
+        }
       },
       "routine_tasks": {
         "title": "Edit daily routine",
@@ -188,65 +233,132 @@
       "routine_copy": {
         "title": "Copy routine",
         "description": "Optionally replace routines on selected days with independent copies of this routine.",
-        "data": {"copy_to": "Copy to days"}
+        "data": {
+          "copy_to": "Copy to days"
+        }
       },
       "schedule_confirm": {
         "title": "Confirm weekly schedule",
         "description": "Revision {revision}: {ready_count} Ready-to-Rise times, {sleepy_count} Sleepy times, {alarm_count} enabled alarms, alarm sound {alarm_sound}. Saving changes only the private profile; it does not write to the device.",
-        "data": {"confirm": "Save this schedule"}
+        "data": {
+          "confirm": "Save this schedule"
+        }
       },
       "routine_confirm": {
         "title": "Confirm daily routine",
         "description": "Revision {revision}: {day}, {task_count} task rows, {copy_count} matching copied days, {zero_count} preserved unnamed task ID 0 rows. Saving changes only the private profile; it does not write to the device.",
-        "data": {"confirm": "Save this routine"}
+        "data": {
+          "confirm": "Save this routine"
+        }
       },
-      "basic_confirm": {"title": "Confirm light and audio values", "description": "Revision {revision}: brightness {brightness}, color {color}, light duration {light_duration}, volume {volume}, playlist duration {playlist_duration}. Saving changes only the private profile; it does not write to the device.", "data": {"confirm": "Save these values"}},
-      "playlist_confirm": {"title": "Confirm playlist", "description": "Revision {revision}: {song_count} song rows: {songs}. Saving changes only the private profile; it does not write to the device.", "data": {"confirm": "Save this playlist"}},
-      "clock_settings_confirm": {"title": "Confirm clock settings", "description": "Revision {revision}: display {display}, brightness {brightness}, format {format}. Saving changes only the private profile; it does not write to the device.", "data": {"confirm": "Save clock settings"}},
-      "routine_settings_confirm": {"title": "Confirm routine settings", "description": "Revision {revision}: enabled {enabled}, music {music}, volume {volume}, task reward sound {task_reward_sfx}, routine reward sound {routine_reward_sfx}. Saving changes only the private profile; it does not write to the device.", "data": {"confirm": "Save routine settings"}}
+      "basic_confirm": {
+        "title": "Confirm light and audio values",
+        "description": "Revision {revision}: brightness {brightness}, color {color}, light duration {light_duration}, volume {volume}, playlist duration {playlist_duration}. Saving changes only the private profile; it does not write to the device.",
+        "data": {
+          "confirm": "Save these values"
+        }
+      },
+      "playlist_confirm": {
+        "title": "Confirm playlist",
+        "description": "Revision {revision}: {song_count} song rows: {songs}. Saving changes only the private profile; it does not write to the device.",
+        "data": {
+          "confirm": "Save this playlist"
+        }
+      },
+      "clock_settings_confirm": {
+        "title": "Confirm clock settings",
+        "description": "Revision {revision}: display {display}, brightness {brightness}, format {format}. Saving changes only the private profile; it does not write to the device.",
+        "data": {
+          "confirm": "Save clock settings"
+        }
+      },
+      "routine_settings_confirm": {
+        "title": "Confirm routine settings",
+        "description": "Revision {revision}: enabled {enabled}, music {music}, volume {volume}, task reward sound {task_reward_sfx}, routine reward sound {routine_reward_sfx}. Saving changes only the private profile; it does not write to the device.",
+        "data": {
+          "confirm": "Save routine settings"
+        }
+      }
     },
     "error": {
-      "auto_restore_unavailable": "Automatic restore is not available in this version.",
       "invalid_schedule": "Enter valid minute-resolution schedule times.",
       "invalid_schedule_copy": "Choose supported source and target days for schedule copying.",
-      "invalid_alarm": "Choose a supported alarm offset and sound.",
-      "invalid_routine": "Use no more than 12 supported task rows and a valid minute-resolution time.",
+      "invalid_schedule_alarm": "Choose a supported alarm offset and sound.",
+      "invalid_routine_tasks": "Use no more than 12 supported task rows and a valid minute-resolution time.",
       "invalid_basic": "Choose supported light and audio values.",
       "invalid_playlist": "Use at most 12 song IDs from 1 through 12.",
       "invalid_clock_settings": "Choose a supported clock display, brightness, and format.",
       "invalid_routine_settings": "Use whole-byte music and volume values and supported reward sounds.",
       "confirmation_required": "Confirm before saving.",
       "revision_conflict": "The profile changed while this editor was open. Cancel and reopen it to use the latest revision.",
-      "profile_save_failed": "The profile could not be saved. Nothing from this draft was applied.",
-      "invalid_profile_import": "Enter a valid schema-v1 or schema-v2 Lumalou profile export.",
-      "profile_import_failed": "The imported profile could not be saved. Nothing was applied."
+      "profile_save_failed": "The profile could not be saved. Nothing was changed.",
+      "invalid_profile_import": "Enter a valid schema-v1 or schema-v2 Lumalou profile export."
     },
     "abort": {
-      "profile_editor_unavailable": "Load the Lumalou entry before editing its private profile.",
-      "entry_not_loaded": "Load the Lumalou entry before importing or creating a private profile.",
-      "profile_import_unavailable": "Start the profile import again to validate an export before confirming it.",
+      "entry_not_loaded": "Load the Lumalou entry before reading, importing, or editing its private profile.",
       "profile_read_failed": "Home Assistant could not obtain a complete, consistent fresh device profile. The saved profile was not changed."
     }
   },
   "selector": {
     "weekday": {
       "options": {
-        "sunday": "Sunday", "monday": "Monday", "tuesday": "Tuesday", "wednesday": "Wednesday", "thursday": "Thursday", "friday": "Friday", "saturday": "Saturday"
+        "sunday": "Sunday",
+        "monday": "Monday",
+        "tuesday": "Tuesday",
+        "wednesday": "Wednesday",
+        "thursday": "Thursday",
+        "friday": "Friday",
+        "saturday": "Saturday"
       }
     },
     "alarm_offset": {
       "options": {
-        "0": "At Ready-to-Rise time", "1": "15 minutes after", "2": "30 minutes after", "3": "45 minutes after", "4": "60 minutes after", "5": "75 minutes after", "6": "90 minutes after", "7": "105 minutes after", "8": "120 minutes after", "9": "Off", "10": "1 minute after"
+        "0": "At Ready-to-Rise time",
+        "1": "15 minutes after",
+        "2": "30 minutes after",
+        "3": "45 minutes after",
+        "4": "60 minutes after",
+        "5": "75 minutes after",
+        "6": "90 minutes after",
+        "7": "105 minutes after",
+        "8": "120 minutes after",
+        "9": "Off",
+        "10": "1 minute after"
       }
     },
     "alarm_sound": {
       "options": {
-        "0": "Alarm 1", "1": "Alarm 2", "2": "Alarm 3", "3": "Alarm 4", "4": "Alarm 5", "5": "Alarm 6", "6": "Alarm 7", "7": "Alarm 8", "8": "Alarm 9", "9": "Alarm 10", "10": "Alarm 11", "11": "Alarm 12", "12": "Alarm 13", "13": "Alarm 14", "14": "Alarm 15", "15": "Alarm 16"
+        "0": "Alarm 1",
+        "1": "Alarm 2",
+        "2": "Alarm 3",
+        "3": "Alarm 4",
+        "4": "Alarm 5",
+        "5": "Alarm 6",
+        "6": "Alarm 7",
+        "7": "Alarm 8",
+        "8": "Alarm 9",
+        "9": "Alarm 10",
+        "10": "Alarm 11",
+        "11": "Alarm 12",
+        "12": "Alarm 13",
+        "13": "Alarm 14",
+        "14": "Alarm 15",
+        "15": "Alarm 16"
       }
     },
     "routine_task": {
       "options": {
-        "1": "Get dressed", "2": "Wash up", "3": "Brush teeth", "4": "Bathroom", "5": "Backpack", "6": "Meal", "7": "Story", "8": "Tidy up", "9": "Heart", "10": "Swirl", "11": "Star"
+        "1": "Get dressed",
+        "2": "Wash up",
+        "3": "Brush teeth",
+        "4": "Bathroom",
+        "5": "Backpack",
+        "6": "Meal",
+        "7": "Story",
+        "8": "Tidy up",
+        "9": "Heart",
+        "10": "Swirl",
+        "11": "Star"
       }
     }
   },
@@ -301,7 +413,7 @@
     },
     "restore_profile": {
       "name": "Restore profile",
-      "description": "Unavailable until upstream full-profile readback and hardware validation are complete.",
+      "description": "Apply the saved profile to Lumalou and verify the result with a fresh read.",
       "fields": {
         "config_entry_id": {
           "name": "Device",
@@ -330,6 +442,9 @@
     },
     "config_entry_not_loaded": {
       "message": "The selected Lumalou configuration entry is not loaded."
+    },
+    "unsupported_source": {
+      "message": "Unsupported Lumalou audio source: {source}."
     }
   },
   "issues": {
@@ -340,12 +455,16 @@
           "import_profile": {
             "title": "Import a saved Lumalou profile",
             "description": "Home Assistant could not read the saved Lumalou profile, so automatic profile writes are blocked. Paste JSON returned by the Lumalou export action. It is validated now; neither storage nor the device is changed at this step. The unreadable file will be preserved during confirmed recovery.",
-            "data": {"profile_json": "Exported profile JSON"}
+            "data": {
+              "profile_json": "Exported profile JSON"
+            }
           },
           "confirm": {
             "title": "Confirm profile recovery",
             "description": "The backup contains {field_count} persistent profile fields. Recovery preserves the unreadable storage bytes in a private backup, then saves this profile as pending. It does not write to Lumalou.",
-            "data": {"confirm": "Replace unreadable storage with this profile"}
+            "data": {
+              "confirm": "Replace unreadable storage with this profile"
+            }
           }
         },
         "error": {
@@ -358,25 +477,107 @@
           "entry_not_loaded": "Load the Lumalou entry before repairing its profile."
         }
       }
+    },
+    "identity_enrollment": {
+      "title": "Verify the device for {title}",
+      "description": "This Lumalou entry was created before signed device verification, so Home Assistant does not connect to it. Open Settings > Devices & services > Lumalou, choose Reconfigure for this entry and select your Lumalou. Its entities and history are kept."
     }
   },
   "entity": {
     "button": {
-      "sync_clock": {"name": "Synchronize clock"},
-      "refresh": {"name": "Refresh"}
+      "sync_clock": {
+        "name": "Synchronize clock"
+      },
+      "refresh": {
+        "name": "Refresh"
+      }
     },
-    "light": {"light": {"name": "Light"}},
-    "media_player": {"audio": {"name": "Audio"}},
-    "binary_sensor": {"profile_pending": {"name": "Profile pending"}, "profile_present": {"name": "Profile present"}},
+    "light": {
+      "light": {
+        "name": "Light",
+        "state_attributes": {
+          "effect": {
+            "state": {
+              "warm": "Warm",
+              "red": "Red",
+              "yellow": "Yellow",
+              "orange": "Orange",
+              "green": "Green",
+              "blue": "Blue",
+              "purple": "Purple",
+              "night_light": "Night light",
+              "cool": "Cool",
+              "rainbow": "Rainbow"
+            }
+          }
+        }
+      }
+    },
+    "media_player": {
+      "audio": {
+        "name": "Audio",
+        "state_attributes": {
+          "source": {
+            "state": {
+              "sleep_playlist": "Sleep playlist",
+              "custom_playlist": "Custom playlist",
+              "pink_noise": "Pink noise",
+              "ocean": "Ocean",
+              "rain": "Rain",
+              "brown_noise": "Brown noise",
+              "nature": "Nature",
+              "highway": "Highway"
+            }
+          }
+        }
+      }
+    },
+    "binary_sensor": {
+      "connection": {
+        "name": "Connection"
+      },
+      "profile_pending": {
+        "name": "Profile pending"
+      },
+      "profile_present": {
+        "name": "Profile present"
+      }
+    },
     "select": {
-      "light_duration": {"name": "Light duration"},
-      "playlist_duration": {"name": "Playlist duration"}
+      "light_duration": {
+        "name": "Light duration",
+        "state": {
+          "min_15": "15 minutes",
+          "min_30": "30 minutes",
+          "min_60": "60 minutes",
+          "min_90": "90 minutes",
+          "continuous": "Continuous",
+          "min_1": "1 minute"
+        }
+      },
+      "playlist_duration": {
+        "name": "Playlist duration",
+        "state": {
+          "min_15": "15 minutes",
+          "min_30": "30 minutes",
+          "min_60": "60 minutes",
+          "min_90": "90 minutes",
+          "min_120": "120 minutes",
+          "continuous": "Continuous",
+          "min_1": "1 minute"
+        }
+      }
     },
     "sensor": {
-      "connection": {"name": "Connection"},
-      "firmware": {"name": "Firmware"},
-      "profile_revision": {"name": "Profile revision"},
-      "profile_verified_revision": {"name": "Profile verified revision"},
+      "firmware": {
+        "name": "Firmware"
+      },
+      "profile_revision": {
+        "name": "Profile revision"
+      },
+      "profile_verified_revision": {
+        "name": "Profile verified revision"
+      },
       "profile_sync_status": {
         "name": "Profile sync status",
         "state": {
@@ -388,8 +589,14 @@
           "error": "Error"
         }
       },
-      "profile_last_error": {"name": "Profile last error"}
+      "profile_last_error": {
+        "name": "Profile last error"
+      }
     },
-    "switch": {"maintenance": {"name": "Maintenance"}}
+    "switch": {
+      "maintenance": {
+        "name": "Maintenance"
+      }
+    }
   }
 }
