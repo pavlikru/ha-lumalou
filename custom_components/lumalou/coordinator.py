@@ -14,7 +14,7 @@ from typing import Any
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.util import dt as dt_util
 
 from lumalou import commands  # type: ignore[attr-defined]
@@ -117,11 +117,16 @@ _ERRORS = {
 }
 
 
+# Caused by the entry's state, which the user can change; not a device fault.
+_USER_STATE_ERRORS = frozenset(
+    {"maintenance_mode", "control_locked", "clock_untrusted"}
+)
+
+
 def _error(key: str) -> HomeAssistantError:
     """Build a translated user-facing error with an English log message."""
-    return HomeAssistantError(
-        _ERRORS[key], translation_domain=DOMAIN, translation_key=key
-    )
+    error = ServiceValidationError if key in _USER_STATE_ERRORS else HomeAssistantError
+    return error(_ERRORS[key], translation_domain=DOMAIN, translation_key=key)
 
 
 def _trusted_now() -> datetime | None:
