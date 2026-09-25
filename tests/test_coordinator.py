@@ -2963,3 +2963,88 @@ async def test_live_command_fails_when_no_session_comes(rig):
         pytest.raises(HomeAssistantError, match="will not be replayed"),
     ):
         await coordinator.async_set_level("volume", 6)
+
+
+async def test_restore_does_not_fail_on_light_values_the_device_cannot_show(
+    rig, caplog
+):
+    """0.1.0b6 on hardware: restore_mismatch on light_and_sound only."""
+    coordinator = rig.coordinator
+    snapshot = await verified_profile(rig)
+    apply = rig.fake.apply
+
+    def brightness_not_reported_while_off(payload):
+        if payload[0] == 0x3A and not rig.fake.state["lightStatus"]:
+            return  # kept for the next "on", not reported
+        apply(payload)
+
+    rig.fake.apply = brightness_not_reported_while_off
+    rig.state.update(lightBrightness=5, lightStatus=0)
+    await coordinator._disconnect()
+
+    with caplog.at_level("INFO"):
+        result = await coordinator.async_restore_profile(1, confirmed=True)
+
+    assert result.verified
+    assert result.applied_steps == ("light_and_sound.light_brightness",)
+    assert "Not verifying light and sound light_brightness now" in caplog.text
+    assert snapshot["light_and_sound"]["light_brightness"] == 3
+
+
+async def test_restore_mismatch_logs_saved_and_device_values(rig, caplog):
+    coordinator = rig.coordinator
+    snapshot = await verified_profile(rig)
+    desired = deepcopy(snapshot)
+    desired["sleepy_times"]["friday"] = None
+    await pending_edit(rig, desired)
+    rig.fake.retain_writes = False
+
+    with pytest.raises(ProfileRestoreError):
+        await coordinator.async_restore_profile(2, confirmed=True)
+
+    assert (
+        "sleepy_times.friday: saved None, device {'hour': 20, 'minute': 5}"
+        in caplog.text
+    )
+
+
+async def test_light_and_sound_changes_are_not_saved_while_the_soother_runs(rig):
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    record = coordinator.profile_record
+    rig.state.update(currentStage=1)  # the soother's READY stage
+    rig.clients[-1].on_state(deepcopy(rig.state))
+
+    await coordinator.async_set_level("volume", 8)
+
+    assert coordinator.profile_record == record
+
+
+def test_verifiable_light_fields_and_field_differences():
+    from custom_components.lumalou.coordinator import (
+        DeviceSnapshot,
+        _field_differences,
+        _verifiable,
+    )
+
+    desired = complete_profile()
+    observed = deepcopy(desired)
+    observed["light_and_sound"].update(volume=9, light_brightness=1)
+    soother = DeviceSnapshot(
+        observed, {"currentStage": 1, "lightStatus": 1}, CurrentDate(0, 0, 0, 0), NOW
+    )
+    assert (
+        _verifiable(desired, soother)["light_and_sound"]
+        == (observed["light_and_sound"])
+    )
+    lit = replace(soother, state={"currentStage": 0, "lightStatus": 1})
+    assert _verifiable(desired, lit) == desired
+
+    desired["routines"]["friday"]["slots"][0] = {"step": 1, "task": 3}
+    assert _field_differences(desired, observed, ("routines", "light_and_sound")) == [
+        "routines.friday.slots[0]: saved {'step': 1, 'task': 3}, device None",
+        "light_and_sound.volume: saved "
+        f"{desired['light_and_sound']['volume']}, device 9",
+        "light_and_sound.light_brightness: saved "
+        f"{desired['light_and_sound']['light_brightness']}, device 1",
+    ]
