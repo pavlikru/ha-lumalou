@@ -16,7 +16,7 @@ dev = [
   "ha-ffmpeg==3.2.2",
   "fnv-hash-fast==2.0.3",
   "homekit-audio-proxy==1.2.1",
-  "lumalou==0.1.0",
+  "lumalou-gld09==0.2.0",
   "mypy==1.18.2",
   "pre-commit==4.3.0",
   "PyTurboJPEG==1.8.3",
@@ -29,6 +29,10 @@ dev = [
 
 [tool.uv]
 package = false
+
+# Temporary: remove once lumalou-gld09 0.2.0 is published to PyPI.
+[tool.uv.sources]
+lumalou-gld09 = { git = "https://github.com/pavlikru/lumalou", rev = "c156880690903e664c7b5d8e65148bfded0debd1", subdirectory = "packages/python" }
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers --strict-config --cov=custom_components.lumalou --cov-report=term-missing"
