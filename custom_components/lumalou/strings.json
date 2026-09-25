@@ -415,7 +415,7 @@
       "message": "All {planned} profile writes were sent, but Lumalou could not be read back to verify them. Run the restore again."
     },
     "restore_mismatch": {
-      "message": "Lumalou did not keep these profile blocks after the restore: {blocks}."
+      "message": "Lumalou did not keep {count} settings groups after the restore. Run the restore again, or read the device profile to keep the device settings. The log and diagnostics name the affected groups."
     },
     "profile_other_device": {
       "message": "The saved profile was verified on a different Lumalou. Read the profile from this device instead."

@@ -124,7 +124,8 @@ async def _async_restore_profile(
             translation_placeholders={
                 "applied": str(len(outcome.applied_steps)),
                 "planned": str(len(outcome.planned_steps)),
-                "blocks": ", ".join(outcome.mismatched_blocks) or "-",
+                # Block names stay in the log and diagnostics.
+                "count": str(len(outcome.mismatched_blocks)),
             },
         ) from err
     except (ProfileValidationError, RevisionConflictError) as err:

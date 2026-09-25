@@ -306,7 +306,7 @@ async def test_restore_failure_is_translated(
     assert caught.value.translation_placeholders == {
         "applied": "1",
         "planned": "2",
-        "blocks": "playlist",
+        "count": "1",
     }
 
 

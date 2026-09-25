@@ -1208,10 +1208,12 @@ class LumalouCoordinator:
             replace(self._profile_record, sync_status="error", last_error=outcome.error)
         )
         _LOGGER.warning(
-            "Lumalou profile restore failed (%s); applied %s of %s steps",
+            "Lumalou profile restore failed (%s); applied %s of %s steps; "
+            "mismatched blocks: %s",
             outcome.error,
             len(outcome.applied_steps),
             len(outcome.planned_steps),
+            ", ".join(outcome.mismatched_blocks) or "-",
         )
         return ProfileRestoreError("Lumalou profile restore was not verified", outcome)
 
