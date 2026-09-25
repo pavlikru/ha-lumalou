@@ -66,6 +66,15 @@ def validate_integer(value: Any, minimum: int, maximum: int, name: str) -> int:
     return value
 
 
+def is_device_fingerprint(value: Any) -> bool:
+    """Return whether a value is a 64-character lowercase hex fingerprint."""
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
 def _strict_mapping(value: Any, fields: set[str] | frozenset[str], name: str) -> dict:
     """Require a JSON object with exactly the documented fields."""
     if not isinstance(value, dict) or set(value) != set(fields):
@@ -280,6 +289,18 @@ class ProfileRecord:
     sync_status: str = "empty"
     last_error: str | None = None
     maintenance: bool = False
+    # Private device-key fingerprint of the session that verified
+    # `verified_revision`. Absent in records written before 0.2.0 support.
+    verified_fingerprint: str | None = None
+
+    @property
+    def is_verified(self) -> bool:
+        """Whether the current revision was verified against a device."""
+        return (
+            self.verified_revision is not None
+            and self.verified_revision == self.revision
+            and self.verified_fingerprint is not None
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Return a detached serializable record."""
@@ -342,8 +363,14 @@ def _validate_record(
 ) -> dict[str, Any]:
     """Validate record metadata while allowing an explicit profile schema."""
     fields = set(ProfileRecord.__dataclass_fields__)
-    if not isinstance(value, dict) or set(value) != fields:
+    if not isinstance(value, dict) or set(value) not in (
+        fields,
+        fields - {"verified_fingerprint"},
+    ):
         raise ProfileValidationError("Invalid profile record")
+    fingerprint = value.get("verified_fingerprint")
+    if fingerprint is not None and not is_device_fingerprint(fingerprint):
+        raise ProfileValidationError("Invalid verified device identity")
     if (
         type(value["schema_version"]) is not int
         or value["schema_version"] != schema_version
@@ -360,6 +387,7 @@ def _validate_record(
     if value["last_error"] is not None and not isinstance(value["last_error"], str):
         raise ProfileValidationError("Invalid error metadata")
     data = deepcopy(value)
+    data.setdefault("verified_fingerprint", None)
     data["desired_profile"] = profile_validator(data["desired_profile"])
     previous = data["previous"]
     if previous is not None:
