@@ -188,7 +188,7 @@ def test_incomplete_profiles_are_never_planned(partial):
 
 
 def test_clock_offset_is_circular_over_the_week():
-    zone = ZoneInfo("Pacific/Auckland")
+    zone = ZoneInfo("Etc/GMT-9")  # synthetic fixed offset
     sunday = datetime(2026, 9, 20, 0, 0, 5, tzinfo=zone)  # device weekday 0
     saturday = datetime(2026, 9, 26, 23, 59, 55, tzinfo=zone)  # device weekday 6
 

@@ -55,7 +55,7 @@ from custom_components.lumalou.storage import ProfileStorageError, ProfileStore
 from tests.test_restore import complete_profile
 
 FINGERPRINT = "a" * 64
-ZONE = ZoneInfo("Pacific/Auckland")
+ZONE = ZoneInfo("Etc/GMT-9")  # synthetic fixed offset
 # Sunday (device weekday 0) at noon; the fake device clock starts equal.
 NOW = datetime(2026, 9, 20, 12, 0, 0, tzinfo=ZONE)
 DAY_SETTERS = dict(zip((0x5A, 0x5C, 0x5E, 0x60, 0x62, 0x64, 0x66), DAYS, strict=True))
