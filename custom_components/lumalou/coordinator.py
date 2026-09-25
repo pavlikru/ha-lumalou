@@ -875,10 +875,14 @@ class LumalouCoordinator:
         *,
         confirmed: bool = False,
     ) -> None:
-        """Import a validated backup only; never read/restore the device first."""
+        """Import a complete validated backup; never touch the device.
+
+        A partial import could silently drop saved blocks, so only a complete
+        profile replaces the saved one.
+        """
         if not confirmed:
-            raise ProfileValidationError("Confirm a supported subset profile import")
-        desired = import_profile_payload(payload)
+            raise ProfileValidationError("Confirm the profile import")
+        desired = require_complete_profile(import_profile_payload(payload))
         validate_integer(expected_revision, 0, _MAX_REVISION, "expected revision")
         async with self._operation():
             old = self.profile_record
