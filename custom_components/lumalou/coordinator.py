@@ -38,13 +38,11 @@ from .const import (
 )
 from .models import (
     DAYS,
-    ProfileReconciliationPlan,
     ProfileRecord,
     ProfileValidationError,
     RevisionConflictError,
     export_profile_payload,
     import_profile_payload,
-    plan_profile_reconciliation,
     profile_is_complete,
     require_complete_profile,
     validate_integer,
@@ -974,34 +972,6 @@ class LumalouCoordinator:
             return snapshot.profile, record.revision
 
     # ---- Profile restore ----
-
-    async def async_plan_profile_restore(
-        self, expected_revision: int
-    ) -> ProfileReconciliationPlan:
-        """Freshly compare a saved full profile without issuing any BLE writes.
-
-        This preview does not apply setters or advance verified_revision. The
-        executor (`async_restore_profile`) re-reads the device itself.
-        """
-        validate_integer(expected_revision, 0, _MAX_REVISION, "expected revision")
-        record = self.profile_record
-        if record.maintenance:
-            raise _error("maintenance_mode")
-        if record.revision != expected_revision:
-            raise RevisionConflictError("The saved profile changed")
-        require_complete_profile(record.desired_profile)
-
-        observed, read_revision = await self.async_read_profile_snapshot()
-        if read_revision != expected_revision:
-            raise RevisionConflictError("The saved profile changed during readback")
-
-        async with self._profile_edit_operation():
-            record = self.profile_record
-            if record.maintenance:
-                raise _error("maintenance_mode")
-            return plan_profile_reconciliation(
-                record, observed, expected_revision=expected_revision
-            )
 
     async def async_restore_profile(
         self, expected_revision: int, *, confirmed: bool = False

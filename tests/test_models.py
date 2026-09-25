@@ -1,7 +1,6 @@
 """Full profile validation, partial intent, and persisted-record invariants."""
 
 from copy import deepcopy
-from types import SimpleNamespace
 
 import pytest
 
@@ -9,13 +8,10 @@ from custom_components.lumalou.models import (
     DAYS,
     FULL_PROFILE_FIELDS,
     PROFILE_RANGES,
-    LumalouRuntimeData,
     ProfileRecord,
     ProfileValidationError,
-    RevisionConflictError,
     export_profile_payload,
     import_profile_payload,
-    plan_profile_reconciliation,
     profile_is_complete,
     require_complete_profile,
     validate_profile,
@@ -109,45 +105,6 @@ def test_partial_profile_valid_but_never_complete():
     assert not profile_is_complete({"volume": 2})
     with pytest.raises(ProfileValidationError, match="incomplete"):
         require_complete_profile({"volume": 2})
-
-
-def test_reconciliation_plan_is_revision_bound_and_reports_only_changed_blocks():
-    target = full_profile()
-    observed = deepcopy(target)
-    observed["playlist"] = [3, 4]
-    record = ProfileRecord(revision=7, desired_profile=target)
-
-    plan = plan_profile_reconciliation(record, observed, expected_revision=7)
-
-    assert plan.revision == 7
-    assert plan.changed_blocks == ("playlist",)
-    assert not plan.already_matches
-
-
-def test_reconciliation_plan_reports_match_without_authorizing_writes():
-    target = full_profile()
-    record = ProfileRecord(revision=2, desired_profile=target)
-
-    plan = plan_profile_reconciliation(record, deepcopy(target), expected_revision=2)
-
-    assert plan.changed_blocks == ()
-    assert plan.already_matches
-
-
-def test_reconciliation_plan_rejects_revision_conflict_and_partial_snapshots():
-    target = full_profile()
-    record = ProfileRecord(revision=3, desired_profile=target)
-
-    with pytest.raises(RevisionConflictError):
-        plan_profile_reconciliation(record, target, expected_revision=2)
-    with pytest.raises(ProfileValidationError, match="incomplete"):
-        plan_profile_reconciliation(record, {"volume": 1}, expected_revision=3)
-    with pytest.raises(ProfileValidationError, match="incomplete"):
-        plan_profile_reconciliation(
-            ProfileRecord(revision=3, desired_profile={"volume": 1}),
-            target,
-            expected_revision=3,
-        )
 
 
 def test_export_envelope_is_versioned_and_strict():
@@ -274,7 +231,7 @@ def test_routine_requires_exact_lossless_slots(slots):
         validate_profile({"routines": routines})
 
 
-def test_record_roundtrip_and_runtime_property():
+def test_record_roundtrip_is_detached():
     record = ProfileRecord(
         revision=2,
         desired_profile={"volume": 2},
@@ -289,8 +246,6 @@ def test_record_roundtrip_and_runtime_property():
     assert ProfileRecord.from_dict(serialized) == record
     serialized["desired_profile"]["volume"] = 3
     assert record.desired_profile == {"volume": 2}
-    coordinator = SimpleNamespace(profile_record=record)
-    assert LumalouRuntimeData(coordinator).profile_record is record
 
 
 @pytest.mark.parametrize("field", ["music", "volume"])

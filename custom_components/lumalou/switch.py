@@ -30,7 +30,7 @@ class LumalouMaintenanceSwitch(LumalouEntity, SwitchEntity):
 
     @property
     def is_on(self) -> bool:
-        return self._entry.runtime_data.profile_record.maintenance
+        return self.coordinator.profile_record.maintenance
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self.coordinator.async_set_maintenance(True)

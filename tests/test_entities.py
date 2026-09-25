@@ -18,7 +18,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH
 from homeassistant.setup import async_setup_component
-from lumalou import Audio, Color
+from lumalou import Audio, Color, Song
 
 from custom_components.lumalou import (
     binary_sensor as binary_sensor_platform,
@@ -334,7 +334,7 @@ def test_profile_sync_status_remains_readable_offline():
 async def test_media_state_sources_volume_steps_and_validation():
     """Media properties and commands handle boundaries and unknown values."""
     entry, coordinator = make_entry(
-        {"musicStatus": 0, "currentVolume": 99, "currentAudio": int(Audio.OCEAN)}
+        {"musicStatus": 0, "currentVolume": 99, "currentSong": int(Song.OCEAN)}
     )
     entity = LumalouMediaPlayer(entry)
 
@@ -348,7 +348,6 @@ async def test_media_state_sources_volume_steps_and_validation():
     coordinator.data = {
         "musicStatus": 1,
         "currentVolume": -5,
-        "currentAudio": 999,
         "currentSong": 999,
     }
     assert entity.state is MediaPlayerState.PLAYING
