@@ -393,30 +393,35 @@ _MIDNIGHT = {"hour": 0, "minute": 0}
 def is_factory_default(profile: dict[str, Any]) -> bool:
     """Return whether a complete device read equals the power-loss defaults.
 
-    Hardware (firmware 0.3.7): playlist 1..12, 12-hour clock shown at
-    brightness 2, all weekly times and routines 00:00 with no tasks, alarms
-    off (9) with sound 0, routine mode and Ready-to-Rise off, routine music
-    and both reward sounds 1, routine volume 5, light timer 4, playlist timer
-    5, volume 5.
+    Only values the hardware check recorded after a power loss (firmware
+    0.3.7): playlist 1..12, 12-hour clock shown at brightness 2, weekly times
+    and routines 00:00 with no tasks, alarms off (9) with sound 0, routine
+    music and both reward sounds 1, routine volume 5, light timer 4, playlist
+    timer 5, volume 5 and light brightness 5. The routine mode and
+    Ready-to-Rise flags were not recorded, so they are not compared.
     """
     week = dict.fromkeys(DAYS, _MIDNIGHT)
-    levels = profile[LIVE_BLOCK]
+    routine = profile["routine_settings"]
     return (
         profile["playlist"] == list(range(1, 13))
         and profile["clock_settings"] == {"display": True, "brightness": 2, "format": 0}
-        and profile["ready_to_rise"] == {"enabled": False, "times": week}
+        and profile["ready_to_rise"]["times"] == week
         and profile["sleepy_times"] == week
         and profile["routines"]
         == {day: {"time": _MIDNIGHT, "slots": [None] * 12} for day in DAYS}
         and profile["alarm"] == {"days": dict.fromkeys(DAYS, 9), "sound": 0}
-        and profile["routine_settings"]
+        and (
+            routine["music"],
+            routine["volume"],
+            routine["task_reward_sfx"],
+            routine["routine_reward_sfx"],
+        )
+        == (1, 5, 1, 1)
+        and profile[LIVE_BLOCK]
         == {
-            "enabled": False,
-            "music": 1,
             "volume": 5,
-            "task_reward_sfx": 1,
-            "routine_reward_sfx": 1,
+            "light_brightness": 5,
+            "light_duration": 4,
+            "playlist_duration": 5,
         }
-        and (levels["light_duration"], levels["playlist_duration"], levels["volume"])
-        == (4, 5, 5)
     )

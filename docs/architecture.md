@@ -93,8 +93,13 @@ controls stay locked until a device read is confirmed again.
 - Volume, light brightness, the timers and the clock settings are also
   profile settings. When Home Assistant changes one and the next pushed state
   confirms it, the saved profile is updated in place (same revision, verified
-  status kept), so a power-loss restore brings back the last choice. Changes
-  made with the device buttons are shown but not saved.
+  status kept), so a power-loss restore brings back the last choice. An
+  unconfirmed setting is written once more (setters are idempotent; on
+  hardware one write right after a session change was acknowledged but not
+  applied), then fails with `setting_not_confirmed`. Changes made with the
+  device buttons are shown but not saved.
+- Live commands wait up to 15 seconds, outside the lock, for a session that
+  is being opened, instead of failing at once.
 - One-off commands (play, stop, light on/off, routine start and control) are
   never queued or replayed.
 
@@ -131,14 +136,18 @@ controls stay locked until a device read is confirmed again.
 - The **reset marker** is the power-loss clock: a power loss restarts the
   device clock at 05:00:00 on Sunday. On reconnect the clock must be more
   than 10 minutes off, not off by whole hours (±2 minutes: DST or a time
-  zone change, which only sets the clock, unless the whole device read equals
-  the power-loss defaults, `restore.is_factory_default`), on Sunday, and
+  zone change, which only sets the clock, unless Home Assistant heard the
+  device within the last hour or the whole device read equals the power-loss
+  defaults, `restore.is_factory_default`), on Sunday, and
   between 05:00 and
   05:00 plus the time since the last frame Home Assistant received from the
   device plus 10 minutes (12 hours when unknown, for example after a
   restart). With it, every block is
   compared; without it, the light and sound block is skipped because the
-  device buttons change it in everyday use. A difference sets
+  device buttons change it in everyday use. Every fresh read (recovery,
+  profile read, restore, profile edit) judges the marker before any clock
+  write, and a reset once seen stays pending until it is resolved, so a pass
+  that sets the clock and then fails cannot hide it. A difference sets
   `restore_needed` (`reset` stays set until the event is resolved). A reset
   with the `auto_restore` option on (the default) runs the restore executor,
   at most twice per event; a failed attempt ends the session so the next one
@@ -174,7 +183,9 @@ controls stay locked until a device read is confirmed again.
 - Events are derived from two consecutive statuses of one session while in
   routine mode: a task nibble 1 -> 2 is `task_completed`; the first completed
   status is `routine_completed`; leaving routine mode (7 -> other) without it
-  is `routine_cancelled`. Nothing is inferred across a reconnect.
+  is `routine_cancelled` when Home Assistant sent the cancel code, else
+  `routine_expired` (ended by the device). Nothing is inferred across a
+  reconnect. Every pushed status is logged at debug level.
 - Start (button or action) sends `0x7B`, waits for the pushed state to show
   routine mode (else writes a one-off day back and raises
   `routine_not_started`), waits one second and sends `0x6B 0`, so task 1

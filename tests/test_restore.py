@@ -259,7 +259,12 @@ def test_factory_default_profile_matches_the_hardware_power_loss_values():
         },
     }
     assert is_factory_default(profile)
-    profile["light_and_sound"]["light_brightness"] = 9  # not compared
+    # The flags were not recorded after a power loss, so they are ignored.
+    profile["routine_settings"]["enabled"] = True
+    profile["ready_to_rise"]["enabled"] = True
     assert is_factory_default(profile)
+    profile["light_and_sound"]["light_brightness"] = 9
+    assert not is_factory_default(profile)
+    profile["light_and_sound"]["light_brightness"] = 5
     profile["clock_settings"]["format"] = 1
     assert not is_factory_default(profile)

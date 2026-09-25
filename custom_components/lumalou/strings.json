@@ -473,6 +473,9 @@
     },
     "routine_not_started": {
       "message": "Lumalou did not start the routine. Nothing was changed; try again."
+    },
+    "setting_not_confirmed": {
+      "message": "Lumalou did not apply the setting (sent twice). Check the connection and try again."
     }
   },
   "issues": {
@@ -680,7 +683,8 @@
             "state": {
               "task_completed": "Task completed",
               "routine_completed": "Routine completed",
-              "routine_cancelled": "Routine cancelled"
+              "routine_cancelled": "Routine cancelled",
+              "routine_expired": "Routine expired"
             }
           },
           "task": {
