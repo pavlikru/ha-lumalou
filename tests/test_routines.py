@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import pytest
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from lumalou.client import FreshSessionRequiredError
 from lumalou.responses import CurrentDate
 from lumalou.schedules import (
     ClockTime,
@@ -656,3 +657,81 @@ async def test_restore_is_refused_while_a_routine_runs(rig):
 
     assert err.value.translation_key == "routine_running"
     assert not sends(rig, start)
+
+
+async def test_no_routine_events_from_a_first_status_after_connecting(rig):
+    """0.1.0b7 on hardware: each reconnect of set_routine fired completed."""
+    coordinator = rig.coordinator
+    fired = events(coordinator)
+    await live(rig)
+    # A stale final status outside a routine, then one as the first status
+    # of a running routine: neither is an observed transition.
+    push_status(rig, status(3, t3=2, t4=2))
+    push_mode(rig, 7)
+    push_status(rig, status(3, t3=2, t4=2))
+    assert fired == []
+
+    # From here on, transitions of this session count.
+    await coordinator._disconnect()
+    rig.state["operationMode"] = 0
+    await live(rig)
+    push_mode(rig, 7)
+    push_status(rig, status(1, t3=1))
+    push_status(rig, status(2, t3=2))
+    assert fired == [
+        ("task_completed", {"task": "brush_teeth"}),
+        ("routine_completed", {}),
+    ]
+
+
+async def test_reconnecting_during_a_routine_resumes_its_progress(rig):
+    """The fresh read asks for the routine status; no events for the gap."""
+    coordinator = rig.coordinator
+    fired = events(coordinator)
+    await verified_profile(rig)
+    await coordinator._disconnect()
+    rig.state["operationMode"] = 7
+    rig.fake.routine_status = status(2, t3=2, t4=1)
+
+    await coordinator._async_recover()
+
+    assert coordinator.routine_phase == "in_progress"
+    assert coordinator.current_task == "toilet"
+    assert fired == []
+    push_status(rig, status(3, t3=2, t4=2))
+    assert fired == [
+        ("task_completed", {"task": "toilet"}),
+        ("routine_completed", {}),
+    ]
+
+
+async def test_a_routine_status_pushed_before_the_read_is_used(rig):
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    await coordinator._disconnect()
+    rig.state["operationMode"] = 7
+    original = rig.client_factory.side_effect
+
+    def pushes_first(*args, **kwargs):
+        client = original(*args, **kwargs)
+        request = client.request_named.side_effect
+        connect = client.connect.side_effect
+
+        async def connect_and_push(**kwargs):
+            await connect(**kwargs)
+            value = status(1, t1=1)
+            client.on_response(SimpleNamespace(opcode=0x94, decode=lambda: value))
+
+        async def request_named(name, **kwargs):
+            if name == "routine_task_status":
+                raise FreshSessionRequiredError("pushed first")
+            return await request(name, **kwargs)
+
+        client.connect.side_effect = connect_and_push
+        client.request_named.side_effect = request_named
+        return client
+
+    rig.client_factory.side_effect = pushes_first
+    await coordinator._async_recover()
+
+    assert coordinator.current_task == "get_dressed"

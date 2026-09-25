@@ -131,8 +131,12 @@ controls stay locked until a device read is confirmed again.
   an hour, or at once when more than 10 minutes off (DST). A failed automatic
   write pauses automatic writes for an hour; in recovery it fails the pass
   (retried after the backoff, then without the paused write).
-- Any frame re-arms a three-minute silence timer; when it expires the session
-  is invalidated and closed and recovery is scheduled, as for a link loss.
+- A GLOBAL_STATE, CURRENT_DATE or ROUTINE_TASK_STATUS frame re-arms a
+  silence timer (three minutes, 90 seconds in routine mode); other pushes
+  (single-value frames) are logged at debug level and do not. When it
+  expires the session is invalidated and closed and recovery is scheduled,
+  as for a link loss. On hardware a live session received none of these
+  frames after a scheduled routine started, while a fresh session works.
 - The **reset marker** is a device read at factory defaults
   (`restore.is_factory_default`; on hardware a short outage reset the
   settings while the clock kept running), or the power-loss clock: a power
@@ -185,10 +189,13 @@ controls stay locked until a device read is confirmed again.
   task id (0 pending, 1 current, 2 done). Step 0 is the silent preview; step
   N+1 (no current task, some done) is the completed routine, after which the
   device resets the status and leaves routine mode. The status is runtime
-  only and reset with each session.
-- Events are derived from two consecutive statuses of one session while in
-  routine mode: a task nibble 1 -> 2 is `task_completed`; the first completed
-  status is `routine_completed`; leaving routine mode (7 -> other) without it
+  only and reset with each session; a fresh read in routine mode requests
+  it (`0x68`, or uses a status pushed first) so progress resumes after a
+  reconnect.
+- Events are derived from two consecutive statuses seen in one session while
+  in routine mode (a status before routine mode, or the first one after
+  connecting, is only a baseline): a task nibble 1 -> 2 is
+  `task_completed`; the step to the completed status is `routine_completed`; leaving routine mode (7 -> other) without it
   is `routine_cancelled` when Home Assistant sent the cancel code, else
   `routine_expired` (ended by the device). Nothing is inferred across a
   reconnect. Every pushed status is logged at debug level.

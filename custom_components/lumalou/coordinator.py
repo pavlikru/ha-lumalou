@@ -51,6 +51,7 @@ from .const import (
     RESPONSE_TIMEOUT,
     ROUTINE_OPERATION_MODE,
     ROUTINE_SETTING_FIELDS,
+    ROUTINE_SILENCE_TIMEOUT,
     ROUTINE_START_DELAY,
     ROUTINE_TASKS,
     SESSION_CONNECT_ATTEMPTS,
@@ -307,6 +308,8 @@ class LumalouCoordinator:
         self.routine_status: RoutineTaskStatus | None = None
         # The running routine reached its final step in this session.
         self._routine_finished = False
+        # Last status seen in this session while a routine runs.
+        self._running_status: RoutineTaskStatus | None = None
         # Home Assistant sent "cancel" to the running routine.
         self._cancel_sent = False
         self._routine_listeners: set[Callable[[str, dict[str, str]], None]] = set()
@@ -959,8 +962,8 @@ class LumalouCoordinator:
         ):
             _LOGGER.debug("Ignoring a malformed Lumalou state: %s", state)
             return
-        self._heard_from_device(generation)
         previous, self.data = self.data, dict(state)
+        self._heard_from_device(generation)
         if not state["musicStatus"]:
             self.playing_source = None
         if (
@@ -979,13 +982,25 @@ class LumalouCoordinator:
 
     @callback
     def _heard_from_device(self, generation: int) -> None:
-        """Note a frame of the live session and re-arm the silence timer."""
+        """Note a state, clock or routine frame and re-arm the silence timer.
+
+        The device pushes its clock every minute, so a session without any of
+        these frames for longer than the timeout no longer delivers state
+        (hardware: after a scheduled routine start nothing arrived). While a
+        routine runs the timeout is shorter, so its progress resumes soon.
+        """
         loop = asyncio.get_running_loop()
         self._last_frame_at = loop.time()
         if self._silence_timer is not None:
             self._silence_timer.cancel()
+        routine = (
+            self.data is not None
+            and self.data["operationMode"] == ROUTINE_OPERATION_MODE
+        )
         self._silence_timer = loop.call_later(
-            SESSION_SILENCE_TIMEOUT, self._session_silent, generation
+            ROUTINE_SILENCE_TIMEOUT if routine else SESSION_SILENCE_TIMEOUT,
+            self._session_silent,
+            generation,
         )
 
     @callback
@@ -994,10 +1009,9 @@ class LumalouCoordinator:
         self._silence_timer = None
         if self._stopped or generation != self._generation or self._client is None:
             return
-        _LOGGER.debug(
-            "%s sent nothing for %s seconds; reconnecting",
+        _LOGGER.info(
+            "%s sent no state, clock or routine frame for too long; reconnecting",
             self.device_name,
-            SESSION_SILENCE_TIMEOUT,
         )
         client = self._invalidate()
         if client is not None:
@@ -1022,6 +1036,7 @@ class LumalouCoordinator:
         self._routine_finished = False
         self._cancel_sent = False
         self.routine_status = None
+        self._running_status = None
         if self._temporary_routine_day is not None and self._routine_task is None:
             task = self._create_background_task(
                 self._async_end_temporary_routine(), "lumalou routine write-back"
@@ -1038,29 +1053,36 @@ class LumalouCoordinator:
     def _take_routine_status(self, status: RoutineTaskStatus) -> None:
         """Derive routine events from consecutive pushed task statuses.
 
-        A task nibble going current -> done is a completed task; the final
-        step (no current task, some done) completes the routine. Events are
-        only derived while a routine runs and from two frames of one session.
+        A task nibble going current -> done is a completed task; reaching the
+        final step (no current task, some done) completes the routine. Events
+        only come from two statuses seen in one session while a routine runs
+        (operationMode 7), never from a first status after connecting.
         """
-        previous, self.routine_status = self.routine_status, status
+        self.routine_status = status
         _LOGGER.debug(
             "Routine status: step %s, task states %s",
             status.current_step,
             status.task_states,
         )
-        running = (
-            self.data is not None
-            and self.data["operationMode"] == ROUTINE_OPERATION_MODE
-        )
-        if running and previous is not None:
+        if self.data is None or self.data["operationMode"] != ROUTINE_OPERATION_MODE:
+            # Only statuses seen while a routine runs count (hardware: each
+            # reconnect outside a routine fired "routine completed").
+            self._notify()
+            return
+        previous, self._running_status = self._running_status, status
+        if previous is not None:
             for task, before, after in zip(
                 ROUTINE_TASKS, previous.task_states, status.task_states, strict=False
             ):
                 if before == _TASK_CURRENT and after == _TASK_DONE:
                     self._fire_routine_event("task_completed", task=task)
-        if running and not self._routine_finished and _all_tasks_done(status):
-            self._routine_finished = True
-            self._fire_routine_event("routine_completed")
+            if (
+                not self._routine_finished
+                and _all_tasks_done(status)
+                and not _all_tasks_done(previous)
+            ):
+                self._routine_finished = True
+                self._fire_routine_event("routine_completed")
         self._notify()
 
     @callback
@@ -1073,14 +1095,22 @@ class LumalouCoordinator:
         """
         if self._stopped or generation != self._generation:
             return
-        self._heard_from_device(generation)
         if envelope.opcode == _ROUTINE_TASK_STATUS:
             status = envelope.decode()
             if isinstance(status, RoutineTaskStatus):
+                self._heard_from_device(generation)
                 self._take_routine_status(status)
             return
         if envelope.opcode != _CURRENT_DATE:
+            # Single-value pushes (song, stage, ...) are not used and do not
+            # prove the session still delivers state (see the watchdog).
+            _LOGGER.debug(
+                "Unused Lumalou push 0x%02x: %s",
+                envelope.opcode,
+                bytes(getattr(envelope, "args", b"")).hex(" "),
+            )
             return
+        self._heard_from_device(generation)
         clock = envelope.decode()
         if not isinstance(clock, CurrentDate):
             return
@@ -1226,6 +1256,7 @@ class LumalouCoordinator:
             self._silence_timer = None
         # Routine progress is only compared within one session.
         self.routine_status = None
+        self._running_status = None
         self.playing_source = None
         self._routine_finished = False
         self._cancel_sent = False
@@ -1270,6 +1301,14 @@ class LumalouCoordinator:
             if (pushed := self._pushed_clock) is None or pushed[0] != self._generation:
                 raise
             _generation, device_clock, read_at = pushed
+        routine_status: RoutineTaskStatus | None = None
+        if state["operationMode"] == ROUTINE_OPERATION_MODE:
+            # Reconnected during a routine: resume its progress (no events for
+            # steps this session did not see).
+            try:
+                routine_status = await read("routine_task_status")
+            except FreshSessionRequiredError:
+                routine_status = self.routine_status  # pushed in this session
         playlist = await read("music_playlist")
         clock = await read("clock_settings")
         ready = await read("r2r_times")
@@ -1295,6 +1334,9 @@ class LumalouCoordinator:
             alarms=alarms,
             routines=routines,
         )
+        if isinstance(routine_status, RoutineTaskStatus):
+            self.routine_status = self._running_status = routine_status
+            self._notify()
         return DeviceSnapshot(profile, state, device_clock, read_at)
 
     async def _async_fresh_snapshot(

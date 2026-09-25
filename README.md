@@ -187,9 +187,11 @@ if it is more than 60 seconds off, and compares the profile with the saved one
 clock at most once an hour; an offset of more than 10 minutes (such as a DST
 change) at once. If an automatic clock write fails, a warning is logged, that
 reconnect counts as failed and automatic clock writes pause for an hour (the
-**Synchronize clock** button still writes at once). A session that sends
-nothing for three minutes (not even the minute clock) is treated as lost and
-reconnected. When Home Assistant
+**Synchronize clock** button still writes at once). A session that sends no
+state, clock or routine update for three minutes (90 seconds while a routine
+runs) is treated as lost and reconnected; the minute clock alone keeps it
+alive. A reconnect during a routine reads its progress, so the sensors show
+the current task again. When Home Assistant
 reports the device gone, entities become unavailable; loss and return are
 logged once at info level.
 
@@ -323,10 +325,9 @@ and `event.lumalou_routine`. The event fires `task_completed` with the `task`
 when the child completes a task, `routine_completed` after the last task, and
 `routine_cancelled` when Home Assistant cancelled it (**Cancel routine**), and
 `routine_expired` when the device ended it before its last task (for example
-an untouched routine after about two hours). Events are only seen while Home
-Assistant is connected. The sensors show what the device reports: on hardware
-an untouched scheduled routine stayed at `ready` (the preview) until it
-expired. Example: a notification when the teeth are brushed:
+an untouched routine after about two hours). Events come only from changes
+Home Assistant sees while connected and while the routine runs: a step
+completed during a reconnect fires nothing, but the sensors catch up. Example: a notification when the teeth are brushed:
 
 ```yaml
 automation:
