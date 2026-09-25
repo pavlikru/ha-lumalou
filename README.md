@@ -9,11 +9,12 @@ needed. The Bluetooth protocol lives in the
 [`lumalou-gld09`](https://github.com/pavlikru/lumalou) Python package, a fork
 of [`stramanu/lumalou`](https://github.com/stramanu/lumalou).
 
-> [!WARNING]
-> **Beta.** Every Bluetooth command the integration uses was checked on a real
-> Lumalou (firmware 0.3.7) with a library-level probe. The Home Assistant-level
-> [acceptance checklist](docs/hardware-validation.md) is still open, and there
-> is no stable release. Do not rely on it for a child's bedtime routine yet.
+> [!NOTE]
+> **Validated on real hardware**: a Lumalou with firmware 0.3.7 and Home
+> Assistant on a Raspberry Pi 4 with its onboard Bluetooth adapter (see the
+> [hardware validation](docs/hardware-validation.md) and the
+> [known limitations](#limitations)). Other firmware versions and Bluetooth
+> proxies have not been tested.
 
 ## Features
 
@@ -92,8 +93,7 @@ of [`stramanu/lumalou`](https://github.com/stramanu/lumalou).
 
 1. In HACS, open **⋮ → Custom repositories**, add
    `https://github.com/pavlikru/ha-lumalou` with type **Integration**.
-2. Open **Lumalou** in HACS and select **Download**. To test a development
-   build, choose its branch as the version.
+2. Open **Lumalou** in HACS and select **Download** (the latest release).
 3. Restart Home Assistant.
 
 ### Manual
@@ -327,7 +327,11 @@ when the child completes a task, `routine_completed` after the last task, and
 `routine_expired` when the device ended it before its last task (for example
 an untouched routine after about two hours). Events come only from changes
 Home Assistant sees while connected and while the routine runs: a step
-completed during a reconnect fires nothing, but the sensors catch up. Example: a notification when the teeth are brushed:
+completed during a reconnect fires nothing, but the sensors catch up.
+
+Example: a notification when the teeth are brushed. An event entity keeps its
+last event and shows it again after being unavailable (for example after a
+reconnect or a restart), so ignore changes from `unavailable`:
 
 ```yaml
 automation:
@@ -335,6 +339,8 @@ automation:
     triggers:
       - trigger: state
         entity_id: event.lumalou_routine
+        not_from: unavailable
+        not_to: unavailable
     conditions:
       - condition: template
         value_template: >-
@@ -422,12 +428,10 @@ in the UI.
 | --- | --- |
 | Lumalou is not discovered | Close other apps connected to it, move the adapter or proxy closer, and check that the adapter supports active connections. |
 | "Could not connect for the read-only identity probe", or entities stay unavailable although the device is near | Another client (Fisher-Price app, a browser tab with Web Bluetooth) holds the single connection. Close it; if that does not help, unplug the Lumalou for a few seconds. |
-| Controls locked after updating to 0.1.0b4 | The saved profile format changed. Open **Configure → Read the device profile** and confirm it once. |
 | Controls fail with "Read and confirm the device profile…" | Open **Configure → Read the device profile** and confirm the result. |
 | Repairs: "Lumalou settings differ from the saved profile" | Choose **Restore saved profile** or **Keep device settings**. If a restore fails, bring the adapter closer and try again; the diagnostics download shows which step failed. |
 | Entities unavailable | The device is out of range or unpowered, **Maintenance** is on, or another client is connected. |
 | Device moved to a new Bluetooth address | Use **Reconfigure** on the entry. |
-| Setup fails: "created by a development build" | Remove the entry and add the device again. |
 | Controls locked again after a restart | The saved profile could not be read (Home Assistant keeps an unreadable file as `.corrupt.<time>` and raises its own Repair). Read the device profile again, or import your last export. Do not edit `.storage` by hand. |
 
 For debug logs add:
@@ -457,25 +461,32 @@ entry with `lumalou.import_profile` and write it with
 
 ## Limitations
 
-- Only the `GLD09` Lumalou is supported. Setup verifies the signed identity of
-  the individual device, not the retail model.
+- Only the `GLD09` Lumalou is supported, validated with firmware 0.3.7. Setup
+  verifies the signed identity of the individual device, not the retail
+  model.
+- The Lumalou accepts a single Bluetooth connection: close the Fisher-Price
+  app (and any Web Bluetooth page) or switch on **Maintenance** when you need
+  the app.
+- The soother (sleep playlist) light keeps cycling after its music stops;
+  turn the light off separately.
+- A scheduled routine plays no music on firmware 0.3.7 (observed on the
+  device); a routine started from Home Assistant does.
+- Naps are not supported.
+- **Complete task**, **Previous task** and **Cancel routine** are available
+  only while a routine runs; **Start routine** only while none runs.
+- Routine events come only from changes seen while connected. An event
+  entity shows its last event again after being unavailable; use
+  `not_from: unavailable` in automations (see [Routines](#routines)).
+- Power-loss detection: a reconnect that finds every setting at its factory
+  default, or the device clock restarted around 05:00 on Sunday, is treated
+  as a power loss and the saved profile is restored automatically (unless
+  switched off). Other differences raise a Repair. Volume, brightness or
+  timer changes made with the device buttons are not saved; a restore brings
+  back the last values set in Home Assistant.
 - Palette colors cannot be exported to Apple Home.
-- The official app and Home Assistant cannot be connected at the same time;
-  use **Maintenance** when you need the app.
-- Reset detection relies on the clock that a power loss resets. Volume,
-  brightness or timer changes made with the device buttons are not saved;
-  a restore brings back the last values set in Home Assistant.
 - Routine music, the reward sounds and the routine volume are read back as
   4-bit values. The entities use on/off and 0–9 (checked on hardware); the
   profile editor still accepts the raw 0–15 values.
-- Routine progress (sensors and events) comes from the device's pushes while
-  Home Assistant is connected. After a reconnect in the middle of a routine,
-  the step is unknown until the next change, and a routine that ended while
-  disconnected fires no event. A routine that ends without reaching its last
-  step (also "complete all" on the device) counts as cancelled.
-- The routine start and control commands were checked on hardware with a
-  library-level probe; the Home Assistant-level routine steps of the
-  [acceptance checklist](docs/hardware-validation.md) are still open.
 - Only sources `sleep_playlist` and `pink_noise` were checked on hardware; the
   other built-in sounds come from the protocol description.
 

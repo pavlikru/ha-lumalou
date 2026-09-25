@@ -92,6 +92,7 @@ from .transport import SafeLumalouClient
 
 _LOGGER = logging.getLogger(__name__)
 _MAX_REVISION = 2**63 - 1
+_GLOBAL_STATE = 0x02
 _CURRENT_DATE = 0x13
 _ROUTINE_TASK_STATUS = 0x94
 # ROUTINE_TASK_STATUS nibble values (hardware): index = task id - 1.
@@ -1101,6 +1102,8 @@ class LumalouCoordinator:
                 self._heard_from_device(generation)
                 self._take_routine_status(status)
             return
+        if envelope.opcode == _GLOBAL_STATE:
+            return  # The library delivers it to ``_receive`` (on_state) too.
         if envelope.opcode != _CURRENT_DATE:
             # Single-value pushes (song, stage, ...) are not used and do not
             # prove the session still delivers state (see the watchdog).
