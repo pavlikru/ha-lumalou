@@ -12,8 +12,11 @@ from lumalou import Audio, Color, LightDuration, PlaylistDuration
 from custom_components.lumalou.config_flow import EDITORS
 from custom_components.lumalou.const import (
     ISSUE_ID_IDENTITY_ENROLLMENT,
+    ISSUE_ID_PROFILE_RESTORE_NEEDED,
     ISSUE_ID_PROFILE_STORAGE,
 )
+from custom_components.lumalou.coordinator import _ERRORS
+from custom_components.lumalou.sensor import PROFILE_ERRORS
 
 COMPONENT = Path(__file__).parents[1] / "custom_components" / "lumalou"
 STRINGS = json.loads((COMPONENT / "strings.json").read_text(encoding="utf-8"))
@@ -65,16 +68,22 @@ def test_flow_steps_errors_and_aborts_are_translated() -> None:
         _literals(r'step_id="(\w+)"', options_source)
         | edit_steps
         | {f"{editor}_confirm" for editor in EDITORS}
-        | {"import_profile_confirm", "read_profile_confirm"}
+        | {"read_profile_confirm"}
     )
     assert option_steps == set(options["step"])
     assert set(options["step"]["init"]["menu_options"]) == {
         "read_profile",
-        "import_profile",
         "behavior",
         *EDITORS,
     }
-    assert _literals(r'reason="(\w+)"', options_source) == set(options["abort"])
+    assert set(options["step"]["read_first"]["menu_options"]) == {
+        "read_profile",
+        "behavior",
+    }
+    # _ensure_draft returns its abort reasons as plain strings.
+    assert _literals(r'reason="(\w+)"', options_source) | {"profile_not_read"} == set(
+        options["abort"]
+    )
     assert _literals(r'"base"\]? ?[:=] ?"(\w+)"', options_source) | {
         "confirmation_required",
         *(f"invalid_{step}" for step in edit_steps),
@@ -82,13 +91,28 @@ def test_flow_steps_errors_and_aborts_are_translated() -> None:
 
 
 def test_issues_and_exceptions_are_translated() -> None:
-    assert {ISSUE_ID_PROFILE_STORAGE, ISSUE_ID_IDENTITY_ENROLLMENT} == set(
-        STRINGS["issues"]
-    )
-    used = set()
+    assert {
+        ISSUE_ID_PROFILE_STORAGE,
+        ISSUE_ID_IDENTITY_ENROLLMENT,
+        ISSUE_ID_PROFILE_RESTORE_NEEDED,
+    } == set(STRINGS["issues"])
+    restore_flow = STRINGS["issues"][ISSUE_ID_PROFILE_RESTORE_NEEDED]["fix_flow"]
+    menu = set(restore_flow["step"]["init"]["menu_options"])
+    assert menu == {"restore", "keep_device"}
+    assert {f"{step}_failed" for step in menu} == set(restore_flow["error"])
+
+    used = set(_ERRORS)
     for module in ("media_player.py", "services.py"):
         source = (COMPONENT / module).read_text(encoding="utf-8")
         used |= _literals(r'translation_key="(\w+)"', source)
+    # Restore executor outcomes and profile validation from services.py.
+    used |= {
+        "restore_write",
+        "restore_verify",
+        "restore_mismatch",
+        "revision_conflict",
+        "invalid_profile",
+    }
     assert used == set(STRINGS["exceptions"])
 
 
@@ -98,6 +122,9 @@ def test_entity_names_and_states_are_translated() -> None:
         source = (COMPONENT / f"{platform}.py").read_text(encoding="utf-8")
         keys = _literals(r'_attr_translation_key = "(\w+)"', source)
         assert keys == set(entity[platform]), platform
+
+    last_error = entity["sensor"]["profile_last_error"]["state"]
+    assert set(last_error) == set(PROFILE_ERRORS)
 
     effects = entity["light"]["light"]["state_attributes"]["effect"]["state"]
     assert set(effects) == {color.name.lower() for color in Color}

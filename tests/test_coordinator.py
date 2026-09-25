@@ -52,6 +52,7 @@ from custom_components.lumalou.models import (
 )
 from custom_components.lumalou.restore import build_restore_steps
 from custom_components.lumalou.storage import ProfileStorageError, ProfileStore
+from tests.test_restore import complete_profile
 
 FINGERPRINT = "a" * 64
 ZONE = ZoneInfo("Pacific/Auckland")
@@ -345,8 +346,9 @@ async def test_public_offline_profile_edit_merges_complex_blocks_without_ble(rig
     """Saved intent editing is product-independent and never opens a session."""
     coordinator = rig.coordinator
     coordinator.device_fingerprint = None
+    base = {**complete_profile(), "playlist": [2, 1], "volume": 3}
     rig.store.async_load.return_value = ProfileRecord(
-        revision=4, desired_profile={"playlist": [2, 1], "volume": 3}
+        revision=4, desired_profile=deepcopy(base)
     )
     await coordinator.async_setup()
     changes = {
@@ -364,10 +366,7 @@ async def test_public_offline_profile_edit_merges_complex_blocks_without_ble(rig
     saved = await coordinator.async_edit_profile(changes, expected_revision=4)
 
     assert saved.revision == 5
-    assert saved.previous == {
-        "revision": 4,
-        "profile": {"playlist": [2, 1], "volume": 3},
-    }
+    assert saved.previous == {"revision": 4, "profile": base}
     assert saved.desired_profile["playlist"] == [2, 1]
     assert saved.desired_profile["sleepy_times"] == _weekly_times(20)
     assert saved.desired_profile["routines"] == _weekly_routines()
@@ -407,8 +406,21 @@ async def test_public_offline_profile_edit_requires_loaded_healthy_store(rig):
     rig.client_factory.assert_not_called()
 
 
+async def test_public_offline_profile_edit_requires_a_complete_profile(rig):
+    """Editors never fabricate blocks: a device read must come first."""
+    coordinator = rig.coordinator
+    rig.store.async_load.return_value = ProfileRecord(desired_profile={"volume": 3})
+    await coordinator.async_setup()
+    with pytest.raises(HomeAssistantError, match="Read the device profile"):
+        await coordinator.async_edit_profile({"volume": 4}, expected_revision=0)
+    rig.store.async_save.assert_not_awaited()
+
+
 async def test_public_offline_profile_edit_rejects_stale_concurrent_revision(rig):
     coordinator = rig.coordinator
+    rig.store.async_load.return_value = ProfileRecord(
+        desired_profile=complete_profile()
+    )
     await coordinator.async_setup()
     save_started = asyncio.Event()
     release_save = asyncio.Event()
@@ -434,7 +446,10 @@ async def test_public_offline_profile_edit_rejects_stale_concurrent_revision(rig
         await stale
 
     assert first_record.revision == 1
-    assert coordinator.profile_record.desired_profile == {"volume": 3}
+    assert coordinator.profile_record.desired_profile == {
+        **complete_profile(),
+        "volume": 3,
+    }
     assert rig.store.async_save.await_count == 1
     rig.discovery.assert_not_called()
     rig.client_factory.assert_not_called()
@@ -443,6 +458,9 @@ async def test_public_offline_profile_edit_rejects_stale_concurrent_revision(rig
 async def test_cancelled_public_offline_edit_never_touches_ble(rig):
     """A Store-safe completed commit is still published before cancellation."""
     coordinator = rig.coordinator
+    rig.store.async_load.return_value = ProfileRecord(
+        desired_profile=complete_profile()
+    )
     await coordinator.async_setup()
     save_started = asyncio.Event()
     release_save = asyncio.Event()
@@ -466,7 +484,10 @@ async def test_cancelled_public_offline_edit_never_touches_ble(rig):
 
     with pytest.raises(asyncio.CancelledError):
         await edit
-    assert coordinator.profile_record.desired_profile == {"volume": 3}
+    assert coordinator.profile_record.desired_profile == {
+        **complete_profile(),
+        "volume": 3,
+    }
     assert coordinator.profile_record.revision == 1
     rig.discovery.assert_not_called()
     rig.client_factory.assert_not_called()

@@ -30,6 +30,7 @@ from .const import (
     CONF_PROTOCOL_VERIFIED,
     CONNECT_TIMEOUT,
     DEFAULT_AUTO_RESTORE,
+    DOMAIN,
     GLOBAL_STATE_FIELDS,
     RECOVERY_COOLDOWN,
     RECOVERY_MAX_COOLDOWN,
@@ -103,6 +104,22 @@ def _new_revision(old: ProfileRecord, desired: dict[str, Any]) -> ProfileRecord:
         pending=True,
         sync_status="pending",
         last_error=None,
+    )
+
+
+_ERRORS = {
+    "maintenance_mode": "Lumalou is in maintenance mode",
+    "control_locked": "Read and verify the complete Lumalou profile before control",
+    "identity_not_enrolled": "No Lumalou device identity was enrolled",
+    "profile_read_failed": "Could not read a complete, consistent Lumalou profile",
+    "profile_other_device": "The saved profile was verified on a different device",
+}
+
+
+def _error(key: str) -> HomeAssistantError:
+    """Build a translated user-facing error with an English log message."""
+    return HomeAssistantError(
+        _ERRORS[key], translation_domain=DOMAIN, translation_key=key
     )
 
 
@@ -244,15 +261,13 @@ class LumalouCoordinator:
     def _assert_enrolled_device(self) -> None:
         """Block sessions until setup has bound one verified signed device key."""
         if not self.device_fingerprint:
-            raise HomeAssistantError("No Lumalou device identity was enrolled")
+            raise _error("identity_not_enrolled")
 
     def _assert_device_writes_allowed(self) -> None:
         """Guard every device mutation, including callers without a connection."""
         self._assert_enrolled_device()
         if not self.protocol_verified:
-            raise HomeAssistantError(
-                "Read and verify the complete Lumalou profile before control"
-            )
+            raise _error("control_locked")
 
     def _assert_profile_usable(self) -> None:
         if not self._storage_healthy or not self._profile_loaded:
@@ -553,6 +568,8 @@ class LumalouCoordinator:
                 raise HomeAssistantError(
                     "Saved profile requires recovery before editing"
                 )
+            if not profile_is_complete(self._profile_record.desired_profile):
+                raise HomeAssistantError("Read the device profile before editing")
             # Merges only supplied logical blocks: never removes saved blocks
             # and never fabricates hardware values.
             await self._save_edit(validated_changes, expected_revision)
@@ -582,7 +599,7 @@ class LumalouCoordinator:
     async def _connect(self) -> SafeLumalouClient:
         self._assert_enrolled_device()
         if self._profile_record.maintenance:
-            raise HomeAssistantError("Lumalou is in maintenance mode")
+            raise _error("maintenance_mode")
         if self._callbacks_started and not self.present:
             raise HomeAssistantError("Lumalou is not advertising")
         if self._client is not None and self._client.connected:
@@ -979,9 +996,7 @@ class LumalouCoordinator:
             try:
                 _client, snapshot = await self._async_fresh_snapshot()
             except Exception as err:
-                raise HomeAssistantError(
-                    "Could not read a complete, consistent Lumalou profile"
-                ) from err
+                raise _error("profile_read_failed") from err
             finally:
                 await self._disconnect()
             self._previewed_profile = deepcopy(snapshot.profile)
@@ -1003,7 +1018,7 @@ class LumalouCoordinator:
         self._assert_enrolled_device()
         record = self.profile_record
         if record.maintenance:
-            raise HomeAssistantError("Lumalou is in maintenance mode")
+            raise _error("maintenance_mode")
         if record.revision != expected_revision:
             raise RevisionConflictError("The saved profile changed")
         require_complete_profile(record.desired_profile)
@@ -1016,7 +1031,7 @@ class LumalouCoordinator:
             self._assert_profile_usable()
             record = self.profile_record
             if record.maintenance:
-                raise HomeAssistantError("Lumalou is in maintenance mode")
+                raise _error("maintenance_mode")
             self._assert_enrolled_device()
             return plan_profile_reconciliation(
                 record, observed, expected_revision=expected_revision
@@ -1048,22 +1063,18 @@ class LumalouCoordinator:
             self._assert_profile_usable()
             record = self._profile_record
             if record.maintenance:
-                raise HomeAssistantError("Lumalou is in maintenance mode")
+                raise _error("maintenance_mode")
             if record.revision != expected_revision:
                 raise RevisionConflictError("The saved profile changed")
             if record.verified_fingerprint not in (None, self.device_fingerprint):
-                raise HomeAssistantError(
-                    "The saved profile was verified on a different device"
-                )
+                raise _error("profile_other_device")
             require_complete_profile(record.desired_profile)
             try:
                 client, snapshot = await self._async_fresh_snapshot()
                 clock_synced = await self._async_sync_clock_if_needed(client, snapshot)
             except Exception as err:
                 await self._disconnect()
-                raise HomeAssistantError(
-                    "Could not read a complete, consistent Lumalou profile"
-                ) from err
+                raise _error("profile_read_failed") from err
             return await self._async_restore(
                 record, client, snapshot, automatic=False, clock_synced=clock_synced
             )

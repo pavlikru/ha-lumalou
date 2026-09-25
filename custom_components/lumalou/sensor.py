@@ -10,6 +10,15 @@ from homeassistant.const import EntityCategory
 from .entity import LumalouEntity
 from .models import SYNC_STATUSES
 
+# Symbolic errors the coordinator records; anything else is shown as unknown.
+PROFILE_ERRORS = (
+    "ble_apply",
+    "restore_mismatch",
+    "restore_verify",
+    "restore_write",
+    "storage_load",
+)
+
 PARALLEL_UPDATES = 0
 
 
@@ -88,7 +97,10 @@ class LumalouProfileLastErrorSensor(_LumalouProfileDiagnosticSensor):
     """Report the current symbolic saved-profile error, if any."""
 
     _attr_translation_key = "profile_last_error"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = sorted(PROFILE_ERRORS)
 
     @property
     def native_value(self) -> str | None:
-        return self.profile_record.last_error
+        error = self.profile_record.last_error
+        return error if error in PROFILE_ERRORS else None

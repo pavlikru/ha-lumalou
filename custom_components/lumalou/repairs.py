@@ -1,18 +1,130 @@
-"""Confirmation-gated recovery for unreadable private profile storage."""
+"""Confirmation-gated Repairs flows for saved-profile storage and restore."""
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import voluptuous as vol
 from homeassistant.components.repairs import RepairsFlow, RepairsFlowResult
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import selector
 
-from .config_flow import CONF_CONFIRM, CONF_PROFILE_JSON, parse_profile_json
-from .const import ISSUE_ID_PROFILE_STORAGE
-from .models import ProfileValidationError
+from .const import DOMAIN, ISSUE_ID_PROFILE_RESTORE_NEEDED, ISSUE_ID_PROFILE_STORAGE
+from .models import ProfileValidationError, import_profile_payload
+
+CONF_CONFIRM = "confirm"
+CONF_PROFILE_JSON = "profile_json"
+
+
+def parse_profile_json(value: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Validate an export envelope or the complete export action response.
+
+    Returns the envelope and its validated profile. The revision in an export
+    action response is ignored; recovery starts a new revision.
+    """
+    if not isinstance(value, str):
+        raise ValueError("Profile JSON must be text")
+    document = json.loads(value)
+    if (
+        isinstance(document, dict)
+        and set(document) == {"current_revision", "profile"}
+        and isinstance(document["profile"], dict)
+    ):
+        document = document["profile"]
+    if not isinstance(document, dict):
+        raise ValueError("Profile export must be a JSON object")
+    return document, import_profile_payload(document)
+
+
+def _coordinator(hass: HomeAssistant, entry_id: str) -> Any | None:
+    """Return a loaded entry's coordinator, never creating one."""
+    entry = hass.config_entries.async_get_entry(entry_id)
+    runtime_data = getattr(entry, "runtime_data", None)
+    return None if runtime_data is None else runtime_data.coordinator
+
+
+@callback
+def async_sync_restore_issue(hass: HomeAssistant, entry_id: str, need: Any) -> None:
+    """Show the restore issue exactly while the coordinator reports a mismatch."""
+    issue_id = f"{entry_id}_{ISSUE_ID_PROFILE_RESTORE_NEEDED}"
+    if need is None:
+        ir.async_delete_issue(hass, DOMAIN, issue_id)
+        return
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        issue_id,
+        data={"entry_id": entry_id},
+        is_fixable=True,
+        severity=(
+            ir.IssueSeverity.ERROR
+            if need.auto_restore_exhausted
+            else ir.IssueSeverity.WARNING
+        ),
+        translation_key=ISSUE_ID_PROFILE_RESTORE_NEEDED,
+        translation_placeholders={
+            "block_count": str(len(need.changed_blocks)),
+            "attempts": str(need.auto_restore_attempts),
+        },
+    )
+
+
+class ProfileRestoreRepairFlow(RepairsFlow):
+    """Let the user choose which side wins after the device settings changed."""
+
+    def __init__(self, entry_id: str) -> None:
+        """Initialize an entry-scoped restore choice."""
+        self._entry_id = entry_id
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> RepairsFlowResult:
+        """Offer restoring the saved profile or keeping the device settings."""
+        return self.async_show_menu(
+            step_id="init", menu_options=["restore", "keep_device"]
+        )
+
+    async def async_step_restore(
+        self, user_input: dict[str, Any] | None = None
+    ) -> RepairsFlowResult:
+        """Write the saved profile back and verify it with a fresh read."""
+        return await self._async_resolve("restore", user_input)
+
+    async def async_step_keep_device(
+        self, user_input: dict[str, Any] | None = None
+    ) -> RepairsFlowResult:
+        """Save a fresh complete device read as the new verified profile."""
+        return await self._async_resolve("keep_device", user_input)
+
+    async def _async_resolve(
+        self, step_id: str, user_input: dict[str, Any] | None
+    ) -> RepairsFlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            if (coordinator := _coordinator(self.hass, self._entry_id)) is None:
+                return self.async_abort(reason="entry_not_loaded")
+            if (need := coordinator.restore_needed) is None:
+                return self.async_abort(reason="not_needed")
+            try:
+                if step_id == "restore":
+                    await coordinator.async_restore_profile(
+                        need.revision, confirmed=True
+                    )
+                else:
+                    profile, revision = await coordinator.async_read_profile_snapshot()
+                    await coordinator.async_accept_device_profile(
+                        profile, revision, confirmed=True
+                    )
+            except HomeAssistantError, ValueError:
+                errors["base"] = f"{step_id}_failed"
+            else:
+                return self.async_create_entry(data={})
+        return self.async_show_form(
+            step_id=step_id, data_schema=vol.Schema({}), errors=errors
+        )
 
 
 class ProfileStorageRepairFlow(RepairsFlow):
@@ -96,11 +208,11 @@ async def async_create_fix_flow(
     issue_id: str,
     data: dict[str, str | int | float | None] | None,
 ) -> RepairsFlow:
-    """Create an entry-scoped saved-profile recovery flow."""
-    if (
-        data is None
-        or not isinstance(entry_id := data.get("entry_id"), str)
-        or issue_id != f"{entry_id}_{ISSUE_ID_PROFILE_STORAGE}"
-    ):
-        raise ValueError("Invalid Lumalou profile-storage repair")
-    return ProfileStorageRepairFlow(entry_id)
+    """Create an entry-scoped profile repair flow."""
+    entry_id = data.get("entry_id") if data is not None else None
+    if isinstance(entry_id, str):
+        if issue_id == f"{entry_id}_{ISSUE_ID_PROFILE_STORAGE}":
+            return ProfileStorageRepairFlow(entry_id)
+        if issue_id == f"{entry_id}_{ISSUE_ID_PROFILE_RESTORE_NEEDED}":
+            return ProfileRestoreRepairFlow(entry_id)
+    raise ValueError("Invalid Lumalou repair")

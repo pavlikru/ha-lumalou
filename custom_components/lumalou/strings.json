@@ -50,10 +50,9 @@
     "step": {
       "init": {
         "title": "Edit Lumalou",
-        "description": "Read the complete device profile first: after you confirm it, it becomes the saved profile and device control is unlocked. You can also import an exported profile, or edit private profile blocks offline; edits are saved in Home Assistant and not sent to the device.",
+        "description": "Edit the saved profile that Home Assistant keeps for this Lumalou. Saving an editor creates a pending revision and does not change the device; the `lumalou.restore_profile` action writes it to Lumalou and verifies it. Reading the device profile again replaces the saved profile.",
         "menu_options": {
           "read_profile": "Read the device profile",
-          "import_profile": "Import an exported profile",
           "basic": "Light and audio values",
           "playlist": "Playlist",
           "clock_settings": "Clock settings",
@@ -63,40 +62,34 @@
           "behavior": "Behavior options"
         }
       },
-      "import_profile": {
-        "title": "Import an exported profile",
-        "description": "Paste a schema-v1 or schema-v2 profile export. It is validated and previewed before the private Store changes; nothing is sent to Lumalou.",
-        "data": {
-          "profile_json": "Exported profile JSON"
-        }
-      },
-      "import_profile_confirm": {
-        "title": "Confirm profile import",
-        "description": "Schema v{schema_version} {scope}: {field_count} persistent fields. This replaces the entire profile at current revision {revision}; {removed_count} current fields absent from the import will be removed: {removed_fields}. The previous revision remains recoverable in storage. Nothing is sent to Lumalou.",
-        "data": {
-          "confirm": "Replace the entire profile with this import"
+      "read_first": {
+        "title": "Read the device profile first",
+        "description": "No complete profile has been read from this Lumalou yet. Read it first: after you confirm it, it becomes the saved profile, device control is unlocked and the profile editors become available. Nothing is written to the device.",
+        "menu_options": {
+          "read_profile": "Read the device profile",
+          "behavior": "Behavior options"
         }
       },
       "read_profile_confirm": {
         "title": "Confirm device profile read",
-        "description": "A complete fresh snapshot contains {field_count} persistent profile blocks: {summary}. It will replace the saved profile at revision {revision}. No settings are sent to Lumalou during this read or confirmation.",
+        "description": "Fresh device read: light brightness {brightness}, color {color}, volume {volume}; {song_count} playlist songs; {wake_count} Ready-to-Rise times, {bedtime_count} Sleepy times and {alarm_count} alarms per week; routines on {routine_days} days with {task_count} tasks. It replaces the saved profile at revision {revision}. Nothing is written to Lumalou.",
         "data": {
           "confirm": "Save this complete device snapshot as the desired profile"
         }
       },
       "behavior": {
         "title": "Behavior options",
-        "description": "Automatic restore is off by default. When enabled, Home Assistant reapplies the saved profile after Lumalou reconnects, for example after a power loss, and verifies it with a fresh read. Maintenance mode is controlled separately on the device page.",
+        "description": "Automatic restore is off by default. When it is on and Lumalou reappears with settings that differ from the saved verified profile (for example after a power loss reset them), Home Assistant writes the saved profile back and checks it with a fresh read. Any other change made on the device, including in the Fisher-Price app, is overwritten too. If two attempts fail, a repair is raised instead. When it is off, a repair lets you choose which settings to keep.",
         "data": {
           "auto_restore": "Restore the saved profile automatically"
         },
         "data_description": {
-          "auto_restore": "Only for a device whose control is unlocked. Nothing is restored while maintenance mode is on."
+          "auto_restore": "Applies only to a profile that was verified on this device. Nothing is restored while maintenance mode is on."
         }
       },
       "basic": {
         "title": "Light and audio values",
-        "description": "These are private saved-profile values only. If a value was never saved, 0 is shown as a new draft value; it remains unknown until you confirm this editor. Nothing is sent to the device.",
+        "description": "Values from the saved profile. Saving creates a pending revision; nothing is sent to the device.",
         "data": {
           "brightness": "Light brightness",
           "color": "Light color",
@@ -107,7 +100,7 @@
       },
       "playlist": {
         "title": "Ordered playlist",
-        "description": "Use fixed rows to preserve order and duplicates. Clear every row for an empty playlist. If no playlist was saved, these rows are a new empty draft and stay unknown until confirmation. Nothing is sent to the device.",
+        "description": "Use fixed rows to preserve order and duplicates. Clear every row for an empty playlist. Nothing is sent to the device.",
         "data": {
           "song_1": "Song row 1",
           "song_2": "Song row 2",
@@ -125,7 +118,7 @@
       },
       "clock_settings": {
         "title": "Clock settings",
-        "description": "This editor saves one complete private clock-settings block. If absent, shown defaults are new draft values: display off, brightness 0, 12-hour format. Nothing is sent to the device.",
+        "description": "Edit the saved clock-settings block. Nothing is sent to the device.",
         "data": {
           "clock_display": "Show clock",
           "clock_brightness": "Clock brightness",
@@ -134,7 +127,7 @@
       },
       "routine_settings": {
         "title": "Routine settings",
-        "description": "This editor saves one complete private routine-settings block. If absent, shown defaults are new draft values: disabled and numeric values 0. Music and volume are raw validated bytes, not named modes. Nothing is sent to the device.",
+        "description": "Edit the saved routine-settings block. Music and volume are raw validated bytes, not named modes. Nothing is sent to the device.",
         "data": {
           "routine_enabled": "Enable routine mode",
           "routine_music": "Routine music byte",
@@ -290,12 +283,12 @@
       "invalid_routine_settings": "Use whole-byte music and volume values and supported reward sounds.",
       "confirmation_required": "Confirm before saving.",
       "revision_conflict": "The profile changed while this editor was open. Cancel and reopen it to use the latest revision.",
-      "profile_save_failed": "The profile could not be saved. Nothing was changed.",
-      "invalid_profile_import": "Enter a valid schema-v1 or schema-v2 Lumalou profile export."
+      "profile_save_failed": "The profile could not be saved. Nothing was changed."
     },
     "abort": {
-      "entry_not_loaded": "Load the Lumalou entry before reading, importing, or editing its private profile.",
-      "profile_read_failed": "Home Assistant could not obtain a complete, consistent fresh device profile. The saved profile was not changed."
+      "entry_not_loaded": "Load the Lumalou entry before reading or editing its profile.",
+      "profile_read_failed": "Home Assistant could not obtain a complete, consistent fresh device profile. The saved profile was not changed.",
+      "profile_not_read": "Read the complete profile from the device first."
     }
   },
   "selector": {
@@ -362,26 +355,6 @@
     }
   },
   "services": {
-    "refresh_state": {
-      "name": "Refresh state",
-      "description": "Request a fresh read-only state snapshot from Lumalou.",
-      "fields": {
-        "config_entry_id": {
-          "name": "Device",
-          "description": "Lumalou configuration entry to refresh."
-        }
-      }
-    },
-    "sync_clock": {
-      "name": "Synchronize clock",
-      "description": "Set the Lumalou clock from the Home Assistant time zone.",
-      "fields": {
-        "config_entry_id": {
-          "name": "Device",
-          "description": "Lumalou configuration entry whose clock will be synchronized."
-        }
-      }
-    },
     "export_profile": {
       "name": "Export profile",
       "description": "Return the private saved profile and its current revision for backup and conflict-safe import.",
@@ -412,25 +385,15 @@
     },
     "restore_profile": {
       "name": "Restore profile",
-      "description": "Apply the saved profile to Lumalou and verify the result with a fresh read.",
+      "description": "Write the saved profile to Lumalou (only the blocks that differ) and verify the result with a fresh read.",
       "fields": {
         "config_entry_id": {
           "name": "Device",
           "description": "Lumalou configuration entry to restore."
-        }
-      }
-    },
-    "set_maintenance": {
-      "name": "Set maintenance mode",
-      "description": "Release Bluetooth and block device operations while using an external controller.",
-      "fields": {
-        "config_entry_id": {
-          "name": "Device",
-          "description": "Lumalou configuration entry to update."
         },
-        "enabled": {
-          "name": "Enabled",
-          "description": "Whether maintenance mode is enabled."
+        "expected_revision": {
+          "name": "Expected revision",
+          "description": "Optional saved revision to restore; the action fails if the profile changed. Defaults to the current revision."
         }
       }
     }
@@ -444,6 +407,36 @@
     },
     "unsupported_source": {
       "message": "Unsupported Lumalou audio source: {source}."
+    },
+    "restore_write": {
+      "message": "Writing the profile to Lumalou failed after {applied} of {planned} steps. The saved profile is unchanged; run the restore again."
+    },
+    "restore_verify": {
+      "message": "All {planned} profile writes were sent, but Lumalou could not be read back to verify them. Run the restore again."
+    },
+    "restore_mismatch": {
+      "message": "Lumalou did not keep these profile blocks after the restore: {blocks}."
+    },
+    "profile_other_device": {
+      "message": "The saved profile was verified on a different Lumalou. Read the profile from this device instead."
+    },
+    "maintenance_mode": {
+      "message": "Lumalou is in maintenance mode. Turn maintenance mode off first."
+    },
+    "control_locked": {
+      "message": "Read and confirm the device profile in the Lumalou options before controlling the device."
+    },
+    "identity_not_enrolled": {
+      "message": "This Lumalou entry has no verified device identity. Reconfigure the entry."
+    },
+    "profile_read_failed": {
+      "message": "Could not read a complete, consistent profile from Lumalou. Nothing was written."
+    },
+    "revision_conflict": {
+      "message": "The saved profile changed. Use its current revision and try again."
+    },
+    "invalid_profile": {
+      "message": "The saved or supplied profile is incomplete or invalid for this action."
     }
   },
   "issues": {
@@ -480,6 +473,37 @@
     "identity_enrollment": {
       "title": "Verify the device for {title}",
       "description": "This Lumalou entry was created before signed device verification, so Home Assistant does not connect to it. Open Settings > Devices & services > Lumalou, choose Reconfigure for this entry and select your Lumalou. Its entities and history are kept."
+    },
+    "profile_restore_needed": {
+      "title": "Lumalou settings differ from the saved profile",
+      "fix_flow": {
+        "step": {
+          "init": {
+            "title": "Choose which Lumalou settings to keep",
+            "description": "A fresh read shows {block_count} profile blocks that differ from the saved verified profile, for example because a power loss reset the device. Automatic restore attempts so far: {attempts}.",
+            "menu_options": {
+              "restore": "Restore saved profile",
+              "keep_device": "Keep device settings"
+            }
+          },
+          "restore": {
+            "title": "Restore saved profile",
+            "description": "Home Assistant writes only the differing blocks of the saved profile to Lumalou and verifies them with a fresh read."
+          },
+          "keep_device": {
+            "title": "Keep device settings",
+            "description": "Home Assistant reads the current device settings and saves them as the new verified profile. Nothing is written to Lumalou."
+          }
+        },
+        "error": {
+          "restore_failed": "The restore failed or could not be verified. Check that Lumalou is nearby and try again.",
+          "keep_device_failed": "The device profile could not be read and saved. Check that Lumalou is nearby and try again."
+        },
+        "abort": {
+          "entry_not_loaded": "Load the Lumalou entry first.",
+          "not_needed": "The device settings already match the saved profile."
+        }
+      }
     }
   },
   "entity": {
@@ -589,7 +613,14 @@
         }
       },
       "profile_last_error": {
-        "name": "Profile last error"
+        "name": "Profile last error",
+        "state": {
+          "ble_apply": "Live change not confirmed",
+          "storage_load": "Saved profile unreadable",
+          "restore_write": "Restore write failed",
+          "restore_verify": "Restore not verified",
+          "restore_mismatch": "Device did not keep the profile"
+        }
       }
     },
     "switch": {

@@ -29,7 +29,11 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.lumalou.config_flow import CONF_AUTO_RESTORE, _device_title
+from custom_components.lumalou.config_flow import (
+    CONF_AUTO_RESTORE,
+    LumalouOptionsFlow,
+    _device_title,
+)
 from custom_components.lumalou.const import (
     CONF_DEVICE_FINGERPRINT,
     CONF_PROTOCOL_VERIFIED,
@@ -46,7 +50,6 @@ from custom_components.lumalou.models import (
     LumalouRuntimeData,
     ProfileRecord,
     RevisionConflictError,
-    export_profile_payload,
 )
 
 ADDRESS = "AA:BB:CC:DD:EE:01"
@@ -101,10 +104,9 @@ def test_numeric_ble_advertisement_name_is_not_used_as_entity_title() -> None:
 
 
 def editable_profile() -> dict:
-    """Return profile blocks used by native schedule and routine forms."""
-    empty_week = {day: None for day in DAYS}
-    routines = {day: {"time": None, "slots": [None] * 12} for day in DAYS}
-    routines["sunday"] = {
+    """Return a complete read profile with a routine exercising task-zero rows."""
+    profile = complete_profile()
+    profile["routines"]["sunday"] = {
         "time": {"hour": 0, "minute": 0},
         "slots": [
             {"step": 2, "task": 0},
@@ -112,12 +114,7 @@ def editable_profile() -> dict:
             *([None] * 10),
         ],
     }
-    return {
-        "ready_to_rise": {"enabled": False, "times": deepcopy(empty_week)},
-        "sleepy_times": deepcopy(empty_week),
-        "alarm": {"days": {day: 9 for day in DAYS}, "sound": 0},
-        "routines": routines,
-    }
+    return profile
 
 
 def complete_profile() -> dict:
@@ -185,7 +182,7 @@ async def start_editor(
     """Start an options flow and select one native editor section."""
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["type"] is FlowResultType.MENU
-    assert result["step_id"] == "init"
+    assert result["step_id"] in ("init", "read_first")
     return await hass.config_entries.options.async_configure(
         result["flow_id"], user_input={"next_step_id": section}
     )
@@ -272,218 +269,73 @@ async def test_new_entry_opens_profile_source_options_flow(
     assert result["options"] == {CONF_AUTO_RESTORE: False}
 
 
-async def test_empty_profile_offers_source_choices_without_creating_defaults(
-    hass: HomeAssistant,
+@pytest.mark.parametrize(
+    "desired_profile",
+    [{}, {"volume": 2, "playlist": [1]}],
+    ids=["empty", "partial_legacy"],
+)
+async def test_without_a_device_read_only_read_and_behavior_are_offered(
+    hass: HomeAssistant, desired_profile: dict[str, Any]
 ) -> None:
-    """An empty private Store offers Read, Import, and offline editors."""
-    entry, coordinator = profile_entry(hass, desired_profile={})
+    """Editors never start from fabricated defaults or a partial legacy profile."""
+    entry, coordinator = profile_entry(hass, desired_profile=desired_profile)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
 
     assert result["type"] is FlowResultType.MENU
-    assert result["step_id"] == "init"
-    assert result["menu_options"][:2] == ["read_profile", "import_profile"]
-    assert {"basic", "schedule", "routine", "behavior"} <= set(result["menu_options"])
+    assert result["step_id"] == "read_first"
+    assert result["menu_options"] == ["read_profile", "behavior"]
     assert entry.data == {CONF_ADDRESS: ADDRESS}
     assert entry.options == {CONF_AUTO_RESTORE: False}
     coordinator.async_edit_profile.assert_not_awaited()
 
 
-async def test_existing_profile_options_keeps_import_and_read_available(
+async def test_read_profile_menu_offers_editors_without_json_import(
     hass: HomeAssistant,
 ) -> None:
-    """A normal Configure flow can replace a saved export or show Read status."""
+    """A complete profile unlocks the editors; JSON import is an action only."""
     entry, _ = profile_entry(hass)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
 
     assert result["type"] is FlowResultType.MENU
-    assert {"import_profile", "read_profile"} <= set(result["menu_options"])
-
-
-async def test_first_run_editor_starts_from_empty_draft(hass: HomeAssistant) -> None:
-    """An editor for an empty profile shows new draft values without saving."""
-    entry, coordinator = profile_entry(hass, desired_profile={})
-
-    result = await start_editor(hass, entry, "basic")
-
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "basic"
-    coordinator.async_edit_profile.assert_not_awaited()
+    assert result["step_id"] == "init"
+    assert result["menu_options"] == [
+        "read_profile",
+        "basic",
+        "playlist",
+        "clock_settings",
+        "routine_settings",
+        "schedule",
+        "routine",
+        "behavior",
+    ]
 
 
 @pytest.mark.parametrize(
-    "payload",
-    [
-        {
-            "schema_version": 1,
-            "scope": "supported_subset",
-            "profile": {
-                "brightness": 1,
-                "color": 2,
-                "light_duration": 3,
-                "volume": 4,
-                "playlist_duration": 5,
-                "playlist": [1, 2],
-            },
-        },
-        {
-            "schema_version": 2,
-            "scope": "persistent_profile",
-            "profile": editable_profile(),
-        },
-    ],
+    ("loaded", "reason"),
+    [(False, "entry_not_loaded"), (True, "profile_not_read")],
 )
-async def test_first_run_import_previews_then_saves_with_cas(
-    hass: HomeAssistant, payload: dict[str, Any]
+@pytest.mark.parametrize(
+    "step", ["basic", "playlist", "clock_settings", "routine_settings", "routine"]
+)
+async def test_editor_step_aborts_without_a_complete_profile(
+    hass: HomeAssistant, loaded: bool, reason: str, step: str
 ) -> None:
-    """Both exported schemas stay offline until an explicit CAS confirmation."""
-    save = AsyncMock()
-    entry, coordinator = profile_entry(hass, save=save, desired_profile={})
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    original_options = dict(entry.options)
+    """A stale menu cannot open an editor without a loaded, read profile."""
+    if loaded:
+        entry, _ = profile_entry(hass, desired_profile={"volume": 2})
+    else:
+        entry = MockConfigEntry(domain=DOMAIN, unique_id=ADDRESS, data={})
+        entry.add_to_hass(hass)
+    flow = LumalouOptionsFlow()
+    flow.hass = hass
+    flow.handler = entry.entry_id
 
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"next_step_id": "import_profile"}
-    )
-    assert result["step_id"] == "import_profile"
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"profile_json": json.dumps(payload)}
-    )
-
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "import_profile_confirm"
-    assert result["description_placeholders"] == {
-        "schema_version": str(payload["schema_version"]),
-        "scope": str(payload["scope"]),
-        "field_count": str(len(payload["profile"])),
-        "revision": "7",
-        "removed_count": "0",
-        "removed_fields": "—",
-    }
-    coordinator.async_accept_device_profile.assert_not_awaited()
-    assert entry.options == original_options
-
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"confirm": True}
-    )
-
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    coordinator.async_import_profile.assert_awaited_once_with(
-        payload, 7, confirmed=True
-    )
-    assert entry.options == original_options
-
-
-async def test_cancelled_first_run_import_leaves_store_and_entry_unchanged(
-    hass: HomeAssistant,
-) -> None:
-    """Closing the preview cannot create a profile or change entry options."""
-    save = AsyncMock()
-    entry, coordinator = profile_entry(hass, save=save, desired_profile={})
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    original_options = dict(entry.options)
-    payload = export_profile_payload(editable_profile())
-
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"next_step_id": "import_profile"}
-    )
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"profile_json": json.dumps(payload)}
-    )
-    assert result["step_id"] == "import_profile_confirm"
-    hass.config_entries.options.async_abort(result["flow_id"])
-
-    coordinator.async_import_profile.assert_not_awaited()
-    assert entry.options == original_options
-    assert entry.data == {CONF_ADDRESS: ADDRESS}
-
-
-async def test_import_accepts_complete_export_action_response(
-    hass: HomeAssistant,
-) -> None:
-    """The UI accepts the same complete export JSON accepted by Repairs."""
-    entry, coordinator = profile_entry(hass, desired_profile={})
-    envelope = export_profile_payload(editable_profile())
-    response = {"current_revision": 2, "profile": envelope}
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"next_step_id": "import_profile"}
-    )
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"profile_json": json.dumps(response)}
-    )
-
-    assert result["step_id"] == "import_profile_confirm"
-    assert result["description_placeholders"]["revision"] == "7"
-    await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"confirm": True}
-    )
-    coordinator.async_import_profile.assert_awaited_once_with(
-        envelope, 7, confirmed=True
-    )
-
-
-async def test_existing_full_profile_import_previews_removals_and_cas_conflict(
-    hass: HomeAssistant,
-) -> None:
-    """A subset replacement names removed fields and cannot overwrite a new revision."""
-    current = editable_profile()
-    entry, coordinator = profile_entry(hass, desired_profile=current)
-    coordinator.async_import_profile.side_effect = RevisionConflictError(
-        "Synthetic concurrent edit"
-    )
-    payload = {
-        "schema_version": 1,
-        "scope": "supported_subset",
-        "profile": {"volume": 1},
-    }
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"next_step_id": "import_profile"}
-    )
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"profile_json": json.dumps(payload)}
-    )
-
-    removed = sorted(set(current) - {"volume"})
-    assert result["description_placeholders"]["removed_count"] == str(len(removed))
-    assert result["description_placeholders"]["removed_fields"] == ", ".join(removed)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"confirm": True}
-    )
-
-    assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {"base": "revision_conflict"}
-    coordinator.async_import_profile.assert_awaited_once_with(
-        payload, 7, confirmed=True
-    )
-
-
-async def test_first_run_import_aborts_when_entry_is_unloaded(
-    hass: HomeAssistant,
-) -> None:
-    """Profile source UI never fabricates a Store while its entry is unloaded."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        unique_id=ADDRESS,
-        data={CONF_ADDRESS: ADDRESS},
-        options={CONF_AUTO_RESTORE: False},
-    )
-    entry.add_to_hass(hass)
-    payload = export_profile_payload(editable_profile())
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"next_step_id": "import_profile"}
-    )
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"profile_json": json.dumps(payload)}
-    )
+    result = await getattr(flow, f"async_step_{step}")()
 
     assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "entry_not_loaded"
-    assert entry.data == {CONF_ADDRESS: ADDRESS}
-    assert entry.options == {CONF_AUTO_RESTORE: False}
+    assert result["reason"] == reason
 
 
 async def test_first_run_read_previews_and_imports_complete_device_snapshot(
@@ -500,9 +352,18 @@ async def test_first_run_read_previews_and_imports_complete_device_snapshot(
 
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "read_profile_confirm"
-    assert result["description_placeholders"]["field_count"] == "12"
-    assert "playlist 3/12" in result["description_placeholders"]["summary"]
-    assert "wake 0/7" in result["description_placeholders"]["summary"]
+    assert result["description_placeholders"] == {
+        "revision": "7",
+        "brightness": "5",
+        "color": "2",
+        "volume": "3",
+        "song_count": "3",
+        "wake_count": "0",
+        "bedtime_count": "0",
+        "alarm_count": "0",
+        "routine_days": "0",
+        "task_count": "0",
+    }
     coordinator.async_read_profile_snapshot.assert_awaited_once()
     coordinator.async_accept_device_profile.assert_not_awaited()
 
@@ -755,12 +616,6 @@ async def test_missing_device_information_automatically_attempts_factory_read(
     probe.assert_awaited_once()
 
 
-
-
-
-
-
-
 @pytest.mark.parametrize(
     ("info", "reason"),
     [
@@ -883,12 +738,6 @@ async def test_manual_flow_also_requires_signed_identity(hass: HomeAssistant) ->
             DOMAIN, context={"source": SOURCE_USER}
         )
 
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], user_input={CONF_ADDRESS: ADDRESS}
-    )
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "bluetooth_confirm"
-
     with (
         patch(
             "custom_components.lumalou.config_flow.async_read_device_information",
@@ -904,8 +753,9 @@ async def test_manual_flow_also_requires_signed_identity(hass: HomeAssistant) ->
             "custom_components.lumalou.async_setup_entry", return_value=True
         ) as setup,
     ):
+        # Choosing the device is the confirmation; no second form follows.
         result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], user_input={}
+            result["flow_id"], user_input={CONF_ADDRESS: ADDRESS}
         )
         await hass.async_block_till_done()
 
@@ -1780,60 +1630,6 @@ async def test_playlist_fixed_rows_preserve_order_duplicates_and_clear(
     assert coordinator.async_edit_profile.await_args.args[0] == {"playlist": []}
 
 
-async def test_absent_clock_and_routine_blocks_are_new_drafts_until_confirmed(
-    hass: HomeAssistant,
-) -> None:
-    """Absent blocks are not fabricated merely by opening their editors."""
-    entry, coordinator = profile_entry(hass)
-    result = await start_editor(hass, entry, "clock_settings")
-    coordinator.async_edit_profile.assert_not_awaited()
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        user_input={
-            "clock_display": True,
-            "clock_brightness": "9",
-            "clock_format": "1",
-        },
-    )
-    assert result["step_id"] == "clock_settings_confirm"
-    coordinator.async_edit_profile.assert_not_awaited()
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"confirm": True}
-    )
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert coordinator.async_edit_profile.await_args.args[0] == {
-        "clock_settings": {"display": True, "brightness": 9, "format": 1}
-    }
-
-    entry, coordinator = profile_entry(hass)
-    result = await start_editor(hass, entry, "routine_settings")
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        user_input={
-            "routine_enabled": True,
-            "routine_music": 255,
-            "routine_volume": 0,
-            "task_reward_sfx": "15",
-            "routine_reward_sfx": "0",
-        },
-    )
-    assert result["step_id"] == "routine_settings_confirm"
-    coordinator.async_edit_profile.assert_not_awaited()
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"confirm": True}
-    )
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert coordinator.async_edit_profile.await_args.args[0] == {
-        "routine_settings": {
-            "enabled": True,
-            "music": 255,
-            "volume": 0,
-            "task_reward_sfx": 15,
-            "routine_reward_sfx": 0,
-        }
-    }
-
-
 async def test_routine_settings_rejects_non_byte_values(
     hass: HomeAssistant,
 ) -> None:
@@ -1852,24 +1648,6 @@ async def test_routine_settings_rejects_non_byte_values(
             },
         )
     coordinator.async_edit_profile.assert_not_awaited()
-
-
-async def test_new_profile_editors_abort_without_runtime_data(
-    hass: HomeAssistant,
-) -> None:
-    """An unloaded entry cannot expose a profile draft."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        unique_id=ADDRESS,
-        data={CONF_ADDRESS: ADDRESS},
-        options={CONF_AUTO_RESTORE: False},
-    )
-    entry.add_to_hass(hass)
-
-    for section in ("basic", "playlist", "clock_settings", "routine_settings"):
-        result = await start_editor(hass, entry, section)
-        assert result["type"] is FlowResultType.ABORT
-        assert result["reason"] == "entry_not_loaded"
 
 
 @pytest.mark.parametrize(
@@ -2099,12 +1877,46 @@ async def test_manual_setup_proceeds_while_discovery_is_pending(
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": SOURCE_USER}
         )
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], user_input={CONF_ADDRESS: ADDRESS}
-    )
+    device_probe, factory_probe = _probe_patches()
+    with (
+        device_probe,
+        factory_probe,
+        patch("custom_components.lumalou.async_setup_entry", return_value=True),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input={CONF_ADDRESS: ADDRESS}
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["result"].unique_id == FINGERPRINT
+
+
+async def test_manual_setup_probe_failure_returns_to_device_choice(
+    hass: HomeAssistant,
+) -> None:
+    """A failed identity probe shows the selection form again with an error."""
+    with patch(
+        "homeassistant.components.bluetooth.async_discovered_service_info",
+        return_value=[service_info()],
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_USER}
+        )
+        with (
+            patch(
+                "custom_components.lumalou.config_flow.async_read_device_information",
+                new_callable=AsyncMock,
+                side_effect=OSError("synthetic"),
+            ),
+        ):
+            result = await hass.config_entries.flow.async_configure(
+                result["flow_id"], user_input={CONF_ADDRESS: ADDRESS}
+            )
 
     assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "bluetooth_confirm"
+    assert result["step_id"] == "user"
+    assert result["errors"] == {"base": "cannot_connect"}
+    assert not hass.config_entries.async_entries(DOMAIN)
 
 
 async def test_reconfigure_enrolls_pre_enrollment_entry_without_orphans(
@@ -2221,18 +2033,6 @@ async def test_reconfigure_without_candidates_aborts(hass: HomeAssistant) -> Non
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "no_devices_found"
-
-
-async def test_invalid_profile_import_json_shows_error(hass: HomeAssistant) -> None:
-    entry, coordinator = profile_entry(hass)
-    result = await start_editor(hass, entry, "import_profile")
-
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"profile_json": "[1, 2]"}
-    )
-
-    assert result["errors"] == {"base": "invalid_profile_import"}
-    coordinator.async_import_profile.assert_not_awaited()
 
 
 async def test_confirmation_checkbox_is_required_and_failures_keep_draft(
