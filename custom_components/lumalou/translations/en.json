@@ -7,27 +7,28 @@
         "title": "Choose a Lumalou",
         "description": "Choose a connectable Lumalou candidate discovered by Home Assistant.",
         "data": {"address": "Device"},
-        "data_description": {"address": "Only connectable advertisements matching the known Lumalou pattern are shown. Confirm the product label before hardware testing."}
+        "data_description": {"address": "Only connectable advertisements matching the known Lumalou pattern are shown. Select the candidate you recognize as your Lumalou; setup verifies its signed identity. Read the complete profile before control is enabled."}
       },
       "bluetooth_confirm": {
         "title": "Add {name}?",
-        "description": "Confirm GLD09 from the device label, or leave the code empty and use the read-only standard Bluetooth Device Information probe. The probe connects, reads identity fields, disconnects, and sends no Lumalou commands.",
-        "data": {"product_code": "Product code", "read_device_information": "Read model from the device"},
-        "data_description": {"product_code": "Enter GLD09 only if confirmed on the physical device label; otherwise leave empty.", "read_device_information": "Read the standard Model Number characteristic without protocol writes. Not every firmware exposes it."}
+        "description": "Confirm that this is your Lumalou. Home Assistant checks standard Bluetooth Device Information for conflicts and verifies the signed device identity. A private fingerprint binds later sessions. Read the complete profile before control is enabled; no identifier is shown or logged.",
+        "data": {},
+        "data_description": {}
       },
       "reconfigure": {
-        "title": "Confirm Lumalou product code",
-        "description": "This legacy entry remains read-only until GLD09 is confirmed from the label or the standard Bluetooth Model Number characteristic.",
-        "data": {"product_code": "Product code", "read_device_information": "Read model from the device"},
-        "data_description": {"product_code": "Enter GLD09 only if confirmed on the physical device label; otherwise leave empty.", "read_device_information": "Read the standard Model Number characteristic without protocol writes."}
+        "title": "Reconnect Lumalou",
+        "description": "Select the discovered Lumalou to reconnect. Home Assistant verifies its signed device identity; an enrolled device must match its private fingerprint. Read the complete profile before control is enabled.",
+        "data": {"address": "Device"},
+        "data_description": {"address": "Choose the connectable Lumalou candidate you want to use."}
       }
     },
     "error": {
       "cannot_connect": "Could not connect for the read-only identity probe. Make sure no other app is connected and try again.",
+      "already_configured": "This device is already assigned to another Lumalou entry.",
       "device_unavailable": "The selected device is no longer available. Try again.",
-      "identity_required": "Enter the confirmed GLD09 label or enable the read-only device identity probe.",
-      "model_not_reported": "The device does not expose a readable standard Model Number. It remains unconfirmed and read-only.",
-      "unsupported_product_code": "Only product code GLD09 is supported. Check the physical device label."
+      "factory_verifier_unavailable": "The installed Lumalou library cannot verify and privately bind the signed device identity. Update after a compatible verified library release is available.",
+      "identity_unconfirmed": "Home Assistant could not verify a supported device identity. No device entry was created.",
+      "unsupported_product_code": "The device explicitly reports a different model. This integration cannot use it."
     },
     "abort": {
       "already_configured": "This device is already configured.",
@@ -83,10 +84,11 @@
       "basic_confirm": {"title": "Confirm light and audio values", "description": "Revision {revision}: brightness {brightness}, color {color}, light duration {light_duration}, volume {volume}, playlist duration {playlist_duration}. Saving changes only the private profile; it does not write to the device.", "data": {"confirm": "Save these values"}},
       "playlist_confirm": {"title": "Confirm playlist", "description": "Revision {revision}: {song_count} song rows: {songs}. Saving changes only the private profile; it does not write to the device.", "data": {"confirm": "Save this playlist"}},
       "clock_settings_confirm": {"title": "Confirm clock settings", "description": "Revision {revision}: display {display}, brightness {brightness}, format {format}. Saving changes only the private profile; it does not write to the device.", "data": {"confirm": "Save clock settings"}},
-      "routine_settings_confirm": {"title": "Confirm routine settings", "description": "Revision {revision}: enabled {enabled}, music {music}, volume {volume}, task reward sound {task_reward_sfx}, routine reward sound {routine_reward_sfx}. Saving changes only the private profile; it does not write to the device.", "data": {"confirm": "Save routine settings"}}
+      "routine_settings_confirm": {"title": "Confirm routine settings", "description": "Revision {revision}: enabled {enabled}, music {music}, volume {volume}, task reward sound {task_reward_sfx}, routine reward sound {routine_reward_sfx}. Saving changes only the private profile; it does not write to the device.", "data": {"confirm": "Save routine settings"}},
+      "read_profile_confirm": {"title": "Confirm device profile read", "description": "A complete fresh snapshot contains {field_count} persistent profile blocks: {summary}. It will replace the saved profile at revision {revision}. No settings are sent to Lumalou during this read or confirmation.", "data": {"confirm": "Save this complete device snapshot as the desired profile"}}
     },
-    "error": {"auto_restore_unavailable": "Automatic restore is not available in this version.", "invalid_schedule": "Enter valid minute-resolution schedule times.", "invalid_schedule_copy": "Choose supported source and target days for schedule copying.", "invalid_alarm": "Choose a supported alarm offset and sound.", "invalid_routine": "Use no more than 12 supported task rows and a valid minute-resolution time.", "invalid_basic": "Choose supported light and audio values.", "invalid_playlist": "Use at most 12 song IDs from 1 through 18.", "invalid_clock_settings": "Choose a supported clock display, brightness, and format.", "invalid_routine_settings": "Use whole-byte music and volume values and supported reward sounds.", "confirmation_required": "Confirm before saving.", "revision_conflict": "The profile changed while this editor was open. Cancel and reopen it to use the latest revision.", "profile_save_failed": "The profile could not be saved. Nothing from this draft was applied.", "invalid_profile_import": "Enter a valid schema-v1 or schema-v2 Lumalou profile export.", "profile_import_failed": "The imported profile could not be saved. Nothing was applied."},
-    "abort": {"profile_editor_unavailable": "Load the Lumalou entry before editing its private profile.", "entry_not_loaded": "Load the Lumalou entry before importing or creating a private profile.", "profile_import_unavailable": "Start the profile import again to validate an export before confirming it.", "profile_readback_unavailable": "Reading a complete Lumalou profile is unavailable until strict upstream readback and hardware validation are complete."}
+    "error": {"auto_restore_unavailable": "Automatic restore is not available in this version.", "invalid_schedule": "Enter valid minute-resolution schedule times.", "invalid_schedule_copy": "Choose supported source and target days for schedule copying.", "invalid_alarm": "Choose a supported alarm offset and sound.", "invalid_routine": "Use no more than 12 supported task rows and a valid minute-resolution time.", "invalid_basic": "Choose supported light and audio values.", "invalid_playlist": "Use at most 12 song IDs from 1 through 12.", "invalid_clock_settings": "Choose a supported clock display, brightness, and format.", "invalid_routine_settings": "Use whole-byte music and volume values and supported reward sounds.", "confirmation_required": "Confirm before saving.", "revision_conflict": "The profile changed while this editor was open. Cancel and reopen it to use the latest revision.", "profile_save_failed": "The profile could not be saved. Nothing from this draft was applied.", "invalid_profile_import": "Enter a valid schema-v1 or schema-v2 Lumalou profile export.", "profile_import_failed": "The imported profile could not be saved. Nothing was applied."},
+    "abort": {"profile_editor_unavailable": "Load the Lumalou entry before editing its private profile.", "entry_not_loaded": "Load the Lumalou entry before importing or creating a private profile.", "profile_import_unavailable": "Start the profile import again to validate an export before confirming it.", "profile_read_failed": "Home Assistant could not obtain a complete, consistent fresh device profile. The saved profile was not changed."}
   },
   "selector": {
     "weekday": {"options": {"sunday": "Sunday", "monday": "Monday", "tuesday": "Tuesday", "wednesday": "Wednesday", "thursday": "Thursday", "friday": "Friday", "saturday": "Saturday"}},

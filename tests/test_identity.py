@@ -4,22 +4,36 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from bleak.backends.device import BLEDevice
 
 from custom_components.lumalou.identity import (
+    FACTORY_CHARACTERISTIC_UUID,
     FIRMWARE_REVISION_UUID,
     HARDWARE_REVISION_UUID,
     MANUFACTURER_NAME_UUID,
     MODEL_NUMBER_UUID,
+    FactoryIdentityLibraryUnavailable,
+    FactoryIdentityProbeError,
     async_read_device_information,
+    async_read_factory_device_fingerprint,
 )
+from custom_components.lumalou.upstream_api import MissingUpstreamCapabilities
 
 
 def _device() -> BLEDevice:
     return BLEDevice("synthetic-device", "Lumalou test", {})
+
+
+@pytest.fixture(autouse=True)
+def identity_api_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unit tests inject a parser while pretending the expected API is pinned."""
+    monkeypatch.setattr(
+        "custom_components.lumalou.identity.require_factory_identity_api",
+        lambda: lambda _token: "a" * 64,
+    )
 
 
 def _client(
@@ -217,3 +231,145 @@ async def test_disconnect_timeout_is_bounded() -> None:
     assert result.model_number is None
     client.disconnect.assert_awaited_once()
     client.write_gatt_char.assert_not_called()
+
+
+async def test_factory_probe_returns_verified_fingerprint_without_writes() -> None:
+    """FACTORY is read once; upstream verifier returns a key fingerprint."""
+    token = b"synthetic-token"
+    client = _client({FACTORY_CHARACTERISTIC_UUID: token})
+    fingerprint = "b" * 64
+    parser = Mock(return_value=fingerprint)
+    with (
+        patch(
+            "custom_components.lumalou.identity.establish_connection",
+            new_callable=AsyncMock,
+            return_value=client,
+        ),
+    ):
+        item_fingerprint = await async_read_factory_device_fingerprint(
+            _device(), "Factory probe", parser=parser
+        )
+
+    assert item_fingerprint == fingerprint
+    parser.assert_called_once_with(token)
+    client.read_gatt_char.assert_awaited_once()
+    client.write_gatt_char.assert_not_called()
+    client.start_notify.assert_not_called()
+    client.disconnect.assert_awaited_once()
+
+
+async def test_factory_probe_rejects_unverifiable_token_without_disclosure() -> None:
+    """Verification errors become a generic failure without token disclosure."""
+    token = b"synthetic-private-token"
+    client = _client({FACTORY_CHARACTERISTIC_UUID: token})
+    parser = Mock(side_effect=ValueError("signature rejected"))
+    with (
+        patch(
+            "custom_components.lumalou.identity.establish_connection",
+            new_callable=AsyncMock,
+            return_value=client,
+        ),
+        pytest.raises(FactoryIdentityProbeError) as exc_info,
+    ):
+        await async_read_factory_device_fingerprint(
+            _device(), "Factory probe", parser=parser
+        )
+
+    assert token.decode() not in str(exc_info.value)
+    client.disconnect.assert_awaited_once()
+    client.write_gatt_char.assert_not_called()
+    client.start_notify.assert_not_called()
+
+
+@pytest.mark.parametrize("fingerprint", ["f" * 63, "F" * 64, "g" * 64, "serial-123"])
+async def test_factory_probe_rejects_invalid_fingerprint_without_disclosure(
+    fingerprint: str,
+) -> None:
+    """Only lowercase 64-hex fingerprints can leave the authenticated probe."""
+    token = b"synthetic-private-token"
+    client = _client({FACTORY_CHARACTERISTIC_UUID: token})
+    with (
+        patch(
+            "custom_components.lumalou.identity.establish_connection",
+            new_callable=AsyncMock,
+            return_value=client,
+        ),
+        pytest.raises(FactoryIdentityProbeError) as exc_info,
+    ):
+        await async_read_factory_device_fingerprint(
+            _device(), "Factory probe", parser=Mock(return_value=fingerprint)
+        )
+
+    assert token.decode() not in str(exc_info.value)
+    assert fingerprint not in str(exc_info.value)
+    client.disconnect.assert_awaited_once()
+    client.write_gatt_char.assert_not_called()
+    client.start_notify.assert_not_called()
+
+
+async def test_factory_probe_timeout_disconnects_and_fails_closed() -> None:
+    """A stalled FACTORY read is bounded and does not leave BLE connected."""
+    never = asyncio.Event()
+    client = _client({FACTORY_CHARACTERISTIC_UUID: b"synthetic-token"})
+
+    async def read_never(_characteristic: SimpleNamespace) -> bytes:
+        await never.wait()
+        return b"synthetic-token"
+
+    client.read_gatt_char.side_effect = read_never
+    with (
+        patch(
+            "custom_components.lumalou.identity.establish_connection",
+            new_callable=AsyncMock,
+            return_value=client,
+        ),
+        patch("custom_components.lumalou.identity.CONNECT_TIMEOUT", 0.01),
+        pytest.raises(FactoryIdentityProbeError),
+    ):
+        await async_read_factory_device_fingerprint(
+            _device(), "Factory probe", parser=Mock(return_value="c" * 64)
+        )
+
+    client.disconnect.assert_awaited_once()
+    client.write_gatt_char.assert_not_called()
+    client.start_notify.assert_not_called()
+
+
+async def test_factory_probe_cancellation_disconnects_and_propagates() -> None:
+    """Cancellation is never converted into an unidentified-device result."""
+    client = _client({FACTORY_CHARACTERISTIC_UUID: asyncio.CancelledError()})
+    with (
+        patch(
+            "custom_components.lumalou.identity.establish_connection",
+            new_callable=AsyncMock,
+            return_value=client,
+        ),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await async_read_factory_device_fingerprint(
+            _device(), "Factory probe", parser=Mock(return_value="d" * 64)
+        )
+
+    client.disconnect.assert_awaited_once()
+    client.write_gatt_char.assert_not_called()
+    client.start_notify.assert_not_called()
+
+
+async def test_factory_probe_requires_upstream_verifier_before_connecting() -> None:
+    """No verifier means no connection or unsafe field slicing fallback."""
+    with (
+        patch(
+            "custom_components.lumalou.identity.require_factory_identity_api",
+            side_effect=MissingUpstreamCapabilities(
+                "verify device identity", ("signed FACTORY verifier",)
+            ),
+        ),
+        patch(
+            "custom_components.lumalou.identity.establish_connection",
+            new_callable=AsyncMock,
+        ) as connect,
+        pytest.raises(FactoryIdentityLibraryUnavailable),
+    ):
+        await async_read_factory_device_fingerprint(_device(), "Factory probe")
+
+    connect.assert_not_awaited()

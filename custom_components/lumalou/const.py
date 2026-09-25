@@ -6,9 +6,12 @@ DOMAIN = "lumalou"
 ISSUE_ID_PROFILE_STORAGE = "profile_storage"
 CONF_PRODUCT_CODE = "product_code"
 CONF_IDENTIFICATION_SOURCE = "identification_source"
-CONF_READ_DEVICE_INFORMATION = "read_device_information"
+CONF_DEVICE_FINGERPRINT = "device_fingerprint"
+# Read only while replacing legacy entry data during reconfigure.
+CONF_FACTORY_ITEM_CODE = "factory_item_code"
+CONF_PROTOCOL_VERIFIED = "protocol_verified"
 IDENTIFICATION_SOURCE_DEVICE_INFORMATION = "device_information"
-IDENTIFICATION_SOURCE_LABEL = "label"
+IDENTIFICATION_SOURCE_FACTORY_TOKEN = "factory_token"
 SUPPORTED_PRODUCT_CODE = "GLD09"
 PLATFORMS = (
     Platform.BINARY_SENSOR,

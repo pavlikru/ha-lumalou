@@ -12,9 +12,11 @@ from custom_components.lumalou.models import (
     LumalouRuntimeData,
     ProfileRecord,
     ProfileValidationError,
+    RevisionConflictError,
     export_profile_payload,
     import_profile_payload,
     migrate_v1_record,
+    plan_profile_reconciliation,
     profile_is_complete,
     require_complete_profile,
     validate_profile,
@@ -40,7 +42,7 @@ def full_profile() -> dict:
         "color": 9,
         "light_duration": 5,
         "volume": 0,
-        "playlist": [18, 2, 2, 1],
+        "playlist": [12, 2, 2, 1],
         "playlist_duration": 6,
         "clock_settings": {"display": False, "brightness": 0, "format": 1},
         "routine_settings": {
@@ -78,7 +80,7 @@ def test_unknown_profile_rejected(value):
         validate_profile(value)
 
 
-@pytest.mark.parametrize("playlist", [[0], [19], [True], [1] * 13, "1", (1, 2)])
+@pytest.mark.parametrize("playlist", [[0], [13], [True], [1] * 13, "1", (1, 2)])
 def test_invalid_playlist_rejected_not_truncated(playlist):
     with pytest.raises(ProfileValidationError):
         validate_profile({"playlist": playlist})
@@ -89,7 +91,7 @@ def test_complete_profile_preserves_order_slots_and_detaches_copy():
     result = require_complete_profile(profile)
     assert result == profile
     assert set(result) == FULL_PROFILE_FIELDS
-    assert result["playlist"] == [18, 2, 2, 1]
+    assert result["playlist"] == [12, 2, 2, 1]
     assert result["routines"]["sunday"]["slots"][:3] == [
         {"step": 2, "task": 0},
         None,
@@ -97,7 +99,7 @@ def test_complete_profile_preserves_order_slots_and_detaches_copy():
     ]
     result["playlist"].append(3)
     result["sleepy_times"]["sunday"]["hour"] = 1
-    assert profile["playlist"] == [18, 2, 2, 1]
+    assert profile["playlist"] == [12, 2, 2, 1]
     assert profile["sleepy_times"]["sunday"] == {"hour": 0, "minute": 0}
 
 
@@ -108,6 +110,45 @@ def test_partial_profile_valid_but_never_complete():
     assert not profile_is_complete({"volume": 2})
     with pytest.raises(ProfileValidationError, match="incomplete"):
         require_complete_profile({"volume": 2})
+
+
+def test_reconciliation_plan_is_revision_bound_and_reports_only_changed_blocks():
+    target = full_profile()
+    observed = deepcopy(target)
+    observed["playlist"] = [3, 4]
+    record = ProfileRecord(revision=7, desired_profile=target)
+
+    plan = plan_profile_reconciliation(record, observed, expected_revision=7)
+
+    assert plan.revision == 7
+    assert plan.changed_blocks == ("playlist",)
+    assert not plan.already_matches
+
+
+def test_reconciliation_plan_reports_match_without_authorizing_writes():
+    target = full_profile()
+    record = ProfileRecord(revision=2, desired_profile=target)
+
+    plan = plan_profile_reconciliation(record, deepcopy(target), expected_revision=2)
+
+    assert plan.changed_blocks == ()
+    assert plan.already_matches
+
+
+def test_reconciliation_plan_rejects_revision_conflict_and_partial_snapshots():
+    target = full_profile()
+    record = ProfileRecord(revision=3, desired_profile=target)
+
+    with pytest.raises(RevisionConflictError):
+        plan_profile_reconciliation(record, target, expected_revision=2)
+    with pytest.raises(ProfileValidationError, match="incomplete"):
+        plan_profile_reconciliation(record, {"volume": 1}, expected_revision=3)
+    with pytest.raises(ProfileValidationError, match="incomplete"):
+        plan_profile_reconciliation(
+            ProfileRecord(revision=3, desired_profile={"volume": 1}),
+            target,
+            expected_revision=3,
+        )
 
 
 def test_legacy_subset_envelope_remains_versioned_and_strict():
