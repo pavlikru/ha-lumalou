@@ -6,6 +6,50 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-25
+
+First stable release, validated on real hardware: a Lumalou with firmware
+0.3.7 and Home Assistant on a Raspberry Pi 4 with its onboard Bluetooth
+adapter (see `docs/hardware-validation.md`). Requires Home Assistant 2026.9.0
+or newer and `lumalou-gld09` 0.3.0. The pre-releases below list the changes
+in detail.
+
+### Added
+
+- Bluetooth discovery and setup bound to the signed identity of the device;
+  one Bluetooth session stays open and the device pushes every change, also
+  those made with its buttons and the remote.
+- Night light (on/off, brightness, the device's color palette as effects),
+  speaker (the soother, built-in sounds, volume), light and playlist timers,
+  clock format, display and brightness.
+- Routines: per-day routines (time and ordered tasks) in the options flow and
+  with `lumalou.set_routine`; the **Routines** switch and routine sound
+  settings; **Start routine**, **Complete task**, **Previous task** and
+  **Cancel routine** buttons; `lumalou.start_routine` (also with one-off
+  tasks); **Routine** and **Current task** sensors and a **Routine** event
+  entity (`task_completed`, `routine_completed`, `routine_cancelled`,
+  `routine_expired`).
+- A private, revisioned profile of everything a power loss resets. Profile
+  edits and `lumalou.set_routine` are written to the device and verified with
+  a fresh read; export, import and restore actions.
+- Power-loss detection and automatic, verified restore (on by default), a
+  Repair for other differences, maintenance mode, redacted diagnostics,
+  English and Russian translations, Apple Home through HomeKit Bridge.
+
+### Fixed
+
+- A pushed GLOBAL_STATE was logged as an unused push at debug level; the
+  state itself was applied.
+
+### Known limitations
+
+- One Bluetooth connection at a time: close the Fisher-Price app.
+- The soother light keeps cycling after its music stops.
+- A scheduled routine plays no music on firmware 0.3.7.
+- Naps are not supported.
+- Event entities show their last event again after being unavailable; use
+  `not_from: unavailable` in automations.
+
 ## [0.1.0b8] - 2026-09-25
 
 Fixes from the fourth Home Assistant run on hardware (Raspberry Pi 4).
@@ -307,7 +351,8 @@ Hardware validation: summary of passed phases (anonymized).
 Requires Home Assistant 2026.9.0 or newer and lumalou-gld09==0.2.0.
 -->
 
-[Unreleased]: https://github.com/pavlikru/ha-lumalou/compare/v0.1.0b8...HEAD
+[Unreleased]: https://github.com/pavlikru/ha-lumalou/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0
 [0.1.0b8]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b8
 [0.1.0b7]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b7
 [0.1.0b6]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b6
