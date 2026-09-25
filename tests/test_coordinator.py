@@ -28,6 +28,7 @@ from lumalou.responses import CurrentDate, parse_current_date
 from lumalou.schedules import (
     ClockTime,
     DailyRoutine,
+    RoutineTaskStatus,
     WeeklyAlarms,
     WeeklyTimes,
     decode_daily_routine,
@@ -88,10 +89,13 @@ class FakeDevice:
         self.routines = {day: DailyRoutine(None, (None,) * 12) for day in DAYS}
         self.clock = CurrentDate(12, 0, 0, 0)
         self.retain_writes = True
+        self.routine_status = RoutineTaskStatus(0, (0,) * 12)
 
     def query(self, name: str):
         if name == "current_date":
             return self.clock
+        if name == "routine_task_status":
+            return self.routine_status
         if name == "music_playlist":
             return self.playlist
         if name == "clock_settings":
@@ -2753,7 +2757,8 @@ async def test_dst_offset_only_sets_the_clock_never_a_reset(rig):
         (CurrentDate(5, 30, 0, 0), 3 * 86400, True),  # HA down for days
         (CurrentDate(20, 30, 0, 0), 3 * 86400, False),  # beyond the cap
         (CurrentDate(5, 3, 0, 2), 3 * 86400, False),  # not Sunday
-        (CurrentDate(4, 59, 0, 0), 3 * 86400, False),  # before 05:00
+        (CurrentDate(4, 59, 7, 0), 60, True),  # hardware (0.1.0b7) read 04:59:07
+        (CurrentDate(4, 54, 0, 0), 3 * 86400, False),  # well before 05:00
         (CurrentDate(12, 5, 0, 0), None, False),  # a drifting clock
         (CurrentDate(5, 3, 0, 0), None, True),  # after an HA restart
     ],
@@ -3048,3 +3053,31 @@ def test_verifiable_light_fields_and_field_differences():
         "light_and_sound.light_brightness: saved "
         f"{desired['light_and_sound']['light_brightness']}, device 1",
     ]
+
+
+async def test_unused_pushes_do_not_keep_a_silent_session_alive(rig):
+    """Only state, clock and routine frames prove the session delivers."""
+    coordinator = rig.coordinator
+    with patch("custom_components.lumalou.coordinator.SESSION_SILENCE_TIMEOUT", 0.1):
+        await live(rig)
+        client = rig.clients[-1]
+        for _ in range(4):
+            client.on_response(
+                SimpleNamespace(opcode=0x1E, args=b"\x00", decode=lambda: 0)
+            )
+            await asyncio.sleep(0.04)
+        await asyncio.gather(*rig.background_tasks)
+
+    assert not coordinator.available
+
+
+async def test_a_running_routine_uses_the_shorter_silence_limit(rig):
+    coordinator = rig.coordinator
+    with patch("custom_components.lumalou.coordinator.ROUTINE_SILENCE_TIMEOUT", 0.05):
+        await live(rig)
+        rig.state["operationMode"] = 7
+        rig.clients[-1].on_state(deepcopy(rig.state))
+        await asyncio.sleep(0.1)
+        await asyncio.gather(*rig.background_tasks)
+
+    assert not coordinator.available
