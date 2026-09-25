@@ -1,14 +1,14 @@
-"""Serialized HA adaptation: strict BLE sessions, profile restore and recovery."""
+"""Serialized HA adaptation: one live BLE session, profile restore, recovery."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Callable, Coroutine
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.components import bluetooth
@@ -19,7 +19,7 @@ from homeassistant.util import dt as dt_util
 
 from lumalou import commands  # type: ignore[attr-defined]
 from lumalou.advertisement import MANUFACTURER_ID, parse_advertisement
-from lumalou.client import FreshSessionRequiredError
+from lumalou.client import FreshSessionRequiredError, ResponseEnvelope
 from lumalou.responses import CurrentDate
 
 from .const import (
@@ -31,16 +31,19 @@ from .const import (
     CONF_PROTOCOL_VERIFIED,
     CONNECT_TIMEOUT,
     DEFAULT_AUTO_RESTORE,
-    DEFAULT_LIGHT_BRIGHTNESS,
     DOMAIN,
     GATT_TIMEOUT,
     GLOBAL_STATE_FIELDS,
+    RECONNECT_DELAY,
     RECOVERY_COOLDOWN,
     RECOVERY_MAX_COOLDOWN,
+    RESET_CLOCK_OFFSET,
     RESPONSE_TIMEOUT,
+    STATE_CONFIRM_TIMEOUT,
 )
 from .models import (
     DAYS,
+    LIVE_BLOCK,
     ProfileRecord,
     ProfileValidationError,
     RevisionConflictError,
@@ -65,6 +68,13 @@ from .transport import SafeLumalouClient
 
 _LOGGER = logging.getLogger(__name__)
 _MAX_REVISION = 2**63 - 1
+_CURRENT_DATE = 0x13
+# Light and sound profile key -> (GLOBAL_STATE field, maximum, setter).
+_LEVELS: dict[str, tuple[str, int, Callable[[int], bytes]]] = {
+    "volume": ("currentVolume", 9, commands.set_volume),
+    "light_duration": ("lightDuration", 5, commands.set_light_duration),
+    "playlist_duration": ("playlistDuration", 6, commands.set_playlist_duration),
+}
 _STATE_RANGES = {
     "currentSong": (0, 18),
     "currentVolume": (0, 9),
@@ -118,7 +128,6 @@ _ERRORS = {
     "profile_read_failed": "Could not read a complete, consistent Lumalou profile",
     "profile_other_device": "The saved profile was verified on a different device",
     "command_failed": "Lumalou command failed; it will not be replayed",
-    "refresh_failed": "Lumalou refresh failed",
     "clock_untrusted": "Home Assistant clock is not trustworthy",
 }
 
@@ -154,9 +163,8 @@ class LumalouCoordinator:
         self.protocol_verified = entry.data.get(CONF_PROTOCOL_VERIFIED) is True
         self.device_name = entry.title or "Lumalou"
         self.sw_version: str | None = None
+        # Latest GLOBAL_STATE pushed by the live session.
         self.data: dict[str, int] | None = None
-        # Last non-zero light level seen; the device reports 0 while off.
-        self.last_brightness = DEFAULT_LIGHT_BRIGHTNESS
         self.present = False
         self.available = False
         # Runtime-only restore/recovery state for entities, Repairs and
@@ -167,7 +175,9 @@ class LumalouCoordinator:
         # Event-loop time before which automatic clock writes are skipped
         # after one failed (a failed write retires its session).
         self._clock_sync_retry_at = 0.0
-        self._clock_check_tasks: set[asyncio.Task[Any]] = set()
+        self._clock_task: asyncio.Task[Any] | None = None
+        # Latest CURRENT_DATE frame: (generation, clock, received at).
+        self._pushed_clock: tuple[int, CurrentDate, datetime] | None = None
         self._restore_needed: RestoreNeeded | None = None
         # Last strict read offered for confirmation; only it can be committed.
         self._previewed_profile: dict[str, Any] | None = None
@@ -175,8 +185,9 @@ class LumalouCoordinator:
         self._store = store or ProfileStore(hass, entry.entry_id)
         self._client: SafeLumalouClient | None = None
         self._generation = 0
-        self._received = 0
-        self._callback_state: dict[str, int] | None = None
+        # Event-loop time before which no new session is opened.
+        self._reconnect_at = 0.0
+        self._state_event = asyncio.Event()
         self._lock = asyncio.Lock()
         self._listeners: set[Callable[[], None]] = set()
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -204,7 +215,7 @@ class LumalouCoordinator:
 
     @property
     def auto_restore_enabled(self) -> bool:
-        """Return the user's opt-in for automatic restore (default off)."""
+        """Return whether a detected reset is restored automatically (default on)."""
         return self.entry.options.get(CONF_AUTO_RESTORE, DEFAULT_AUTO_RESTORE) is True
 
     @property
@@ -212,11 +223,28 @@ class LumalouCoordinator:
         """Return the current verified-profile mismatch, if still relevant.
 
         Set by background recovery when a fresh complete read no longer
-        matches the verified current revision (power-loss/reset heuristic).
+        matches the verified current revision (see ``_detect_restore_needed``).
         A newer saved revision makes it obsolete automatically.
         """
         need = self._restore_needed
         if need is None or need.revision != self._profile_record.revision:
+            return None
+        return need
+
+    @property
+    def repair_needed(self) -> RestoreNeeded | None:
+        """Return the mismatch the user must resolve in Repairs.
+
+        A reset that automatic restore still handles needs no Repair; one it
+        gave up on, or any mismatch without a reset, does.
+        """
+        need = self.restore_needed
+        if (
+            need is not None
+            and need.reset
+            and self.auto_restore_enabled
+            and not need.auto_restore_exhausted
+        ):
             return None
         return need
 
@@ -407,12 +435,7 @@ class LumalouCoordinator:
             type(reason).__name__,
             reason,
         )
-        if not self.available:
-            return
-        self.available = False
-        self.data = None
-        self._callback_state = None
-        self._notify()
+        self._invalidate()
         self._schedule_recovery()
 
     @callback
@@ -445,10 +468,10 @@ class LumalouCoordinator:
 
     @callback
     def _cancel_background_device_work(self) -> None:
-        """Cancel automatic Bluetooth work: recovery and clock checks."""
+        """Cancel automatic Bluetooth work: recovery and clock correction."""
         self._cancel_recovery()
-        for task in tuple(self._clock_check_tasks):
-            task.cancel()
+        if self._clock_task is not None:
+            self._clock_task.cancel()
 
     @callback
     def _create_background_task(
@@ -490,21 +513,33 @@ class LumalouCoordinator:
             return
 
     async def _async_recover(self) -> None:
-        """Reconnect after the device reappears.
+        """Open the session after the device (re)appears; it stays open.
 
-        Unverified entries only read GLOBAL_STATE. Verified entries take one
-        strict full read and correct a deviating device clock from HA local
-        time. A pending revision the device already matches becomes verified,
-        which re-arms power-loss detection. A verified revision the device no
-        longer matches is flagged and, only if the user opted in, restored
-        automatically (bounded attempts per detected event).
+        Unverified entries only read GLOBAL_STATE. Verified entries read the
+        complete profile and the device clock in one fresh session and set
+        the clock from HA local time first. A pending revision the device
+        already matches becomes verified. A device clock far off plus a
+        profile that differs from the verified one is a power-loss reset:
+        it is restored automatically unless the user switched that off
+        (bounded attempts per event), otherwise a Repair is raised.
         """
         if not self.protocol_verified:
-            await self.async_request_refresh()
+            async with self._operation():
+                try:
+                    client = await self._async_new_session()
+                    await client.request_state(timeout=RESPONSE_TIMEOUT)
+                except Exception as err:
+                    await self._disconnect()
+                    raise HomeAssistantError("Lumalou recovery failed") from err
             return
         async with self._device_write_operation():
             try:
                 client, snapshot = await self._async_fresh_snapshot()
+                # Judge the reset marker before the clock is corrected.
+                reset = _trusted_now() is not None and (
+                    clock_offset_seconds(snapshot.clock, snapshot.read_at)
+                    > RESET_CLOCK_OFFSET
+                )
                 try:
                     clock_synced = await self._async_sync_clock_if_needed(
                         client, snapshot.clock, snapshot.read_at, automatic=True
@@ -526,8 +561,8 @@ class LumalouCoordinator:
             ):
                 await self._save(self._as_verified(record))
                 record = self._profile_record
-            need = self._detect_restore_needed(record, snapshot.profile)
-            if need is None or not self.auto_restore_enabled:
+            need = self._detect_restore_needed(record, snapshot.profile, reset=reset)
+            if need is None or not need.reset or not self.auto_restore_enabled:
                 return
             if need.auto_restore_attempts >= AUTO_RESTORE_MAX_ATTEMPTS:
                 if not need.auto_restore_exhausted:
@@ -537,32 +572,42 @@ class LumalouCoordinator:
             self._restore_needed = replace(
                 need, auto_restore_attempts=need.auto_restore_attempts + 1
             )
-            _LOGGER.info("Lumalou profile differs from device; restoring it")
-            await self._async_restore(
-                record, client, snapshot, automatic=True, clock_synced=clock_synced
-            )
+            _LOGGER.info("%s was reset; restoring the saved profile", self.device_name)
+            try:
+                await self._async_restore(
+                    record, client, snapshot, automatic=True, clock_synced=clock_synced
+                )
+            except ProfileRestoreError:
+                # The next attempt runs in a new session after the backoff.
+                await self._disconnect()
+                raise
 
     def _detect_restore_needed(
-        self, record: ProfileRecord, observed: dict[str, Any]
+        self, record: ProfileRecord, observed: dict[str, Any], *, reset: bool
     ) -> RestoreNeeded | None:
         """Flag a verified revision that the device no longer matches.
 
         Only a current revision verified on this same device key qualifies;
         pending/unverified intent is never treated as a power-loss signal.
+        The light and sound block also changes in everyday use (device
+        buttons), so it is compared only with the reset marker (a far-off
+        device clock). A reset stays a reset until it is resolved, even after
+        the clock was corrected.
         """
         need: RestoreNeeded | None = None
+        previous = self.restore_needed
+        reset = reset or (previous is not None and previous.reset)
         if (
             record.is_verified
             and record.verified_fingerprint == self.device_fingerprint
             and profile_is_complete(record.desired_profile)
         ):
-            blocks = changed_blocks(record.desired_profile, observed)
+            blocks = changed_blocks(record.desired_profile, observed, live=reset)
             if blocks:
-                previous = self.restore_needed
                 need = (
-                    RestoreNeeded(record.revision, blocks, dt_util.utcnow())
+                    RestoreNeeded(record.revision, blocks, dt_util.utcnow(), reset)
                     if previous is None
-                    else replace(previous, changed_blocks=blocks)
+                    else replace(previous, changed_blocks=blocks, reset=reset)
                 )
         if need != self._restore_needed:
             self._restore_needed = need
@@ -608,7 +653,9 @@ class LumalouCoordinator:
 
     # ---- BLE session ----
 
+    @callback
     def _receive(self, generation: int, state: dict) -> None:
+        """Take a GLOBAL_STATE frame of the live session (pushed or requested)."""
         if self._stopped or generation != self._generation:
             return
         if not isinstance(state, dict) or set(state) != GLOBAL_STATE_FIELDS:
@@ -621,25 +668,82 @@ class LumalouCoordinator:
             not low <= state[key] <= high for key, (low, high) in _STATE_RANGES.items()
         ):
             return
-        self._callback_state = dict(state)
-        self._received += 1
         self.data = dict(state)
-        if state["lightBrightness"]:
-            self.last_brightness = state["lightBrightness"]
         self.available = True
+        self._state_event.set()
         if self._unavailable_logged:
             _LOGGER.info("%s is available again", self.device_name)
             self._unavailable_logged = False
         self._notify()
 
-    async def _connect(self) -> SafeLumalouClient:
+    @callback
+    def _on_response(self, generation: int, envelope: ResponseEnvelope) -> None:
+        """Keep the device clock the session sees; correct drift it shows.
+
+        The device pushes CURRENT_DATE at least every minute, so DST changes
+        and drift are caught without reconnecting.
+        """
+        if self._stopped or generation != self._generation:
+            return
+        if envelope.opcode != _CURRENT_DATE:
+            return
+        clock = envelope.decode()
+        if not isinstance(clock, CurrentDate):
+            return
+        now = dt_util.now()
+        self._pushed_clock = (generation, clock, now)
+        if (
+            self._clock_task is None
+            and self.available
+            and self.protocol_verified
+            and clock_offset_seconds(clock, now) > CLOCK_SYNC_TOLERANCE
+        ):
+            task = self._create_background_task(
+                self._async_correct_pushed_clock(), "lumalou clock correction"
+            )
+            self._clock_task = task
+            task.add_done_callback(self._clock_task_done)
+
+    @callback
+    def _clock_task_done(self, task: asyncio.Task[Any]) -> None:
+        if self._clock_task is task:
+            self._clock_task = None
+
+    async def _async_correct_pushed_clock(self) -> None:
+        """Correct the clock from the latest pushed frame, at most hourly."""
+        async with self._operation():
+            pushed, client = self._pushed_clock, self._client
+            if (
+                pushed is None
+                or client is None
+                or pushed[0] != self._generation
+                or not self.protocol_verified
+                or self._profile_record.maintenance
+                or (
+                    self.last_clock_sync is not None
+                    and dt_util.now() - self.last_clock_sync
+                    < timedelta(seconds=CLOCK_SYNC_RETRY_INTERVAL)
+                )
+            ):
+                return
+            _generation, clock, read_at = pushed
+            # A failure is logged; the failed write retired the session,
+            # which schedules recovery.
+            with suppress(ClockSyncError):
+                await self._async_sync_clock_if_needed(
+                    client, clock, read_at, automatic=True
+                )
+
+    async def _async_new_session(self) -> SafeLumalouClient:
+        """Close any session, wait out the reconnect gap, open a new one."""
         if self._profile_record.maintenance:
             raise _error("maintenance_mode")
         if self._callbacks_started and not self.present:
             raise HomeAssistantError("Lumalou is not advertising")
-        if self._client is not None and self._client.connected:
-            return self._client
         await self._disconnect()
+        delay = self._reconnect_at - asyncio.get_running_loop().time()
+        if delay > 0:
+            await asyncio.sleep(delay)
         device = bluetooth.async_ble_device_from_address(
             self.hass, self.address, connectable=True
         )
@@ -651,6 +755,7 @@ class LumalouCoordinator:
             device,
             expected_device_fingerprint=self.device_fingerprint,
             on_state=lambda state: self._receive(generation, state),
+            on_response=lambda envelope: self._on_response(generation, envelope),
             disconnected_callback=lambda lost: self._async_handle_session_lost(
                 generation, getattr(lost, "last_error", None)
             ),
@@ -688,10 +793,11 @@ class LumalouCoordinator:
     def _invalidate(self) -> SafeLumalouClient | None:
         """Invalidate local state and detach the current session synchronously."""
         self._generation += 1
-        self._callback_state = None
         self.available = False
         self.data = None
         client, self._client = self._client, None
+        if client is not None:
+            self._reconnect_at = asyncio.get_running_loop().time() + RECONNECT_DELAY
         self._notify()
         return client
 
@@ -708,38 +814,6 @@ class LumalouCoordinator:
         if client := self._invalidate():
             await self._close_client(client)
 
-    async def _request_fresh_state(self, client: SafeLumalouClient) -> None:
-        generation, received = self._generation, self._received
-        result = await client.request_state(timeout=RESPONSE_TIMEOUT)
-        if (
-            generation != self._generation
-            or self._received <= received
-            or self._callback_state is None
-            or result != self._callback_state
-        ):
-            raise HomeAssistantError("No fresh Lumalou state response")
-        self.data = dict(self._callback_state)
-        self.available = True
-        self._notify()
-
-    async def _refresh(self) -> None:
-        """Read GLOBAL_STATE; a strict session allows one read, so reconnect."""
-        client = await self._connect()
-        try:
-            await self._request_fresh_state(client)
-        except FreshSessionRequiredError:
-            await self._disconnect()
-            await self._request_fresh_state(await self._connect())
-
-    async def async_request_refresh(self) -> None:
-        """Reject cache fallback; invalidation isolates the next request session."""
-        async with self._operation():
-            try:
-                await self._refresh()
-            except Exception as err:
-                await self._disconnect()
-                raise _error("refresh_failed") from err
-
     async def _read_snapshot(self, client: SafeLumalouClient) -> DeviceSnapshot:
         """Read every persistent block once in the current strict session."""
 
@@ -747,8 +821,14 @@ class LumalouCoordinator:
             return (await client.request_named(name, timeout=RESPONSE_TIMEOUT)).decode()
 
         state = dict(await client.request_state(timeout=RESPONSE_TIMEOUT))
-        device_clock = await read("current_date")
-        read_at = dt_util.now()
+        try:
+            device_clock = await read("current_date")
+            read_at = dt_util.now()
+        except FreshSessionRequiredError:
+            # A minute push came first; this session's frame is as fresh.
+            if (pushed := self._pushed_clock) is None or pushed[0] != self._generation:
+                raise
+            _generation, device_clock, read_at = pushed
         playlist = await read("music_playlist")
         clock = await read("clock_settings")
         ready = await read("r2r_times")
@@ -780,8 +860,7 @@ class LumalouCoordinator:
         self,
     ) -> tuple[SafeLumalouClient, DeviceSnapshot]:
         """Open a new strict session and read the complete profile in it."""
-        await self._disconnect()
-        client = await self._connect()
+        client = await self._async_new_session()
         return client, await self._read_snapshot(client)
 
     async def _async_sync_clock_if_needed(
@@ -795,7 +874,7 @@ class LumalouCoordinator:
         """Correct the device clock from HA local time beyond a small tolerance.
 
         A failed write raises ``ClockSyncError``. When ``automatic`` (recovery
-        and the daily check), it also pauses automatic writes for
+        and pushed-clock correction), it also pauses automatic writes for
         ``CLOCK_SYNC_RETRY_INTERVAL`` so a write that keeps failing is not
         repeated on every recovery pass.
         """
@@ -835,113 +914,167 @@ class LumalouCoordinator:
         self.last_clock_offset = 0
         return True
 
-    @callback
-    def async_schedule_clock_check(self, *_args: Any) -> None:
-        """Check the clock of a live session (daily, and on time zone change).
-
-        Reconnects only correct the clock when a session is (re)opened; this
-        catches DST changes and drift while one session stays open.
-        """
-        if self.available and self.protocol_verified and not self._stopped:
-            task = self._create_background_task(
-                self._async_check_clock(), "lumalou clock check"
-            )
-            self._clock_check_tasks.add(task)
-            task.add_done_callback(self._clock_check_tasks.discard)
-
-    async def _async_check_clock(self) -> None:
-        """Read the device clock in a fresh session and correct it if needed."""
-        async with self._operation():
-            # State may have changed while this waited for the lock.
-            if (
-                not self.available
-                or not self.protocol_verified
-                or self._profile_record.maintenance
-            ):
-                return
-            try:
-                # A strict session answers each query once, so start anew.
-                await self._disconnect()
-                client = await self._connect()
-                device_clock = (
-                    await client.request_named("current_date", timeout=RESPONSE_TIMEOUT)
-                ).decode()
-                if not isinstance(device_clock, CurrentDate):
-                    raise HomeAssistantError("Current date response is not typed")
-                await self._async_sync_clock_if_needed(
-                    client, device_clock, dt_util.now(), automatic=True
-                )
-                await self._request_fresh_state(client)
-            except Exception:
-                await self._disconnect()
-                _LOGGER.debug("Lumalou clock check failed", exc_info=True)
-
     # ---- Live controls ----
 
-    async def _send_commands(self, payloads: list[bytes]) -> None:
-        self._assert_device_writes_allowed()
+    async def _write(self, *payloads: bytes) -> None:
+        """Send on the live session; the acknowledged write is the result.
+
+        The device pushes the resulting GLOBAL_STATE itself, so nothing is
+        read back, no new session is opened and nothing is ever replayed.
+        """
         # A preview taken before this write no longer describes the device.
         self._previewed_profile = None
-        client = await self._connect()
-        for payload in payloads:
-            await client.send(payload, timeout=RESPONSE_TIMEOUT)
-        await self._refresh()
-
-    async def _transient(self, payloads: list[bytes]) -> None:
+        client = self._client
         try:
-            await self._send_commands(payloads)
+            if client is None or not client.connected:
+                raise HomeAssistantError("No live Lumalou session")
+            for payload in payloads:
+                await client.send(payload, timeout=RESPONSE_TIMEOUT)
         except Exception as err:
             await self._disconnect()
             raise _error("command_failed") from err
 
-    async def async_set_light(
-        self, on: bool, brightness: int | None = None, color: int | None = None
+    def _live_state(self) -> dict[str, int]:
+        if self.data is None:
+            raise _error("command_failed")
+        return self.data
+
+    async def _state_confirms(self, expected: dict[str, int]) -> bool:
+        """Wait briefly for a pushed GLOBAL_STATE that shows ``expected``."""
+        try:
+            async with asyncio.timeout(STATE_CONFIRM_TIMEOUT):
+                while self.data is None or any(
+                    self.data[key] != value for key, value in expected.items()
+                ):
+                    self._state_event.clear()
+                    await self._state_event.wait()
+        except TimeoutError:
+            _LOGGER.debug("No pushed Lumalou state confirmed %s", expected)
+            return False
+        return True
+
+    async def _write_setting(
+        self,
+        payloads: list[bytes],
+        confirm: dict[str, int],
+        block: str,
+        values: dict[str, Any],
     ) -> None:
-        """Send live light commands; they never change the saved profile."""
-        if type(on) is not bool:
-            raise ProfileValidationError("Invalid light state")
+        """Write a persistent setting and keep it once the device confirms it.
+
+        The saved profile is updated in place (same revision): the device
+        still matches it, so restore state and open editors are unaffected,
+        and a power-loss restore brings back this last choice.
+        """
+        await self._write(*payloads)
+        if not await self._state_confirms(confirm):
+            return
+        record = self._profile_record
+        if not profile_is_complete(record.desired_profile):
+            return
+        profile = deepcopy(record.desired_profile)
+        profile[block] = {**profile[block], **values}
+        if profile != record.desired_profile:
+            await self._save(replace(record, desired_profile=profile))
+
+    async def async_turn_on_light(
+        self, brightness: int | None = None, color: int | None = None
+    ) -> None:
+        """Switch the light on; colour is live state, brightness is kept.
+
+        SET_LIGHT_COLOR switches the light on at the stored brightness, so a
+        brightness is written first (the device keeps it while off). A plain
+        "on" uses the current colour. With the light already on, a
+        brightness alone is only a brightness change.
+        """
         if brightness is not None:
             validate_integer(brightness, 1, 9, "brightness")
         if color is not None:
             validate_integer(color, 0, 9, "color")
         async with self._device_write_operation():
-            if not on:
-                await self._transient([commands.turn_off_backlight()])
+            state = self._live_state()
+            on = []
+            if color is not None or brightness is None or not state["lightStatus"]:
+                on.append(
+                    commands.set_light_color(
+                        state["lightColor"] if color is None else color
+                    )
+                )
+            if brightness is None:
+                await self._write(*on)
                 return
-            payloads = []
-            if color is not None:
-                payloads.append(commands.set_light_color(color))
-            if brightness is not None or not payloads:
-                # Plain "on" (for example from Apple Home): never
-                # SET_GLOBAL_ON (it also affects audio), and never the zero
-                # the device reports while the light is off.
-                level = brightness or self.last_brightness
-                payloads.append(commands.set_led_brightness(level))
-            await self._transient(payloads)
+            await self._write_setting(
+                [commands.set_led_brightness(brightness), *on],
+                {"lightBrightness": brightness},
+                LIVE_BLOCK,
+                {"light_brightness": brightness},
+            )
 
-    async def async_set_volume(self, level: int) -> None:
-        validate_integer(level, 0, 9, "volume")
+    async def async_turn_off_light(self) -> None:
         async with self._device_write_operation():
-            await self._transient([commands.set_volume(level)])
+            await self._write(commands.turn_off_backlight())
 
-    async def async_set_light_duration(self, duration: int) -> None:
-        validate_integer(duration, 0, 5, "light duration")
+    async def async_set_level(self, key: str, value: int) -> None:
+        """Set the volume or a timer; none of them starts sound or light."""
+        field, maximum, setter = _LEVELS[key]
+        validate_integer(value, 0, maximum, key)
         async with self._device_write_operation():
-            await self._transient([commands.set_light_duration(duration)])
+            await self._write_setting(
+                [setter(value)], {field: value}, LIVE_BLOCK, {key: value}
+            )
 
-    async def async_set_playlist_duration(self, duration: int) -> None:
-        validate_integer(duration, 0, 6, "playlist duration")
+    async def async_set_clock_settings(
+        self,
+        *,
+        display: bool | None = None,
+        brightness: int | None = None,
+        clock_format: int | None = None,
+    ) -> None:
+        """Change one clock setting; the others come from the device state."""
+        if display is not None and type(display) is not bool:
+            raise ProfileValidationError("Invalid clock display")
+        if brightness is not None:
+            validate_integer(brightness, 0, 9, "clock brightness")
+        if clock_format is not None:
+            validate_integer(clock_format, 0, 1, "clock format")
         async with self._device_write_operation():
-            await self._transient([commands.set_playlist_duration(duration)])
+            state = self._live_state()
+            clock = {
+                "display": (
+                    bool(state["clockDisplay"]) if display is None else display
+                ),
+                "brightness": (
+                    state["clockBrightness"] if brightness is None else brightness
+                ),
+                "format": (
+                    state["clockFormat"] if clock_format is None else clock_format
+                ),
+            }
+            await self._write_setting(
+                [
+                    commands.set_clock_settings(
+                        clock["display"], clock["brightness"], clock["format"]
+                    )
+                ],
+                {
+                    "clockDisplay": int(clock["display"]),
+                    "clockBrightness": clock["brightness"],
+                    "clockFormat": clock["format"],
+                },
+                "clock_settings",
+                clock,
+            )
 
     async def async_play(self, source: int) -> None:
+        """Play a built-in sound; source 0 is the soother (music and light)."""
         validate_integer(source, 0, 7, "audio source")
         async with self._device_write_operation():
-            await self._transient([commands.play_audio(source)])
+            await self._write(commands.play_audio(source))
 
     async def async_stop_audio(self) -> None:
+        """Stop audio only; a soother light stays on until turned off."""
         async with self._device_write_operation():
-            await self._transient([commands.turn_off_audio()])
+            await self._write(commands.turn_off_audio())
 
     async def async_sync_clock(self) -> None:
         """Explicit action only; never send a stored or naive host timestamp."""
@@ -949,8 +1082,9 @@ class LumalouCoordinator:
             now = _trusted_now()
             if now is None:
                 raise _error("clock_untrusted")
-            await self._transient([set_current_date_payload(now)])
+            await self._write(set_current_date_payload(now))
             self.last_clock_sync = now
+            self.last_clock_offset = 0
             self._clock_sync_retry_at = 0.0
 
     async def async_set_maintenance(self, enabled: bool) -> None:

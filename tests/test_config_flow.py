@@ -129,6 +129,12 @@ def complete_profile() -> dict:
         "sleepy_times": deepcopy(empty_week),
         "alarm": {"days": {day: 9 for day in DAYS}, "sound": 0},
         "routines": {day: {"time": None, "slots": [None] * 12} for day in DAYS},
+        "light_and_sound": {
+            "volume": 5,
+            "light_brightness": 5,
+            "light_duration": 4,
+            "playlist_duration": 5,
+        },
     }
 
 
@@ -211,7 +217,7 @@ async def test_bluetooth_discovery_confirm(hass: HomeAssistant) -> None:
         CONF_PROTOCOL_VERIFIED: False,
     }
     assert result["result"].data[CONF_PROTOCOL_VERIFIED] is False
-    assert result["options"] == {CONF_AUTO_RESTORE: False}
+    assert result["options"] == {CONF_AUTO_RESTORE: True}
     setup.assert_awaited_once()
 
 
@@ -246,7 +252,7 @@ async def test_new_entry_opens_profile_source_options_flow(
         CONF_DEVICE_FINGERPRINT: FINGERPRINT,
         CONF_PROTOCOL_VERIFIED: False,
     }
-    assert result["options"] == {CONF_AUTO_RESTORE: False}
+    assert result["options"] == {CONF_AUTO_RESTORE: True}
 
 
 @pytest.mark.parametrize(
@@ -871,24 +877,23 @@ async def test_reconfigure_rejects_address_claimed_after_form_opened(
     assert entry.data[CONF_ADDRESS] == ADDRESS
 
 
-async def test_auto_restore_is_opt_in(hass: HomeAssistant) -> None:
-    """Automatic restore defaults off and is saved only when the user enables it."""
+async def test_auto_restore_is_on_by_default_and_can_be_switched_off(
+    hass: HomeAssistant,
+) -> None:
+    """Automatic restore defaults on; the user can switch it off."""
     entry = MockConfigEntry(
-        domain=DOMAIN,
-        unique_id=ADDRESS,
-        data={CONF_ADDRESS: ADDRESS},
-        options={CONF_AUTO_RESTORE: False},
+        domain=DOMAIN, unique_id=ADDRESS, data={CONF_ADDRESS: ADDRESS}, options={}
     )
     entry.add_to_hass(hass)
 
     result = await start_editor(hass, entry, "behavior")
-    assert result["data_schema"]({})[CONF_AUTO_RESTORE] is False
+    assert result["data_schema"]({})[CONF_AUTO_RESTORE] is True
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={CONF_AUTO_RESTORE: True}
+        result["flow_id"], user_input={CONF_AUTO_RESTORE: False}
     )
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert entry.options[CONF_AUTO_RESTORE] is True
+    assert entry.options[CONF_AUTO_RESTORE] is False
 
 
 async def test_behavior_options_flow_still_completes(hass: HomeAssistant) -> None:

@@ -20,6 +20,10 @@ DAYS = (
     "friday",
     "saturday",
 )
+# Settings the device also changes in everyday use (volume and brightness
+# buttons). A power loss resets them too, so they are restored, but they are
+# compared with the device only when the clock shows a reset.
+LIVE_BLOCK = "light_and_sound"
 FULL_PROFILE_FIELDS = frozenset(
     {
         "playlist",
@@ -29,13 +33,12 @@ FULL_PROFILE_FIELDS = frozenset(
         "sleepy_times",
         "alarm",
         "routines",
+        LIVE_BLOCK,
     }
 )
-# Only persistent configuration. Intentionally absent: live state that changes
-# in everyday use (light brightness and colour, which read 0 while the light is
-# off; volume; light and playlist timers, which only GLOBAL_STATE reports; on/off
-# and playing state), current date/time, nap state, executing alarm, current
-# routine step and task status.
+# Only persistent configuration. Intentionally absent: light colour and
+# on/off, audio playing state, current date/time, nap state, executing alarm,
+# current routine step and task status.
 # The `alarm` block is only the established seven alarm nibbles plus sound nibble.
 # GLOBAL_STATE reports routine music and volume as 4-bit values, so only
 # 0..15 can be verified after a restore.
@@ -138,6 +141,23 @@ def _routine_settings(value: Any) -> dict[str, Any]:
     }
 
 
+def _light_and_sound(value: Any) -> dict[str, int]:
+    fields = {"volume", "light_brightness", "light_duration", "playlist_duration"}
+    data = _strict_mapping(value, fields, "light and sound settings")
+    return {
+        "volume": validate_integer(data["volume"], 0, 9, "volume"),
+        "light_brightness": validate_integer(
+            data["light_brightness"], 0, 9, "light brightness"
+        ),
+        "light_duration": validate_integer(
+            data["light_duration"], 0, 5, "light duration"
+        ),
+        "playlist_duration": validate_integer(
+            data["playlist_duration"], 0, 6, "playlist duration"
+        ),
+    }
+
+
 def _ready_to_rise(value: Any) -> dict[str, Any]:
     data = _strict_mapping(value, {"enabled", "times"}, "ready-to-rise settings")
     return {
@@ -203,6 +223,8 @@ def validate_profile(value: Any) -> dict[str, Any]:
             result[name] = _week(item, "sleepy times")
         elif name == "alarm":
             result[name] = _alarm(item)
+        elif name == LIVE_BLOCK:
+            result[name] = _light_and_sound(item)
         else:
             result[name] = _routines(item)
     return result

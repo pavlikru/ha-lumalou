@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from lumalou import Audio, Color, LightDuration, PlaylistDuration
+from lumalou import Audio, ClockFormat, Color, LightDuration, PlaylistDuration
 
 from custom_components.lumalou.config_flow import EDITORS
 from custom_components.lumalou.const import ISSUE_ID_PROFILE_RESTORE_NEEDED
@@ -117,6 +117,7 @@ def test_entity_names_and_states_are_translated() -> None:
     for key, enum in (
         ("light_duration", LightDuration),
         ("playlist_duration", PlaylistDuration),
+        ("clock_format", ClockFormat),
     ):
         assert set(entity["select"][key]["state"]) == {
             item.name.lower() for item in enum

@@ -77,7 +77,7 @@
       },
       "behavior": {
         "title": "Behavior options",
-        "description": "Automatic restore is off by default. When it is on and Lumalou reappears with schedules, routines, playlist, clock or routine settings that differ from the saved verified profile (for example after a power loss reset them), Home Assistant writes the saved profile back and checks it with a fresh read. Light, volume and timers are never restored. Any other change of these settings made on the device, including in the Fisher-Price app, is overwritten too. If two attempts fail, a repair is raised instead. When it is off, a repair lets you choose which settings to keep.",
+        "description": "Automatic restore is on by default. A power loss resets Lumalou to factory settings: the clock, playlist, schedules, routines, timers, volume and brightness. When Home Assistant reconnects and finds the clock far off and the settings different from the saved verified profile, it sets the clock and writes the saved profile back, then checks it with a fresh read. It never turns light or sound on. If two attempts fail, a repair is raised instead. When automatic restore is off, a repair lets you choose which settings to keep. Settings changed on the device without a reset (for example in the Fisher-Price app) always raise the repair.",
         "data": {
           "auto_restore": "Restore the saved profile automatically"
         },
@@ -420,9 +420,6 @@
     "command_failed": {
       "message": "The Lumalou command failed and will not be retried. Check that Lumalou is nearby and try again."
     },
-    "refresh_failed": {
-      "message": "Could not read the current Lumalou state. Check that Lumalou is nearby and try again."
-    },
     "clock_untrusted": {
       "message": "The Home Assistant clock does not look set, so the Lumalou clock was not changed."
     }
@@ -434,7 +431,7 @@
         "step": {
           "init": {
             "title": "Choose which Lumalou settings to keep",
-            "description": "A fresh read shows {block_count} profile blocks that differ from the saved verified profile, for example because a power loss reset the device. Automatic restore attempts so far: {attempts}.",
+            "description": "A fresh read shows {block_count} profile blocks that differ from the saved verified profile, for example because a power loss reset the device or a setting was changed in the Fisher-Price app. Automatic restore attempts so far: {attempts}.",
             "menu_options": {
               "restore": "Restore saved profile",
               "keep_device": "Keep device settings"
@@ -464,9 +461,6 @@
     "button": {
       "sync_clock": {
         "name": "Synchronize clock"
-      },
-      "refresh": {
-        "name": "Refresh"
       }
     },
     "light": {
@@ -475,15 +469,15 @@
         "state_attributes": {
           "effect": {
             "state": {
-              "warm": "Warm",
+              "warm": "Warm (shimmer)",
               "red": "Red",
               "yellow": "Yellow",
               "orange": "Orange",
               "green": "Green",
               "blue": "Blue",
               "purple": "Purple",
-              "night_light": "Night light",
-              "cool": "Cool",
+              "night_light": "Night light (steady green)",
+              "cool": "Cool (blue)",
               "rainbow": "Rainbow"
             }
           }
@@ -496,9 +490,9 @@
         "state_attributes": {
           "source": {
             "state": {
-              "sleep_playlist": "Sleep playlist",
+              "sleep_playlist": "Sleep playlist (soother with light)",
               "custom_playlist": "Custom playlist",
-              "pink_noise": "Pink noise",
+              "pink_noise": "White noise",
               "ocean": "Ocean",
               "rain": "Rain",
               "brown_noise": "Brown noise",
@@ -537,6 +531,13 @@
           "continuous": "Continuous",
           "min_1": "1 minute"
         }
+      },
+      "clock_format": {
+        "name": "Clock format",
+        "state": {
+          "h12": "12-hour",
+          "h24": "24-hour"
+        }
       }
     },
     "sensor": {
@@ -557,6 +558,14 @@
     "switch": {
       "maintenance": {
         "name": "Maintenance"
+      },
+      "clock_display": {
+        "name": "Clock display"
+      }
+    },
+    "number": {
+      "clock_brightness": {
+        "name": "Clock brightness"
       }
     }
   }

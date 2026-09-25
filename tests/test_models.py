@@ -48,6 +48,12 @@ def full_profile() -> dict:
             "sound": 15,
         },
         "routines": routines,
+        "light_and_sound": {
+            "volume": 0,
+            "light_brightness": 9,
+            "light_duration": 5,
+            "playlist_duration": 6,
+        },
     }
 
 
@@ -59,12 +65,26 @@ def full_profile() -> dict:
         "profile",
         {"raw_opcode": 0x52},
         {"routine": []},
-        # Live state is not part of the profile.
-        {"brightness": 5},
+        # Colour and on/off are live state, never part of the profile.
         {"color": 1},
         {"volume": 3},
-        {"light_duration": 1},
-        {"playlist_duration": 1},
+        {"light_and_sound": {"volume": 3}},
+        {
+            "light_and_sound": {
+                "volume": 10,
+                "light_brightness": 1,
+                "light_duration": 0,
+                "playlist_duration": 0,
+            }
+        },
+        {
+            "light_and_sound": {
+                "volume": 1,
+                "light_brightness": 1,
+                "light_duration": 6,
+                "playlist_duration": 0,
+            }
+        },
     ],
 )
 def test_unknown_profile_rejected(value):
@@ -108,11 +128,11 @@ def test_partial_profile_valid_but_never_complete():
 def test_export_envelope_is_versioned_and_strict():
     profile = full_profile()
     envelope = export_profile_payload(profile)
-    assert envelope["schema_version"] == 2
+    assert envelope["schema_version"] == 3
     assert envelope["scope"] == "persistent_profile"
     assert import_profile_payload(envelope) == profile
     for field, value in (
-        ("schema_version", 1),
+        ("schema_version", 2),
         ("schema_version", True),
         ("scope", "supported_subset"),
     ):
@@ -258,7 +278,7 @@ def test_routine_values_are_limited_to_the_readback_nibble(field):
         validate_profile(profile)
     with pytest.raises(ProfileValidationError):
         import_profile_payload(
-            {"schema_version": 2, "scope": "persistent_profile", "profile": profile}
+            {"schema_version": 3, "scope": "persistent_profile", "profile": profile}
         )
     with pytest.raises(ProfileValidationError):
         ProfileRecord.from_dict(
@@ -269,8 +289,8 @@ def test_routine_values_are_limited_to_the_readback_nibble(field):
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("schema_version", 1),
-        ("schema_version", 3),
+        ("schema_version", 2),
+        ("schema_version", 4),
         ("schema_version", True),
         ("revision", -1),
         ("verified_revision", 1),

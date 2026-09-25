@@ -7,16 +7,18 @@ in one deterministic write order:
 
 1. ``clock_settings`` - display configuration only, no activation.
 2. ``playlist``.
-3. ``routine_settings.music`` (music byte + reward sounds), then
+3. ``light_and_sound.*`` - light and playlist timers, volume and LED
+   brightness. Verified on hardware not to switch light or sound on.
+4. ``routine_settings.music`` (music byte + reward sounds), then
    ``routine_settings.volume``.
-4. ``sleepy_times``, ``ready_to_rise.times``, ``alarm``, then
+5. ``sleepy_times``, ``ready_to_rise.times``, ``alarm``, then
    ``routines.<day>`` Sunday..Saturday - schedule data.
-5. ``ready_to_rise.enabled``, ``routine_settings.enabled`` - activation flags
+6. ``ready_to_rise.enabled``, ``routine_settings.enabled`` - activation flags
    last, only after every schedule they activate has been written.
 
-Live state (light brightness and colour, volume, timers) is not part of the
-profile, so a restore never turns the light on. Current device time is not
-part of it either; callers synchronize it from Home Assistant before step 1,
+Light colour, play/stop, soother, nap and routine start are never part of a
+restore, so it never turns light or sound on. Current device time is not part
+of the profile either; callers set it from Home Assistant before step 1,
 after a fresh read. Only steps whose logical value differs from the fresh
 device readback are produced.
 """
@@ -41,6 +43,7 @@ from lumalou.schedules import (
 from .models import (
     DAYS,
     FULL_PROFILE_FIELDS,
+    LIVE_BLOCK,
     ProfileValidationError,
     require_complete_profile,
 )
@@ -75,14 +78,16 @@ class ProfileRestoreResult:
 class RestoreNeeded:
     """A verified saved profile differs from a fresh complete device read.
 
-    There is no documented power-loss marker on this device, so this is the
-    detection heuristic: the current revision was verified on this device key
-    before, and a later strict readback no longer matches it.
+    ``reset`` means the device clock was also far off (a power loss resets
+    the clock and every setting); only such an event is restored
+    automatically. Without it, only differences outside the light and sound
+    block are reported (for example a change made in the Fisher-Price app).
     """
 
     revision: int
     changed_blocks: tuple[str, ...]
     detected_at: datetime
+    reset: bool = False
     auto_restore_attempts: int = 0
     auto_restore_exhausted: bool = False
 
@@ -139,8 +144,9 @@ def profile_from_readback(
 ) -> dict[str, Any]:
     """Build a complete logical profile from one session's typed responses.
 
-    Routine settings and the Ready-to-Rise flag come from GLOBAL_STATE
-    (nibbles). The dedicated clock settings response must agree with
+    Routine settings, the Ready-to-Rise flag and the light and sound block
+    come from GLOBAL_STATE (nibbles; brightness is kept while the light is
+    off). The dedicated clock settings response must agree with
     GLOBAL_STATE or the read is rejected.
     """
     expected_clock = (
@@ -177,17 +183,28 @@ def profile_from_readback(
                 "sound": alarms.sound,
             },
             "routines": {day: _read_routine(routines[day]) for day in DAYS},
+            LIVE_BLOCK: {
+                "volume": state["currentVolume"],
+                "light_brightness": state["lightBrightness"],
+                "light_duration": state["lightDuration"],
+                "playlist_duration": state["playlistDuration"],
+            },
         }
     )
 
 
-def changed_blocks(desired: Any, observed: Any) -> tuple[str, ...]:
-    """Return sorted top-level blocks where two complete profiles differ."""
+def changed_blocks(
+    desired: Any, observed: Any, *, live: bool = True
+) -> tuple[str, ...]:
+    """Return sorted top-level blocks where two complete profiles differ.
+
+    ``live=False`` skips the light and sound block, which also changes in
+    everyday use.
+    """
     target = require_complete_profile(desired)
     actual = require_complete_profile(observed)
-    return tuple(
-        sorted(field for field in FULL_PROFILE_FIELDS if target[field] != actual[field])
-    )
+    fields = FULL_PROFILE_FIELDS if live else FULL_PROFILE_FIELDS - {LIVE_BLOCK}
+    return tuple(sorted(field for field in fields if target[field] != actual[field]))
 
 
 def _time(value: dict[str, int] | None) -> ClockTime | None:
@@ -237,6 +254,16 @@ def build_restore_steps(desired: Any, observed: Any) -> tuple[RestoreStep, ...]:
                 commands.set_music_playlist(MusicPlaylist.from_songs(want["playlist"])),
             )
         )
+
+    levels = want[LIVE_BLOCK]
+    for key, setter in (
+        ("light_duration", commands.set_light_duration),
+        ("playlist_duration", commands.set_playlist_duration),
+        ("volume", commands.set_volume),
+        ("light_brightness", commands.set_led_brightness),
+    ):
+        if differs(LIVE_BLOCK, key):
+            steps.append(RestoreStep(f"{LIVE_BLOCK}.{key}", setter(levels[key])))
 
     routine = want["routine_settings"]
     if any(

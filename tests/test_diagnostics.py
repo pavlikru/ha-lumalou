@@ -88,7 +88,8 @@ async def test_empty_record_is_not_a_saved_profile(hass: HomeAssistant) -> None:
     diagnostics = await async_get_config_entry_diagnostics(hass, entry)
     assert diagnostics["profile"]["present"] is False
     assert diagnostics["profile"]["revision"] == 0
-    assert diagnostics["entry"]["auto_restore_enabled"] is False
+    # Automatic restore is on by default.
+    assert diagnostics["entry"]["auto_restore_enabled"] is True
 
 
 async def test_restore_state_is_summarized_without_identity_or_values(
@@ -105,7 +106,14 @@ async def test_restore_state_is_summarized_without_identity_or_values(
         last_clock_sync=detected,
         clock_sync_paused=True,
         device_fingerprint="f" * 64,
-        restore_needed=RestoreNeeded(1, ("routines", "volume"), detected, 2, True),
+        restore_needed=RestoreNeeded(
+            1,
+            ("light_and_sound", "routines"),
+            detected,
+            reset=True,
+            auto_restore_attempts=2,
+            auto_restore_exhausted=True,
+        ),
         last_restore_result=ProfileRestoreResult(
             revision=1,
             automatic=True,
@@ -132,7 +140,8 @@ async def test_restore_state_is_summarized_without_identity_or_values(
     assert diagnostics["connection"]["last_clock_sync"] == detected.isoformat()
     assert diagnostics["connection"]["clock_sync_paused"] is True
     assert diagnostics["restore"]["needed"] is True
-    assert diagnostics["restore"]["changed_blocks"] == ["routines", "volume"]
+    assert diagnostics["restore"]["changed_blocks"] == ["light_and_sound", "routines"]
+    assert diagnostics["restore"]["reset"] is True
     assert diagnostics["restore"]["auto_restore_exhausted"] is True
     assert diagnostics["restore"]["last_result"]["applied_steps"] == ["volume"]
     assert diagnostics["restore"]["last_result"]["error"] == "restore_write"

@@ -64,6 +64,12 @@ def complete_profile() -> dict:
         "sleepy_times": dict.fromkeys(DAYS),
         "alarm": {"days": dict.fromkeys(DAYS, 9), "sound": 0},
         "routines": {day: {"time": None, "slots": [None] * 12} for day in DAYS},
+        "light_and_sound": {
+            "volume": 5,
+            "light_brightness": 5,
+            "light_duration": 4,
+            "playlist_duration": 5,
+        },
     }
 
 
@@ -91,6 +97,12 @@ def everything_changed() -> dict:
         }
         for day in DAYS
     }
+    desired["light_and_sound"] = {
+        "volume": 2,
+        "light_brightness": 3,
+        "light_duration": 1,
+        "playlist_duration": 0,
+    }
     return desired
 
 
@@ -105,6 +117,10 @@ def test_full_diff_uses_documented_order_and_only_allowlisted_setters():
     assert [step.name for step in steps] == [
         "clock_settings",
         "playlist",
+        "light_and_sound.light_duration",
+        "light_and_sound.playlist_duration",
+        "light_and_sound.volume",
+        "light_and_sound.light_brightness",
         "routine_settings.music",
         "routine_settings.volume",
         "sleepy_times",
@@ -129,10 +145,24 @@ def test_full_diff_uses_documented_order_and_only_allowlisted_setters():
     assert payloads["routines.saturday"][0] == 0x66
     assert payloads["ready_to_rise.enabled"] == bytes([0x44, 1])
     assert payloads["routine_settings.enabled"] == bytes([0x58, 1])
-    # Live light and audio setters are never part of a restore.
-    assert not {0x37, 0x3A, 0x3C, 0x3E, 0x3F, 0x42, 0x6C} & {
+    assert payloads["light_and_sound.light_duration"] == bytes([0x6C, 1])
+    assert payloads["light_and_sound.playlist_duration"] == bytes([0x42, 0])
+    assert payloads["light_and_sound.volume"] == bytes([0x37, 2])
+    assert payloads["light_and_sound.light_brightness"] == bytes([0x3A, 3])
+    # Colour, light off, play/stop, soother, nap and routine start are never
+    # part of a restore, so it never switches light or sound on.
+    assert not {0x01, 0x03, 0x38, 0x3C, 0x3E, 0x3F, 0x4D, 0x4F, 0x6B, 0x7B} & {
         step.payload[0] for step in steps
     }
+
+
+def test_live_block_is_compared_only_when_asked():
+    desired = complete_profile()
+    observed = deepcopy(desired)
+    observed["light_and_sound"]["volume"] = 1
+
+    assert changed_blocks(desired, observed) == ("light_and_sound",)
+    assert changed_blocks(desired, observed, live=False) == ()
 
 
 def test_only_differing_sub_blocks_are_written():

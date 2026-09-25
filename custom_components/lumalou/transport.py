@@ -150,6 +150,7 @@ class SafeLumalouClient(LumalouClient):
         *,
         expected_device_fingerprint: str | None,
         on_state: Callable[[dict], None] | None = None,
+        on_response: Callable[[ResponseEnvelope], None] | None = None,
         disconnected_callback: Callable[[LumalouClient], None] | None = None,
     ) -> None:
         if not expected_device_fingerprint:
@@ -159,6 +160,7 @@ class SafeLumalouClient(LumalouClient):
         super().__init__(
             device,
             on_state=on_state,
+            on_response=on_response,
             client_factory=partial(RestrictedLumalouTransport, hass),
             disconnected_callback=disconnected_callback,
             expected_device_fingerprint=expected_device_fingerprint,

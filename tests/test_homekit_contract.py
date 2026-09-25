@@ -124,13 +124,15 @@ async def loaded_lumalou(hass: HomeAssistant) -> MockConfigEntry:
             "currentVolume": 3,
             "lightDuration": 4,
             "playlistDuration": 5,
+            "clockDisplay": 1,
+            "clockBrightness": 2,
+            "clockFormat": 1,
         },
         async_setup=AsyncMock(),
         async_start=Mock(),
         async_shutdown=AsyncMock(),
         async_add_listener=Mock(return_value=lambda: None),
-        restore_needed=None,
-        async_schedule_clock_check=Mock(),
+        repair_needed=None,
     )
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -165,7 +167,9 @@ async def test_default_homekit_bridge_exports_only_light_and_audio_switch(
     lumalou_entities = er.async_entries_for_config_entry(
         entity_registry, loaded_lumalou.entry_id
     )
-    assert len(lumalou_entities) == 10
+    # Light, audio, three selects, two switches, a number, a button and
+    # three diagnostic sensors.
+    assert len(lumalou_entities) == 12
 
     exported: dict[str, str | None] = {}
     accessory_types = {name: Mock(return_value=name) for name in TYPES}

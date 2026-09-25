@@ -10,7 +10,7 @@ rules:
     comment: Actions are registered in async_setup and reject unknown or unloaded entries.
   appropriate-polling:
     status: done
-    comment: No polling. State arrives from device notifications; reconnects are driven by Home Assistant Bluetooth advertisement callbacks.
+    comment: No polling. One BLE session stays open and the device pushes GLOBAL_STATE after every command and button press, and its clock every minute; commands never read back. Reconnects are driven by Home Assistant Bluetooth advertisement callbacks.
   brands:
     status: done
     comment: Local brand/icon.png and brand/icon@2x.png (Home Assistant 2026.3+).
@@ -94,7 +94,7 @@ rules:
   entity-category: done
   entity-device-class:
     status: done
-    comment: Connection is a connectivity binary sensor; profile sync status is an enum sensor.
+    comment: Connection is a connectivity binary sensor; profile sync status is an enum sensor; audio is a speaker. The clock brightness number has no matching device class.
   entity-disabled-by-default:
     status: todo
     comment: The firmware and profile sync status diagnostics are enabled by default.
