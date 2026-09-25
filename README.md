@@ -13,14 +13,23 @@ library and needs no cloud account.
 > This is a development preview, not a stable release. Automated tests use BLE
 > mocks; target-device acceptance has not run. Full schedule and seven-day
 > routine backup/restore are blocked because `lumalou==0.1.0` exposes opcodes
-> but no payload codecs or complete fresh readback API.
+> but no payload codecs or complete fresh readback API. The current model-free
+> identity flow additionally requires an unreleased signed-token verifier.
+> With the currently pinned dependency, onboarding intentionally stops before
+> opening a BLE identity session. Setup must ask the user to confirm the
+> discovered Lumalou, validate a strict complete profile read, and bind later
+> sessions to a private fingerprint of that device's signed key. This is
+> per-device enrollment, not a retail-model detector; identifiers stay out of
+> the UI and logs.
 
 ## Implemented development scope
 
 - config-entry setup from Home Assistant Bluetooth discovery;
 - one shared, serialized BLE coordinator with no independent scanner;
 - HA-managed presence callbacks and rate-limited read-only reconnect;
-- read-only onboarding and offline config-entry startup;
+- read-only identity checks and offline config-entry startup; the current
+  pinned upstream package fails the identity capability gate before onboarding
+  can create a new entry;
 - light, fixed palette, audio source, volume, and light-duration entities;
 - persistent revisioned desired-profile storage for supported fields;
 - maintenance mode, clock sync, manual refresh, profile import/export actions;
@@ -35,11 +44,14 @@ and a cached upstream state cannot confirm a command.
 
 ## Apple Home
 
-Use Home Assistant's built-in [HomeKit Bridge][homekit] and include only the
-Lumalou light and audio entities in its filter. The light appears as a
-brightness-capable light. HomeKit maps a generic `media_player` to switches, so
-Apple Home gets audio on/off rather than the HA source/volume UI. The integration
-does not mislabel the toy as a TV or receiver to work around that limitation.
+Use Home Assistant's built-in [HomeKit Bridge][homekit] and expose only the
+Lumalou light and audio entities. Configuration/diagnostic entities are marked
+so the bridge excludes maintenance, refresh, clock-sync, duration and diagnostic
+controls by default. Preserve the existing bridge filter and verify its entity
+list after setup. The light appears as a brightness-capable light. HomeKit maps
+a generic `media_player` to switches, so Apple Home gets audio on/off rather than
+the HA source/volume UI. The integration does not mislabel the toy as a TV or
+receiver to work around that limitation.
 
 ## Installation and recovery
 

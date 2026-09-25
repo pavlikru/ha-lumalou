@@ -45,9 +45,10 @@ custom_components/lumalou/
 
 Standard Home Assistant entities are preferred over custom actions. This also
 lets HomeKit Bridge expose the light and the supported subset of audio control
-without adding Apple-specific transport code. The HomeKit path is implemented,
-but pairing and control on the target Home Assistant/Apple Home are not yet
-verified.
+without adding Apple-specific transport code. Configuration and diagnostic
+entities are categorized out of default HomeKit export. Mocked accessory tests
+cover light brightness, audio on/off, and default filtering; pairing and control
+on the target Home Assistant/Apple Home are not yet verified.
 
 ## State ownership
 
@@ -84,8 +85,10 @@ mark a full profile verified. Automatic full restore stays disabled until a
 released upstream API provides strict block parsers and session-bound fresh
 readback.
 
-An unpublished upstream candidate implements that strict session contract and
-the schedule/routine codecs. It is not consumed here: repository policy requires
+The personal upstream fork branch contains candidate strict session, schedule,
+and factory-identity code, but it has no reviewed upstream/PyPI release. Until
+it is released and pinned, HA continues to use the exact `lumalou==0.1.0`
+dependency. It is not consumed here: repository policy requires
 a reviewed, released, exactly pinned dependency, and hardware validation must
 still establish setter side effects and a safe restore order.
 
