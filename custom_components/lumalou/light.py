@@ -14,9 +14,11 @@ from homeassistant.components.light import (
 
 from lumalou import Color  # type: ignore[attr-defined]
 
-from .entity import LumalouEntity
+from .entity import LumalouControlEntity
 
-COLORS = {color.name: int(color) for color in Color}
+# Lower-case effect names double as translation keys.
+COLORS = {color.name.lower(): int(color) for color in Color}
+PARALLEL_UPDATES = 0
 
 
 async def async_setup_entry(hass: Any, entry: Any, async_add_entities: Any) -> None:
@@ -24,18 +26,17 @@ async def async_setup_entry(hass: Any, entry: Any, async_add_entities: Any) -> N
     async_add_entities([LumalouLight(entry)])
 
 
-class LumalouLight(LumalouEntity, LightEntity):
-    """The night light, with the device's fixed colour palette."""
+class LumalouLight(LumalouControlEntity, LightEntity):
+    """The night light; the fixed colour palette is exposed as effects."""
 
+    _attr_translation_key = "light"
     _attr_color_mode = ColorMode.BRIGHTNESS
-    _attr_effect = None
     _attr_supported_features = LightEntityFeature.EFFECT
 
     def __init__(self, entry: Any) -> None:
-        super().__init__(entry, "Light", "light")
+        super().__init__(entry)
         self._attr_supported_color_modes = {ColorMode.BRIGHTNESS}
         self._attr_effect_list = list(COLORS)
-        self._attr_translation_key = "light"
 
     @property
     def is_on(self) -> bool | None:
@@ -55,13 +56,9 @@ class LumalouLight(LumalouEntity, LightEntity):
         if value is None:
             return None
         try:
-            return Color(int(value)).name
+            return Color(int(value)).name.lower()
         except ValueError:
             return None
-
-    def snapshot_value(self, key: str) -> Any:
-        data = self.snapshot
-        return data.get(key) if data is not None else None
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         effect = kwargs.get(ATTR_EFFECT)

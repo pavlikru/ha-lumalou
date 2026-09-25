@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import voluptuous as vol
@@ -11,26 +10,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import selector
 
+from .config_flow import CONF_CONFIRM, CONF_PROFILE_JSON, parse_profile_json
 from .const import ISSUE_ID_PROFILE_STORAGE
-from .models import ProfileValidationError, import_profile_payload
-
-CONF_PROFILE_JSON = "profile_json"
-CONF_CONFIRM = "confirm"
-
-
-def _parse_profile_json(value: Any) -> tuple[dict[str, Any], int]:
-    """Parse a direct export envelope or the complete export action response."""
-    if not isinstance(value, str):
-        raise ProfileValidationError("Profile recovery input must be JSON text")
-    document = json.loads(value)
-    if (
-        isinstance(document, dict)
-        and set(document) == {"current_revision", "profile"}
-        and isinstance(document["profile"], dict)
-    ):
-        document = document["profile"]
-    profile = import_profile_payload(document)
-    return document, len(profile)
+from .models import ProfileValidationError
 
 
 class ProfileStorageRepairFlow(RepairsFlow):
@@ -55,9 +37,10 @@ class ProfileStorageRepairFlow(RepairsFlow):
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
-                self._payload, self._field_count = _parse_profile_json(
+                self._payload, profile = parse_profile_json(
                     user_input[CONF_PROFILE_JSON]
                 )
+                self._field_count = len(profile)
             except KeyError, TypeError, ValueError:
                 errors["base"] = "invalid_profile"
             else:
