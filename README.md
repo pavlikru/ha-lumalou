@@ -135,8 +135,8 @@ runs in English; check the actual IDs in the entity settings.
 
 | Entity | Type | Notes |
 | --- | --- | --- |
-| `light.lumalou_light` | Light | On/off, brightness, palette colors as effects: `warm` (yellow shimmering to pink), `red`, `yellow`, `orange`, `green`, `blue`, `purple`, `night_light` (steady green), `cool` (blue), `rainbow` (cycling); translated in the UI. "On" without an effect uses the current color. |
-| `media_player.lumalou_audio` | Media player (speaker) | On starts the sleep playlist (the soother: music and a color-cycling light); off stops sound only; volume; source selects a built-in sound (`sleep_playlist`, `custom_playlist`, `pink_noise` (heard as white noise), `ocean`, `rain`, `brown_noise`, `nature`, `highway`). |
+| `light.lumalou_light` | Light | On/off, brightness, palette colors as effects: `warm` (yellow shimmering to pink), `red`, `yellow`, `orange`, `green`, `blue`, `purple`, `night_light` (steady green), `cool` (blue), `rainbow` (cycling); translated in the UI. "On" without an effect uses the current color. While the soother cycles the colors, no effect is shown. |
+| `media_player.lumalou_audio` | Media player (speaker) | On starts the sleep playlist (the soother: music and a color-cycling light); off stops sound only; volume; source selects a built-in sound (`sleep_playlist`, `custom_playlist`, `pink_noise` (heard as white noise), `ocean`, `rain`, `brown_noise`, `nature`, `highway`). The source shown is the playing sound; for the two playlists (which share songs) it is the one Home Assistant started, or `sleep_playlist` when the soother runs (also from the remote), otherwise empty. |
 | Light duration, Playlist duration | Select (configuration) | Device timers (options such as `min_15`, `continuous`). |
 | Clock format | Select (configuration) | `h12` or `h24` (24-hour). |
 | Clock display | Switch (configuration) | Shows or hides the clock. |
@@ -171,7 +171,9 @@ reachable, and the Lumalou pushes its full state after every command and every
 button press on the device, and its clock every minute. A command counts as
 done when the device acknowledges the write; nothing is read back or resent.
 When Home Assistant Bluetooth sees the device advertising and no session is
-live, the integration reconnects (after a short pause, at most once every 30
+live, the integration reconnects (at least 2 seconds after the previous
+connection closed, retrying twice if the link drops while connecting; at most
+once every 30
 seconds, backing off up to 15 minutes after failures). Before the first
 confirmed profile read it only reads the state. Afterwards every reconnect
 reads the complete profile and the device clock in one session, sets the clock
