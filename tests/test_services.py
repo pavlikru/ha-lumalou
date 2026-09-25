@@ -36,7 +36,7 @@ def loaded_entry(hass: HomeAssistant) -> tuple[MockConfigEntry, SimpleNamespace]
         async_export_profile=AsyncMock(
             return_value={
                 "current_revision": 4,
-                "profile": {"schema_version": 1, "profile": {"volume": 2}},
+                "profile": {"schema_version": 2, "profile": {"playlist": [2]}},
             }
         ),
         async_import_profile=AsyncMock(),
@@ -44,8 +44,8 @@ def loaded_entry(hass: HomeAssistant) -> tuple[MockConfigEntry, SimpleNamespace]
             return_value=ProfileRestoreResult(
                 revision=4,
                 automatic=False,
-                planned_steps=("volume",),
-                applied_steps=("volume",),
+                planned_steps=("playlist",),
+                applied_steps=("playlist",),
                 verified=True,
             )
         ),
@@ -127,7 +127,7 @@ async def test_export_is_response_only(hass: HomeAssistant) -> None:
     )
     assert response == {
         "current_revision": 4,
-        "profile": {"schema_version": 1, "profile": {"volume": 2}},
+        "profile": {"schema_version": 2, "profile": {"playlist": [2]}},
     }
     coordinator.async_export_profile.assert_awaited_once_with()
 
@@ -155,7 +155,7 @@ async def test_import_response_and_revision(hass: HomeAssistant) -> None:
     """Import passes concurrency revision and returns the saved result."""
     entry, coordinator = loaded_entry(hass)
     async_setup_services(hass)
-    profile = {"schema_version": 1, "scope": "supported_subset", "profile": {}}
+    profile = {"schema_version": 2, "scope": "persistent_profile", "profile": {}}
     response = await hass.services.async_call(
         DOMAIN,
         SERVICE_IMPORT_PROFILE,
@@ -185,8 +185,8 @@ async def test_import_requires_expected_revision(hass: HomeAssistant) -> None:
             {
                 ATTR_CONFIG_ENTRY_ID: entry.entry_id,
                 "profile": {
-                    "schema_version": 1,
-                    "scope": "supported_subset",
+                    "schema_version": 2,
+                    "scope": "persistent_profile",
                     "profile": {},
                 },
             },
@@ -209,8 +209,8 @@ async def test_import_rejects_coerced_revision(
             {
                 ATTR_CONFIG_ENTRY_ID: entry.entry_id,
                 "profile": {
-                    "schema_version": 1,
-                    "scope": "supported_subset",
+                    "schema_version": 2,
+                    "scope": "persistent_profile",
                     "profile": {},
                 },
                 "expected_revision": revision,
@@ -249,7 +249,7 @@ async def test_restore_defaults_to_current_revision(hass: HomeAssistant) -> None
     assert response == {
         "revision": 4,
         "verified": True,
-        "applied_steps": ["volume"],
+        "applied_steps": ["playlist"],
         "clock_synced": False,
     }
 
@@ -283,8 +283,8 @@ async def test_restore_failure_is_translated(
     outcome = ProfileRestoreResult(
         revision=4,
         automatic=False,
-        planned_steps=("volume", "playlist"),
-        applied_steps=("volume",),
+        planned_steps=("playlist", "alarm"),
+        applied_steps=("playlist",),
         verified=False,
         mismatched_blocks=("playlist",),
         error=error,

@@ -1599,7 +1599,7 @@ async def test_import_export_confirmation_conflicts_and_no_restore(rig):
     payload = {
         "schema_version": 2,
         "scope": "persistent_profile",
-        "profile": {"playlist": [12, 2, 2]},
+        "profile": {**complete_profile(), "playlist": [12, 2, 2]},
     }
     with pytest.raises(ProfileValidationError):
         await coordinator.async_import_profile(payload, 0)
@@ -1615,9 +1615,26 @@ async def test_import_export_confirmation_conflicts_and_no_restore(rig):
     }
     payload["profile"]["playlist"].clear()
     assert coordinator.profile_record.desired_profile["playlist"] == [12, 2, 2]
-    with pytest.raises(ProfileValidationError, match="incomplete"):
-        await coordinator.async_restore_profile(1, confirmed=True)
     rig.discovery.assert_not_called()
+
+
+async def test_partial_import_never_replaces_a_complete_profile(rig):
+    coordinator = rig.coordinator
+    rig.store.async_load.return_value = ProfileRecord(
+        revision=3, desired_profile=complete_profile()
+    )
+    await coordinator.async_setup()
+    partial = {
+        "schema_version": 2,
+        "scope": "persistent_profile",
+        "profile": {"playlist": [1]},
+    }
+
+    with pytest.raises(ProfileValidationError, match="incomplete"):
+        await coordinator.async_import_profile(partial, 3, confirmed=True)
+
+    assert coordinator.profile_record.desired_profile == complete_profile()
+    rig.store.async_save.assert_not_awaited()
 
 
 async def test_export_revision_and_profile_are_one_serialized_snapshot(rig):
