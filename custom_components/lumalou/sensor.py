@@ -10,12 +10,13 @@ from homeassistant.const import EntityCategory
 from .entity import LumalouEntity
 from .models import SYNC_STATUSES
 
+PARALLEL_UPDATES = 0
+
 
 async def async_setup_entry(hass: Any, entry: Any, async_add_entities: Any) -> None:
     """Set up diagnostic sensors."""
     async_add_entities(
         [
-            LumalouAvailabilitySensor(entry),
             LumalouFirmwareSensor(entry),
             LumalouProfileRevisionSensor(entry),
             LumalouProfileVerifiedRevisionSensor(entry),
@@ -25,34 +26,11 @@ async def async_setup_entry(hass: Any, entry: Any, async_add_entities: Any) -> N
     )
 
 
-class LumalouAvailabilitySensor(LumalouEntity, SensorEntity):
-    """Report coordinator availability for diagnostics."""
-
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_native_unit_of_measurement = None
-
-    def __init__(self, entry: Any) -> None:
-        super().__init__(entry, "Connection", "connection")
-        self._attr_translation_key = "connection"
-
-    @property
-    def available(self) -> bool:
-        """The diagnostic itself remains readable while BLE is offline."""
-        return True
-
-    @property
-    def native_value(self) -> str:
-        return "available" if self.coordinator.available else "unavailable"
-
-
 class LumalouFirmwareSensor(LumalouEntity, SensorEntity):
     """Report firmware version without performing I/O."""
 
+    _attr_translation_key = "firmware"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    def __init__(self, entry: Any) -> None:
-        super().__init__(entry, "Firmware", "firmware")
-        self._attr_translation_key = "firmware"
 
     @property
     def native_value(self) -> str | None:
@@ -77,9 +55,7 @@ class _LumalouProfileDiagnosticSensor(LumalouEntity, SensorEntity):
 class LumalouProfileRevisionSensor(_LumalouProfileDiagnosticSensor):
     """Report the saved profile revision."""
 
-    def __init__(self, entry: Any) -> None:
-        super().__init__(entry, "Profile revision", "profile_revision")
-        self._attr_translation_key = "profile_revision"
+    _attr_translation_key = "profile_revision"
 
     @property
     def native_value(self) -> int:
@@ -89,11 +65,7 @@ class LumalouProfileRevisionSensor(_LumalouProfileDiagnosticSensor):
 class LumalouProfileVerifiedRevisionSensor(_LumalouProfileDiagnosticSensor):
     """Report the last profile revision with verified device state."""
 
-    def __init__(self, entry: Any) -> None:
-        super().__init__(
-            entry, "Profile verified revision", "profile_verified_revision"
-        )
-        self._attr_translation_key = "profile_verified_revision"
+    _attr_translation_key = "profile_verified_revision"
 
     @property
     def native_value(self) -> int | None:
@@ -103,12 +75,9 @@ class LumalouProfileVerifiedRevisionSensor(_LumalouProfileDiagnosticSensor):
 class LumalouProfileSyncStatusSensor(_LumalouProfileDiagnosticSensor):
     """Report saved-profile synchronization state."""
 
+    _attr_translation_key = "profile_sync_status"
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = sorted(SYNC_STATUSES)
-
-    def __init__(self, entry: Any) -> None:
-        super().__init__(entry, "Profile sync status", "profile_sync_status")
-        self._attr_translation_key = "profile_sync_status"
 
     @property
     def native_value(self) -> str:
@@ -118,9 +87,7 @@ class LumalouProfileSyncStatusSensor(_LumalouProfileDiagnosticSensor):
 class LumalouProfileLastErrorSensor(_LumalouProfileDiagnosticSensor):
     """Report the current symbolic saved-profile error, if any."""
 
-    def __init__(self, entry: Any) -> None:
-        super().__init__(entry, "Profile last error", "profile_last_error")
-        self._attr_translation_key = "profile_last_error"
+    _attr_translation_key = "profile_last_error"
 
     @property
     def native_value(self) -> str | None:

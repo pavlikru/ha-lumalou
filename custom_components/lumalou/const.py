@@ -4,14 +4,12 @@ from homeassistant.const import Platform
 
 DOMAIN = "lumalou"
 ISSUE_ID_PROFILE_STORAGE = "profile_storage"
+# Entries created before signed-device enrollment must be reconfigured once.
+ISSUE_ID_IDENTITY_ENROLLMENT = "identity_enrollment"
+# Legacy entry data only; flows no longer write it.
 CONF_PRODUCT_CODE = "product_code"
-CONF_IDENTIFICATION_SOURCE = "identification_source"
 CONF_DEVICE_FINGERPRINT = "device_fingerprint"
-# Read only while replacing legacy entry data during reconfigure.
-CONF_FACTORY_ITEM_CODE = "factory_item_code"
 CONF_PROTOCOL_VERIFIED = "protocol_verified"
-IDENTIFICATION_SOURCE_DEVICE_INFORMATION = "device_information"
-IDENTIFICATION_SOURCE_FACTORY_TOKEN = "factory_token"
 SUPPORTED_PRODUCT_CODE = "GLD09"
 PLATFORMS = (
     Platform.BINARY_SENSOR,

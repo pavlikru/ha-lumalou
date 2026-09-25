@@ -3,28 +3,29 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from datetime import time
 from typing import Any, override
 
 import voluptuous as vol
-from bleak.backends.device import BLEDevice
 from home_assistant_bluetooth import BluetoothServiceInfoBleak
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult, FlowType
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import selector
 
 from .const import (
     CONF_DEVICE_FINGERPRINT,
-    CONF_IDENTIFICATION_SOURCE,
     CONF_PROTOCOL_VERIFIED,
     DOMAIN,
-    IDENTIFICATION_SOURCE_FACTORY_TOKEN,
+    ISSUE_ID_IDENTITY_ENROLLMENT,
     SUPPORTED_PRODUCT_CODE,
 )
+from .entity import async_migrate_identifiers
 from .identity import (
     FactoryIdentityLibraryUnavailable,
     FactoryIdentityProbeError,
@@ -33,30 +34,31 @@ from .identity import (
 )
 from .models import (
     DAYS,
-    ProfileValidationError,
+    PROFILE_RANGES,
     RevisionConflictError,
-    export_profile_payload,
     import_profile_payload,
     validate_profile,
 )
 from .upstream_api import MissingUpstreamCapabilities, require_factory_identity_api
 
 CONF_AUTO_RESTORE = "auto_restore"
+CONF_CONFIRM = "confirm"
+CONF_PROFILE_JSON = "profile_json"
 DEFAULT_AUTO_RESTORE = False
 MANUFACTURER_ID = 950
 MANUFACTURER_PREFIX = b"MB"
 MAX_ROUTINE_TASKS = 12
 MAX_PLAYLIST_SONGS = 12
-CONF_PROFILE_JSON = "profile_json"
+EDITORS = (
+    "basic",
+    "playlist",
+    "clock_settings",
+    "routine_settings",
+    "schedule",
+    "routine",
+)
 
-_ALARM_OPTIONS = [str(value) for value in range(11)]
-_ALARM_SOUND_OPTIONS = [str(value) for value in range(16)]
-_ROUTINE_TASK_OPTIONS = [str(value) for value in range(1, 12)]
-_BASIC_VALUE_OPTIONS = [str(value) for value in range(10)]
-_LIGHT_DURATION_OPTIONS = [str(value) for value in range(6)]
-_PLAYLIST_DURATION_OPTIONS = [str(value) for value in range(7)]
-_SONG_OPTIONS = [str(value) for value in range(1, 13)]
-_CLOCK_FORMAT_OPTIONS = ["0", "1"]
+type _SaveProfile = Callable[[Any], Awaitable[None]]
 
 
 def _is_supported(info: BluetoothServiceInfoBleak) -> bool:
@@ -72,19 +74,46 @@ def _device_title(info: BluetoothServiceInfoBleak) -> str:
     return "Lumalou"
 
 
+def _enrolled_fingerprint(entry: config_entries.ConfigEntry) -> str | None:
+    """Return the signed-device binding, or None for a pre-enrollment entry."""
+    if fingerprint := entry.data.get(CONF_DEVICE_FINGERPRINT):
+        return str(fingerprint)
+    # Pre-enrollment entries use their address as unique ID.
+    if entry.unique_id != entry.data.get(CONF_ADDRESS):
+        return entry.unique_id
+    return None
+
+
+def parse_profile_json(value: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Validate an export envelope or the complete export action response.
+
+    Returns the envelope and its validated profile. The revision in an export
+    action response is ignored; callers use the entry's current revision.
+    """
+    if not isinstance(value, str):
+        raise ValueError("Profile JSON must be text")
+    document = json.loads(value)
+    if (
+        isinstance(document, dict)
+        and set(document) == {"current_revision", "profile"}
+        and isinstance(document["profile"], dict)
+    ):
+        document = document["profile"]
+    if not isinstance(document, dict):
+        raise ValueError("Profile export must be a JSON object")
+    return document, import_profile_payload(document)
+
+
 def _read_profile_summary(profile: dict[str, Any]) -> str:
     """Build a compact preview of persistent values without IDs or raw bytes."""
     ready_times = profile["ready_to_rise"]["times"]
     sleepy_times = profile["sleepy_times"]
     routines = profile["routines"]
+    midnight = {"hour": 0, "minute": 0}
     wake_count = sum(value is not None for value in ready_times.values())
-    wake_midnight = sum(
-        value == {"hour": 0, "minute": 0} for value in ready_times.values()
-    )
+    wake_midnight = sum(value == midnight for value in ready_times.values())
     sleepy_count = sum(value is not None for value in sleepy_times.values())
-    sleepy_midnight = sum(
-        value == {"hour": 0, "minute": 0} for value in sleepy_times.values()
-    )
+    sleepy_midnight = sum(value == midnight for value in sleepy_times.values())
     routine_days = sum(value["time"] is not None for value in routines.values())
     routine_tasks = sum(
         slot is not None for value in routines.values() for slot in value["slots"]
@@ -108,11 +137,12 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle the Lumalou config flow."""
 
     VERSION = 1
-    MINOR_VERSION = 1
+    # 1.2: registry identifiers derive from the entry unique ID, not the address.
+    MINOR_VERSION = 2
 
     def __init__(self) -> None:
         self._discovered: BluetoothServiceInfoBleak | None = None
-        self._discovered_devices: dict[str, BluetoothServiceInfoBleak] = {}
+        self._candidates: dict[str, BluetoothServiceInfoBleak] = {}
 
     @staticmethod
     @callback
@@ -132,134 +162,66 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="not_connectable")
         if not _is_supported(discovery_info):
             return self.async_abort(reason="unsupported_device")
-        if any(
-            entry.data.get(CONF_ADDRESS) == discovery_info.address
-            for entry in self._async_current_entries()
-        ):
-            return self.async_abort(reason="already_configured")
-
-        self._discovered = discovery_info
-        title = _device_title(discovery_info)
-        self.context["title_placeholders"] = {"name": title}
-        return await self.async_step_bluetooth_confirm()
-
-    async def async_step_bluetooth_confirm(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Identify a discovered device using read-only authenticated fields."""
-        assert self._discovered is not None
-
-        if user_input is not None:
-            fingerprint, error = await self._async_resolve_device_fingerprint(
-                self._discovered.device,
-                _device_title(self._discovered),
-            )
-            if error is not None:
-                return self.async_show_form(
-                    step_id="bluetooth_confirm",
-                    data_schema=vol.Schema({}),
-                    errors=error,
-                    description_placeholders=self.context["title_placeholders"],
-                )
-            assert fingerprint is not None
-            await self.async_set_unique_id(fingerprint)
-            self._abort_if_unique_id_configured()
-            return self.async_create_entry(
-                title=_device_title(self._discovered),
-                data={
-                    CONF_ADDRESS: self._discovered.address,
-                    CONF_DEVICE_FINGERPRINT: fingerprint,
-                    CONF_IDENTIFICATION_SOURCE: IDENTIFICATION_SOURCE_FACTORY_TOKEN,
-                    CONF_PROTOCOL_VERIFIED: False,
-                },
-                options={CONF_AUTO_RESTORE: DEFAULT_AUTO_RESTORE},
-            )
-
-        return self.async_show_form(
-            step_id="bluetooth_confirm",
-            data_schema=vol.Schema({}),
-            description_placeholders=self.context["title_placeholders"],
-        )
-
-    async def _async_resolve_device_fingerprint(
-        self,
-        device: BLEDevice | None,
-        name: str,
-    ) -> tuple[str | None, dict[str, str] | None]:
-        """Verify the user-selected signed device key without guessing a SKU."""
-        if device is None:
-            return None, {"base": "device_unavailable"}
-        try:
-            require_factory_identity_api()
-        except MissingUpstreamCapabilities:
-            return None, {"base": "factory_verifier_unavailable"}
-        try:
-            identity = await async_read_device_information(device, name)
-        except Exception:
-            return None, {"base": "cannot_connect"}
-        detected = (
-            identity.model_number.strip().upper() if identity.model_number else ""
-        )
-        if detected and detected != SUPPORTED_PRODUCT_CODE:
-            return None, {"base": "unsupported_product_code"}
-
-        # Device Information is only a conflict check. The signed key binds
-        # every later session to the device selected and confirmed by the user.
-        try:
-            fingerprint = await async_read_factory_device_fingerprint(device, name)
-        except FactoryIdentityLibraryUnavailable:
-            return None, {"base": "factory_verifier_unavailable"}
-        except FactoryIdentityProbeError:
-            return None, {"base": "identity_unconfirmed"}
-        return fingerprint, None
+        return await self._async_select(discovery_info)
 
     @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Select a currently discovered connectable Lumalou."""
-        from homeassistant.components import bluetooth
-
         if user_input is not None:
-            address = user_input[CONF_ADDRESS]
-            discovery_info = self._discovered_devices.get(address)
-            if discovery_info is None:
-                return self.async_show_form(
-                    step_id="user",
-                    data_schema=self._user_schema(),
-                    errors={"base": "device_unavailable"},
-                )
+            return await self._async_select(self._candidates[user_input[CONF_ADDRESS]])
 
-            self._discovered = discovery_info
-            self.context["title_placeholders"] = {"name": _device_title(discovery_info)}
-            return await self.async_step_bluetooth_confirm()
-
-        configured_addresses = {
-            entry.data.get(CONF_ADDRESS) for entry in self._async_current_entries()
-        }
-        self._discovered_devices = {
-            info.address: info
-            for info in bluetooth.async_discovered_service_info(
-                self.hass, connectable=True
-            )
-            if _is_supported(info) and info.address not in configured_addresses
-        }
-        if not self._discovered_devices:
+        self._candidates = self._discovered_candidates()
+        if not self._candidates:
             return self.async_abort(reason="no_devices_found")
+        return self.async_show_form(step_id="user", data_schema=self._address_schema())
 
-        return self.async_show_form(step_id="user", data_schema=self._user_schema())
+    async def _async_select(self, info: BluetoothServiceInfoBleak) -> ConfigFlowResult:
+        """Deduplicate a candidate before any connection, then ask to confirm.
 
-    def _user_schema(self) -> vol.Schema:
-        """Return the manual device-picker schema."""
-        return vol.Schema(
-            {
-                vol.Required(CONF_ADDRESS): vol.In(
-                    {
-                        address: _device_title(info)
-                        for address, info in self._discovered_devices.items()
-                    }
+        The address is only a provisional unique ID: it stops duplicate
+        discovery flows and allows ignoring a candidate. Confirmation replaces
+        it with the signed-device fingerprint.
+        """
+        await self.async_set_unique_id(
+            info.address, raise_on_progress=self.source != config_entries.SOURCE_USER
+        )
+        self._abort_if_unique_id_configured()
+        self._async_abort_entries_match({CONF_ADDRESS: info.address})
+        self._discovered = info
+        self.context["title_placeholders"] = {"name": _device_title(info)}
+        return await self.async_step_bluetooth_confirm()
+
+    async def async_step_bluetooth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Verify the user-confirmed device's signed identity and create the entry."""
+        assert self._discovered is not None
+        address = self._discovered.address
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            # Another flow may have configured this address meanwhile.
+            self._async_abort_entries_match({CONF_ADDRESS: address})
+            fingerprint, errors = await self._async_probe(self._discovered)
+            if fingerprint is not None:
+                await self.async_set_unique_id(fingerprint)
+                # The same signed device at a new address: follow it, but keep
+                # control locked until its profile is read again.
+                self._abort_if_unique_id_configured(
+                    updates={CONF_ADDRESS: address, CONF_PROTOCOL_VERIFIED: False}
                 )
-            }
+                return self.async_create_entry(
+                    title=_device_title(self._discovered),
+                    data=_entry_data(address, fingerprint),
+                    options={CONF_AUTO_RESTORE: DEFAULT_AUTO_RESTORE},
+                )
+
+        self._set_confirm_only()
+        return self.async_show_form(
+            step_id="bluetooth_confirm",
+            errors=errors,
+            description_placeholders=self.context["title_placeholders"],
         )
 
     @override
@@ -280,111 +242,113 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Rebind an entry to a user-selected, signed device after address changes."""
-        from homeassistant.components import bluetooth
+        """Rebind an entry to its signed device after an address change.
 
+        This also enrolls a pre-enrollment entry and moves its registry
+        identifiers from the address to the fingerprint.
+        """
         entry = self._get_reconfigure_entry()
-        other_entries = [
-            other
-            for other in self._async_current_entries()
-            if other.entry_id != entry.entry_id
-        ]
+        errors: dict[str, str] = {}
         if user_input is not None:
             address = user_input[CONF_ADDRESS]
-            selected = self._discovered_devices.get(address)
-            if selected is None:
-                return self.async_show_form(
-                    step_id="reconfigure",
-                    data_schema=self._reconfigure_schema(),
-                    errors={"base": "device_unavailable"},
-                )
-            if any(other.data.get(CONF_ADDRESS) == address for other in other_entries):
-                return self.async_show_form(
-                    step_id="reconfigure",
-                    data_schema=self._reconfigure_schema(),
-                    errors={"base": "already_configured"},
-                )
-            # Resolve the selected address again through HA so an old form
-            # cannot retain a stale or no longer connectable BLEDevice.
-            live = next(
-                (
-                    info
-                    for info in bluetooth.async_discovered_service_info(
-                        self.hass, connectable=True
-                    )
-                    if info.address == address and _is_supported(info)
-                ),
-                None,
-            )
-            if live is None:
-                return self.async_show_form(
-                    step_id="reconfigure",
-                    data_schema=self._reconfigure_schema(),
-                    errors={"base": "device_unavailable"},
-                )
-            fingerprint, error = await self._async_resolve_device_fingerprint(
-                live.device,
-                _device_title(live),
-            )
-            if error is None:
-                assert fingerprint is not None
-                enrolled = entry.data.get(CONF_DEVICE_FINGERPRINT)
-                if enrolled is None and entry.unique_id != entry.data.get(CONF_ADDRESS):
-                    # Older entries use the address as unique ID. A migrated
-                    # entry may already carry its signed key as unique ID.
-                    enrolled = entry.unique_id
-                if enrolled is not None and fingerprint != enrolled:
-                    error = {"base": "identity_unconfirmed"}
-                elif any(
-                    other.unique_id == fingerprint
-                    or other.data.get(CONF_DEVICE_FINGERPRINT) == fingerprint
-                    or other.data.get(CONF_ADDRESS) == address
-                    for other in self._async_current_entries()
-                    if other.entry_id != entry.entry_id
-                ):
-                    error = {"base": "already_configured"}
-            if error is None:
-                return self.async_update_reload_and_abort(
-                    entry,
-                    unique_id=fingerprint,
-                    data={
-                        CONF_ADDRESS: address,
-                        CONF_DEVICE_FINGERPRINT: fingerprint,
-                        CONF_IDENTIFICATION_SOURCE: IDENTIFICATION_SOURCE_FACTORY_TOKEN,
-                        CONF_PROTOCOL_VERIFIED: False,
-                    },
-                )
+            self._async_abort_entries_match({CONF_ADDRESS: address})
+            # Resolve the address again so a stale form cannot probe a
+            # BLEDevice that is no longer connectable.
+            candidates = self._discovered_candidates(entry.entry_id)
+            if (info := candidates.get(address)) is None:
+                errors["base"] = "device_unavailable"
+            else:
+                fingerprint, errors = await self._async_probe(info)
+                if fingerprint is not None:
+                    return await self._async_rebind(entry, address, fingerprint)
+        else:
+            self._candidates = self._discovered_candidates(entry.entry_id)
+            if not self._candidates:
+                return self.async_abort(reason="no_devices_found")
+        return self.async_show_form(
+            step_id="reconfigure", data_schema=self._address_schema(), errors=errors
+        )
+
+    async def _async_rebind(
+        self, entry: config_entries.ConfigEntry, address: str, fingerprint: str
+    ) -> ConfigFlowResult:
+        """Update a verified entry without orphaning its entities."""
+        if _enrolled_fingerprint(entry) not in (None, fingerprint):
             return self.async_show_form(
                 step_id="reconfigure",
-                data_schema=self._reconfigure_schema(),
-                errors=error,
+                data_schema=self._address_schema(),
+                errors={"base": "wrong_device"},
             )
+        if fingerprint != entry.unique_id:
+            if self.hass.config_entries.async_entry_for_domain_unique_id(
+                DOMAIN, fingerprint
+            ):
+                return self.async_abort(reason="already_configured")
+            await async_migrate_identifiers(
+                self.hass, entry, str(entry.unique_id), fingerprint
+            )
+        ir.async_delete_issue(
+            self.hass, DOMAIN, f"{entry.entry_id}_{ISSUE_ID_IDENTITY_ENROLLMENT}"
+        )
+        return self.async_update_reload_and_abort(
+            entry, unique_id=fingerprint, data=_entry_data(address, fingerprint)
+        )
 
-        self._discovered_devices = {
+    async def _async_probe(
+        self, info: BluetoothServiceInfoBleak
+    ) -> tuple[str | None, dict[str, str]]:
+        """Verify the selected signed device key without guessing a SKU."""
+        name = _device_title(info)
+        try:
+            require_factory_identity_api()
+        except MissingUpstreamCapabilities:
+            return None, {"base": "factory_verifier_unavailable"}
+        try:
+            identity = await async_read_device_information(info.device, name)
+        except Exception:
+            return None, {"base": "cannot_connect"}
+        detected = (identity.model_number or "").strip().upper()
+        if detected and detected != SUPPORTED_PRODUCT_CODE:
+            return None, {"base": "unsupported_product_code"}
+
+        # Device Information is only a conflict check. The signed key binds
+        # every later session to the device selected and confirmed by the user.
+        try:
+            fingerprint = await async_read_factory_device_fingerprint(info.device, name)
+        except FactoryIdentityLibraryUnavailable:
+            return None, {"base": "factory_verifier_unavailable"}
+        except FactoryIdentityProbeError:
+            return None, {"base": "identity_unconfirmed"}
+        return fingerprint, {}
+
+    def _discovered_candidates(
+        self, exclude_entry_id: str | None = None
+    ) -> dict[str, BluetoothServiceInfoBleak]:
+        """Return connectable Lumalou candidates not owned by another entry."""
+        from homeassistant.components import bluetooth
+
+        configured = {
+            entry.data.get(CONF_ADDRESS)
+            for entry in self._async_current_entries(include_ignore=False)
+            if entry.entry_id != exclude_entry_id
+        }
+        return {
             info.address: info
             for info in bluetooth.async_discovered_service_info(
                 self.hass, connectable=True
             )
-            if _is_supported(info)
-            and not any(
-                other.data.get(CONF_ADDRESS) == info.address for other in other_entries
-            )
+            if _is_supported(info) and info.address not in configured
         }
-        if not self._discovered_devices:
-            return self.async_abort(reason="no_devices_found")
-        return self.async_show_form(
-            step_id="reconfigure", data_schema=self._reconfigure_schema()
-        )
 
-    def _reconfigure_schema(self) -> vol.Schema:
-        """List discovered candidates without revealing advertising serials."""
+    def _address_schema(self) -> vol.Schema:
+        """List candidates by title and position, never by advertised serial."""
         return vol.Schema(
             {
                 vol.Required(CONF_ADDRESS): vol.In(
                     {
                         address: f"{_device_title(info)} {index}"
                         for index, (address, info) in enumerate(
-                            self._discovered_devices.items(), start=1
+                            self._candidates.items(), start=1
                         )
                     }
                 )
@@ -392,785 +356,680 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
 
+def _entry_data(address: str, fingerprint: str) -> dict[str, Any]:
+    """Build entry data; control stays locked until a verified profile read."""
+    return {
+        CONF_ADDRESS: address,
+        CONF_DEVICE_FINGERPRINT: fingerprint,
+        CONF_PROTOCOL_VERIFIED: False,
+    }
+
+
+def _options(first: int, last: int) -> list[str]:
+    return [str(value) for value in range(first, last + 1)]
+
+
+def _select(
+    options: list[str], translation_key: str | None = None, *, multiple: bool = False
+) -> selector.SelectSelector:
+    config = selector.SelectSelectorConfig(options=options, multiple=multiple)
+    if translation_key is not None:
+        config["translation_key"] = translation_key
+    return selector.SelectSelector(config)
+
+
+def _byte_selector() -> selector.NumberSelector:
+    """Return an integer byte selector instead of a guessed music enum."""
+    return selector.NumberSelector(
+        selector.NumberSelectorConfig(
+            min=0, max=255, step=1, mode=selector.NumberSelectorMode.BOX
+        )
+    )
+
+
+def _integer(value: Any) -> int:
+    """Accept selector floats only when they exactly represent an integer."""
+    if type(value) not in (int, float) or int(value) != value:
+        raise ValueError("Value must be an integer")
+    return int(value)
+
+
+def _parse_time(value: Any) -> dict[str, int]:
+    """Parse a minute-resolution native time selector value."""
+    if not isinstance(value, str):
+        raise ValueError("Invalid time")
+    parsed = time.fromisoformat(value)
+    if parsed.second or parsed.microsecond or parsed.tzinfo is not None:
+        raise ValueError("Time must have minute resolution")
+    return {"hour": parsed.hour, "minute": parsed.minute}
+
+
+def _format_time(value: dict[str, int] | None) -> str:
+    """Format a profile time for the native selector."""
+    if value is None:
+        return "00:00:00"
+    return f"{value['hour']:02d}:{value['minute']:02d}:00"
+
+
+def _week_from_input(
+    user_input: dict[str, Any], prefix: str
+) -> dict[str, dict[str, int] | None]:
+    """Decode toggled time selectors without conflating null and midnight."""
+    return {
+        day: (
+            _parse_time(user_input[f"{prefix}_{day}_time"])
+            if user_input[f"{prefix}_{day}_has_time"]
+            else None
+        )
+        for day in DAYS
+    }
+
+
+def _copy_targets(value: Any, source: str) -> list[str]:
+    """Validate and normalize selected copy targets, excluding the source."""
+    if source not in DAYS or not isinstance(value, list):
+        raise ValueError("Unsupported copy selection")
+    if any(day not in DAYS for day in value):
+        raise ValueError("Unsupported copy target")
+    return [day for day in DAYS if day in value and day != source]
+
+
+def _parse_basic(user_input: dict[str, Any]) -> dict[str, Any]:
+    return {name: int(user_input[name]) for name in PROFILE_RANGES}
+
+
+def _parse_playlist(user_input: dict[str, Any]) -> dict[str, Any]:
+    rows = (f"song_{index}" for index in range(1, MAX_PLAYLIST_SONGS + 1))
+    return {"playlist": [int(user_input[row]) for row in rows if row in user_input]}
+
+
+def _parse_clock_settings(user_input: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "clock_settings": {
+            "display": user_input["clock_display"],
+            "brightness": int(user_input["clock_brightness"]),
+            "format": int(user_input["clock_format"]),
+        }
+    }
+
+
+def _parse_routine_settings(user_input: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "routine_settings": {
+            "enabled": user_input["routine_enabled"],
+            "music": _integer(user_input["routine_music"]),
+            "volume": _integer(user_input["routine_volume"]),
+            "task_reward_sfx": int(user_input["task_reward_sfx"]),
+            "routine_reward_sfx": int(user_input["routine_reward_sfx"]),
+        }
+    }
+
+
+def _parse_schedule(user_input: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ready_to_rise": {
+            "enabled": user_input["ready_to_rise_enabled"],
+            "times": _week_from_input(user_input, "ready_to_rise"),
+        },
+        "sleepy_times": _week_from_input(user_input, "sleepy"),
+    }
+
+
+def _parse_alarm(user_input: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "alarm": {
+            "days": {day: int(user_input[f"alarm_{day}"]) for day in DAYS},
+            "sound": int(user_input["alarm_sound"]),
+        }
+    }
+
+
 class LumalouOptionsFlow(config_entries.OptionsFlow):
-    """Edit behavior options and a private profile draft."""
+    """Edit behavior options and the private desired profile.
+
+    Every profile change is a detached draft of one captured revision and is
+    saved only after an explicit confirmation, with a revision check.
+    """
 
     def __init__(self) -> None:
         """Initialize an isolated profile draft."""
-        self._draft_profile: dict[str, Any] | None = None
-        self._expected_revision: int | None = None
+        self._draft: dict[str, Any] | None = None
+        self._revision: int | None = None
         self._changes: dict[str, Any] = {}
         self._editor: str | None = None
         self._routine_day: str | None = None
         self._copied_days: list[str] = []
-        self._import_payload: dict[str, Any] | None = None
-        self._import_profile: dict[str, Any] | None = None
-        self._import_revision: int | None = None
-        self._import_removed_fields: list[str] = []
+        self._pending: tuple[str, dict[str, str], _SaveProfile] | None = None
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Choose the behavior or one private profile editor."""
-        # Keep compatibility with the original single-step options submission.
-        if user_input is not None and CONF_AUTO_RESTORE in user_input:
-            return await self.async_step_behavior(user_input)
-        if self._has_no_desired_profile():
-            return self.async_show_menu(
-                step_id="init",
-                menu_options=("create", "import_profile", "read_profile", "behavior"),
-            )
+        """Choose a profile source, one profile editor, or behavior options."""
         return self.async_show_menu(
             step_id="init",
-            menu_options=(
-                "behavior",
-                "basic",
-                "playlist",
-                "clock_settings",
-                "routine_settings",
-                "schedule",
-                "routine",
-                "import_profile",
-                "read_profile",
-            ),
-        )
-
-    async def async_step_create(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Choose an offline editor for a new, initially empty profile."""
-        return self.async_show_menu(
-            step_id="create",
-            menu_options=(
-                "basic",
-                "playlist",
-                "clock_settings",
-                "routine_settings",
-                "schedule",
-                "routine",
-            ),
-        )
-
-    async def async_step_import_profile(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Validate an exported profile before showing an explicit preview."""
-        if user_input is not None:
-            try:
-                raw_payload = json.loads(user_input[CONF_PROFILE_JSON])
-                if not isinstance(raw_payload, dict):
-                    raise ValueError("Profile export must be a JSON object")
-                # The export action includes the revision alongside the actual
-                # schema envelope. The current entry's captured revision is
-                # deliberately used for CAS instead of trusting this backup's
-                # revision from another device or point in time.
-                if set(raw_payload) == {"current_revision", "profile"} and isinstance(
-                    raw_payload["profile"], dict
-                ):
-                    raw_payload = raw_payload["profile"]
-                desired = import_profile_payload(raw_payload)
-                record = self._profile_record()
-                if record is None:
-                    return self.async_abort(reason="entry_not_loaded")
-            except (
-                KeyError,
-                TypeError,
-                ValueError,
-            ):
-                return self.async_show_form(
-                    step_id="import_profile",
-                    data_schema=self._import_schema(),
-                    errors={"base": "invalid_profile_import"},
-                )
-            self._import_payload = deepcopy(raw_payload)
-            self._import_profile = deepcopy(desired)
-            self._import_revision = record.revision
-            self._import_removed_fields = sorted(
-                set(record.desired_profile) - set(desired)
-            )
-            return await self.async_step_import_profile_confirm()
-
-        return self.async_show_form(
-            step_id="import_profile", data_schema=self._import_schema()
-        )
-
-    async def async_step_import_profile_confirm(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Save a previously previewed import using the captured CAS revision."""
-        if (
-            self._import_payload is None
-            or self._import_profile is None
-            or self._import_revision is None
-        ):
-            return self.async_abort(reason="profile_import_unavailable")
-
-        if user_input is not None:
-            if not user_input["confirm"]:
-                return self._import_confirm_form(
-                    errors={"confirm": "confirmation_required"}
-                )
-            coordinator = self._coordinator()
-            if coordinator is None:
-                return self.async_abort(reason="entry_not_loaded")
-            try:
-                await coordinator.async_import_profile(
-                    deepcopy(self._import_payload),
-                    self._import_revision,
-                    confirmed=True,
-                )
-            except RevisionConflictError:
-                return self._import_confirm_form(errors={"base": "revision_conflict"})
-            except HomeAssistantError, ProfileValidationError:
-                return self._import_confirm_form(
-                    errors={"base": "profile_import_failed"}
-                )
-            return self.async_create_entry(data=dict(self.config_entry.options))
-
-        return self._import_confirm_form()
-
-    async def async_step_read_profile(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Read one complete fresh profile, then show a CAS-protected preview."""
-        coordinator = self._coordinator()
-        record = self._profile_record()
-        if coordinator is None or record is None:
-            return self.async_abort(reason="entry_not_loaded")
-        try:
-            (
-                snapshot,
-                expected_revision,
-            ) = await coordinator.async_read_profile_snapshot()
-            self._import_payload = export_profile_payload(snapshot)
-        except HomeAssistantError, ProfileValidationError, ValueError:
-            return self.async_abort(reason="profile_read_failed")
-
-        self._import_profile = deepcopy(snapshot)
-        self._import_revision = expected_revision
-        self._import_removed_fields = sorted(
-            set(record.desired_profile) - set(snapshot)
-        )
-        return await self.async_step_read_profile_confirm()
-
-    async def async_step_read_profile_confirm(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Replace saved intent only after the user confirms a full fresh read."""
-        if (
-            self._import_payload is None
-            or self._import_profile is None
-            or self._import_revision is None
-        ):
-            return self.async_abort(reason="profile_read_failed")
-        if user_input is not None:
-            if not user_input["confirm"]:
-                return self._read_profile_confirm_form(
-                    errors={"confirm": "confirmation_required"}
-                )
-            coordinator = self._coordinator()
-            if coordinator is None:
-                return self.async_abort(reason="entry_not_loaded")
-            try:
-                await coordinator.async_accept_device_profile(
-                    deepcopy(self._import_profile),
-                    self._import_revision,
-                    confirmed=True,
-                )
-            except RevisionConflictError:
-                return self._read_profile_confirm_form(
-                    errors={"base": "revision_conflict"}
-                )
-            except HomeAssistantError, ProfileValidationError, ValueError:
-                return self._read_profile_confirm_form(
-                    errors={"base": "profile_import_failed"}
-                )
-            return self.async_create_entry(data=dict(self.config_entry.options))
-        return self._read_profile_confirm_form()
-
-    def _read_profile_confirm_form(
-        self, *, errors: dict[str, str] | None = None
-    ) -> ConfigFlowResult:
-        """Show snapshot completeness and saved revision without device secrets."""
-        assert self._import_payload is not None
-        assert self._import_profile is not None
-        assert self._import_revision is not None
-        return self.async_show_form(
-            step_id="read_profile_confirm",
-            data_schema=vol.Schema(
-                {vol.Required("confirm", default=False): selector.BooleanSelector()}
-            ),
-            errors=errors or {},
-            description_placeholders={
-                "field_count": str(len(self._import_profile)),
-                "revision": str(self._import_revision),
-                "summary": _read_profile_summary(self._import_profile),
-            },
-            last_step=True,
+            menu_options=["read_profile", "import_profile", *EDITORS, "behavior"],
         )
 
     async def async_step_behavior(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Configure opt-in behavior."""
+        """Configure opt-in automatic restore (off by default)."""
         if user_input is not None:
-            if user_input[CONF_AUTO_RESTORE]:
-                return self.async_show_form(
-                    step_id="behavior",
-                    data_schema=self._options_schema(),
-                    errors={CONF_AUTO_RESTORE: "auto_restore_unavailable"},
-                )
             return self.async_create_entry(data=user_input)
+        return self.async_show_form(
+            step_id="behavior",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_AUTO_RESTORE,
+                        default=self.config_entry.options.get(
+                            CONF_AUTO_RESTORE, DEFAULT_AUTO_RESTORE
+                        ),
+                    ): selector.BooleanSelector()
+                }
+            ),
+            last_step=True,
+        )
+
+    # Profile sources: a full fresh device read or an exported backup.
+
+    async def async_step_read_profile(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Read one complete fresh profile, then show a CAS-protected preview."""
+        if (coordinator := self._coordinator()) is None:
+            return self.async_abort(reason="entry_not_loaded")
+        try:
+            snapshot, revision = await coordinator.async_read_profile_snapshot()
+        except HomeAssistantError, ValueError:
+            return self.async_abort(reason="profile_read_failed")
+
+        async def save(coordinator: Any) -> None:
+            await coordinator.async_accept_device_profile(
+                deepcopy(snapshot), revision, confirmed=True
+            )
+
+        placeholders = {
+            "field_count": str(len(snapshot)),
+            "revision": str(revision),
+            "summary": _read_profile_summary(snapshot),
+        }
+        self._pending = ("read_profile_confirm", placeholders, save)
+        return await self._async_confirm()
+
+    async def async_step_import_profile(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Validate an exported profile before showing an explicit preview."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            try:
+                payload, profile = parse_profile_json(user_input[CONF_PROFILE_JSON])
+            except KeyError, TypeError, ValueError:
+                errors["base"] = "invalid_profile_import"
+            else:
+                if (record := self._record()) is None:
+                    return self.async_abort(reason="entry_not_loaded")
+                # The entry's captured revision is used for CAS instead of any
+                # revision carried by a backup from another point in time.
+                revision = record.revision
+
+                async def save(coordinator: Any) -> None:
+                    await coordinator.async_import_profile(
+                        deepcopy(payload), revision, confirmed=True
+                    )
+
+                removed = sorted(set(record.desired_profile) - set(profile))
+                placeholders = {
+                    "schema_version": str(payload["schema_version"]),
+                    "scope": str(payload["scope"]),
+                    "field_count": str(len(profile)),
+                    "revision": str(revision),
+                    "removed_count": str(len(removed)),
+                    "removed_fields": ", ".join(removed) or "—",
+                }
+                self._pending = ("import_profile_confirm", placeholders, save)
+                return await self._async_confirm()
 
         return self.async_show_form(
-            step_id="behavior", data_schema=self._options_schema(), last_step=True
+            step_id="import_profile",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_PROFILE_JSON): selector.TextSelector(
+                        selector.TextSelectorConfig(multiline=True)
+                    )
+                }
+            ),
+            errors=errors,
         )
+
+    # Offline block editors.
 
     async def async_step_basic(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Edit private light and audio values as one draft."""
-        if not self._ensure_profile_draft("basic"):
-            return self.async_abort(reason="profile_editor_unavailable")
-        assert self._draft_profile is not None
-
-        if user_input is not None:
-            try:
-                basic = {
-                    "brightness": int(user_input["brightness"]),
-                    "color": int(user_input["color"]),
-                    "light_duration": int(user_input["light_duration"]),
-                    "volume": int(user_input["volume"]),
-                    "playlist_duration": int(user_input["playlist_duration"]),
-                }
-                validate_profile(basic)
-            except KeyError, ProfileValidationError, TypeError, ValueError:
-                return self.async_show_form(
-                    step_id="basic",
-                    data_schema=self._basic_schema(),
-                    errors={"base": "invalid_basic"},
-                )
-            self._draft_profile.update(basic)
-            self._changes.update(deepcopy(basic))
-            return await self.async_step_confirm()
-
-        return self.async_show_form(step_id="basic", data_schema=self._basic_schema())
+        """Edit private light and audio values."""
+        return await self._async_edit(
+            "basic", user_input, self._basic_schema, _parse_basic
+        )
 
     async def async_step_playlist(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Edit an ordered, duplicate-preserving private playlist draft."""
-        if not self._ensure_profile_draft("playlist"):
-            return self.async_abort(reason="profile_editor_unavailable")
-        assert self._draft_profile is not None
-
-        if user_input is not None:
-            try:
-                playlist = [
-                    int(user_input[f"song_{index}"])
-                    for index in range(1, MAX_PLAYLIST_SONGS + 1)
-                    if f"song_{index}" in user_input
-                ]
-                validate_profile({"playlist": playlist})
-            except ProfileValidationError, TypeError, ValueError:
-                return self.async_show_form(
-                    step_id="playlist",
-                    data_schema=self._playlist_schema(),
-                    errors={"base": "invalid_playlist"},
-                )
-            self._draft_profile["playlist"] = playlist
-            self._changes["playlist"] = deepcopy(playlist)
-            return await self.async_step_confirm()
-
-        return self.async_show_form(
-            step_id="playlist", data_schema=self._playlist_schema()
+        """Edit an ordered, duplicate-preserving playlist."""
+        return await self._async_edit(
+            "playlist", user_input, self._playlist_schema, _parse_playlist
         )
 
     async def async_step_clock_settings(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Edit a complete private clock settings block."""
-        if not self._ensure_profile_draft("clock_settings"):
-            return self.async_abort(reason="profile_editor_unavailable")
-        assert self._draft_profile is not None
-
-        if user_input is not None:
-            try:
-                clock_settings = {
-                    "display": user_input["clock_display"],
-                    "brightness": int(user_input["clock_brightness"]),
-                    "format": int(user_input["clock_format"]),
-                }
-                validate_profile({"clock_settings": clock_settings})
-            except KeyError, ProfileValidationError, TypeError, ValueError:
-                return self.async_show_form(
-                    step_id="clock_settings",
-                    data_schema=self._clock_settings_schema(),
-                    errors={"base": "invalid_clock_settings"},
-                )
-            self._draft_profile["clock_settings"] = clock_settings
-            self._changes["clock_settings"] = deepcopy(clock_settings)
-            return await self.async_step_confirm()
-
-        return self.async_show_form(
-            step_id="clock_settings", data_schema=self._clock_settings_schema()
+        """Edit one complete clock settings block."""
+        return await self._async_edit(
+            "clock_settings",
+            user_input,
+            self._clock_settings_schema,
+            _parse_clock_settings,
         )
 
     async def async_step_routine_settings(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Edit a complete private routine settings block."""
-        if not self._ensure_profile_draft("routine_settings"):
-            return self.async_abort(reason="profile_editor_unavailable")
-        assert self._draft_profile is not None
-
-        if user_input is not None:
-            try:
-                routine_settings = {
-                    "enabled": user_input["routine_enabled"],
-                    "music": self._integer_input(user_input["routine_music"]),
-                    "volume": self._integer_input(user_input["routine_volume"]),
-                    "task_reward_sfx": int(user_input["task_reward_sfx"]),
-                    "routine_reward_sfx": int(user_input["routine_reward_sfx"]),
-                }
-                validate_profile({"routine_settings": routine_settings})
-            except KeyError, ProfileValidationError, TypeError, ValueError:
-                return self.async_show_form(
-                    step_id="routine_settings",
-                    data_schema=self._routine_settings_schema(),
-                    errors={"base": "invalid_routine_settings"},
-                )
-            self._draft_profile["routine_settings"] = routine_settings
-            self._changes["routine_settings"] = deepcopy(routine_settings)
-            return await self.async_step_confirm()
-
-        return self.async_show_form(
-            step_id="routine_settings", data_schema=self._routine_settings_schema()
+        """Edit one complete routine settings block."""
+        return await self._async_edit(
+            "routine_settings",
+            user_input,
+            self._routine_settings_schema,
+            _parse_routine_settings,
         )
 
     async def async_step_schedule(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Edit both weekly time blocks in one draft."""
-        if not self._ensure_profile_draft("schedule"):
-            return self.async_abort(reason="profile_editor_unavailable")
-        assert self._draft_profile is not None
-
-        if user_input is not None:
-            try:
-                ready_to_rise = {
-                    "enabled": user_input["ready_to_rise_enabled"],
-                    "times": self._week_from_input(user_input, "ready_to_rise"),
-                }
-                sleepy_times = self._week_from_input(user_input, "sleepy")
-                validate_profile(
-                    {
-                        "ready_to_rise": ready_to_rise,
-                        "sleepy_times": sleepy_times,
-                    }
-                )
-            except KeyError, ProfileValidationError, ValueError:
-                return self.async_show_form(
-                    step_id="schedule",
-                    data_schema=self._schedule_schema(),
-                    errors={"base": "invalid_schedule"},
-                )
-            self._draft_profile["ready_to_rise"] = ready_to_rise
-            self._draft_profile["sleepy_times"] = sleepy_times
-            self._changes.update(
-                {
-                    "ready_to_rise": deepcopy(ready_to_rise),
-                    "sleepy_times": deepcopy(sleepy_times),
-                }
-            )
-            return await self.async_step_schedule_copy()
-
-        return self.async_show_form(
-            step_id="schedule", data_schema=self._schedule_schema()
+        """Edit both weekly time blocks."""
+        return await self._async_edit(
+            "schedule",
+            user_input,
+            self._schedule_schema,
+            _parse_schedule,
+            self.async_step_schedule_copy,
+            editor="schedule",
         )
 
     async def async_step_schedule_copy(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Optionally copy each weekly time to selected days."""
-        if not self._ensure_profile_draft("schedule"):
-            return self.async_abort(reason="profile_editor_unavailable")
-        assert self._draft_profile is not None
-
-        if user_input is not None:
-            try:
-                ready_source = user_input["ready_to_rise_copy_from"]
-                sleepy_source = user_input["sleepy_copy_from"]
-                ready_targets = self._schedule_copy_targets(
-                    user_input.get("ready_to_rise_copy_to", []), ready_source
-                )
-                sleepy_targets = self._schedule_copy_targets(
-                    user_input.get("sleepy_copy_to", []), sleepy_source
-                )
-                ready_to_rise = deepcopy(self._draft_profile["ready_to_rise"])
-                sleepy_times = deepcopy(self._draft_profile["sleepy_times"])
-                for day in ready_targets:
-                    ready_to_rise["times"][day] = deepcopy(
-                        ready_to_rise["times"][ready_source]
-                    )
-                for day in sleepy_targets:
-                    sleepy_times[day] = deepcopy(sleepy_times[sleepy_source])
-                validate_profile(
-                    {
-                        "ready_to_rise": ready_to_rise,
-                        "sleepy_times": sleepy_times,
-                    }
-                )
-            except KeyError, ProfileValidationError, TypeError, ValueError:
-                return self.async_show_form(
-                    step_id="schedule_copy",
-                    data_schema=self._schedule_copy_schema(),
-                    errors={"base": "invalid_schedule_copy"},
-                )
-            self._draft_profile["ready_to_rise"] = ready_to_rise
-            self._draft_profile["sleepy_times"] = sleepy_times
-            self._changes.update(
-                {
-                    "ready_to_rise": deepcopy(ready_to_rise),
-                    "sleepy_times": deepcopy(sleepy_times),
-                }
-            )
-            return await self.async_step_schedule_alarm()
-
-        return self.async_show_form(
-            step_id="schedule_copy", data_schema=self._schedule_copy_schema()
+        return await self._async_edit(
+            "schedule_copy",
+            user_input,
+            self._schedule_copy_schema,
+            self._parse_schedule_copy,
+            self.async_step_schedule_alarm,
+            editor="schedule",
         )
 
     async def async_step_schedule_alarm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Edit weekly alarm offsets and sound."""
-        if not self._ensure_profile_draft("schedule"):
-            return self.async_abort(reason="profile_editor_unavailable")
-        assert self._draft_profile is not None
-
-        if user_input is not None:
-            try:
-                alarm = {
-                    "days": {day: int(user_input[f"alarm_{day}"]) for day in DAYS},
-                    "sound": int(user_input["alarm_sound"]),
-                }
-                validate_profile({"alarm": alarm})
-            except KeyError, ProfileValidationError, TypeError, ValueError:
-                return self.async_show_form(
-                    step_id="schedule_alarm",
-                    data_schema=self._alarm_schema(),
-                    errors={"base": "invalid_alarm"},
-                )
-            self._draft_profile["alarm"] = alarm
-            self._changes["alarm"] = deepcopy(alarm)
-            return await self.async_step_confirm()
-
-        return self.async_show_form(
-            step_id="schedule_alarm", data_schema=self._alarm_schema()
+        return await self._async_edit(
+            "schedule_alarm",
+            user_input,
+            self._alarm_schema,
+            _parse_alarm,
+            editor="schedule",
         )
 
     async def async_step_routine(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Choose one daily routine to edit."""
-        if not self._ensure_profile_draft("routine"):
-            return self.async_abort(reason="profile_editor_unavailable")
+        if not self._ensure_draft("routine"):
+            return self.async_abort(reason="entry_not_loaded")
         if user_input is not None:
             self._routine_day = user_input["routine_day"]
             return await self.async_step_routine_tasks()
-
         return self.async_show_form(
-            step_id="routine", data_schema=self._routine_day_schema()
+            step_id="routine",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("routine_day", default=DAYS[0]): _select(
+                        list(DAYS), "weekday"
+                    )
+                }
+            ),
         )
 
     async def async_step_routine_tasks(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Edit fixed ordered task rows without exposing task zero."""
-        if not self._ensure_profile_draft("routine"):
-            return self.async_abort(reason="profile_editor_unavailable")
-        if self._routine_day is None:
-            return await self.async_step_routine()
-        assert self._draft_profile is not None
-
-        if user_input is not None:
-            try:
-                routine = self._routine_from_input(user_input)
-                validate_profile(
-                    {"routines": self._routines_with(self._routine_day, routine)}
-                )
-            except KeyError, ProfileValidationError, TypeError, ValueError:
-                return self.async_show_form(
-                    step_id="routine_tasks",
-                    data_schema=self._routine_tasks_schema(),
-                    errors={"base": "invalid_routine"},
-                )
-            routines = self._current_routines()
-            routines[self._routine_day] = routine
-            self._draft_profile["routines"] = routines
-            self._changes["routines"] = deepcopy(routines)
-            return await self.async_step_routine_copy()
-
-        return self.async_show_form(
-            step_id="routine_tasks", data_schema=self._routine_tasks_schema()
+        return await self._async_edit(
+            "routine_tasks",
+            user_input,
+            self._routine_tasks_schema,
+            self._parse_routine_tasks,
+            self.async_step_routine_copy,
+            editor="routine",
         )
 
     async def async_step_routine_copy(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Optionally copy the edited routine to independent day values."""
-        if not self._ensure_profile_draft("routine"):
-            return self.async_abort(reason="profile_editor_unavailable")
-        if self._routine_day is None:
-            return await self.async_step_routine()
-        assert self._draft_profile is not None
-
+        assert self._draft is not None
+        assert self._routine_day is not None
         if user_input is not None:
-            routines = self._current_routines()
-            source = routines[self._routine_day]
-            self._copied_days = [
-                day for day in user_input.get("copy_to", []) if day != self._routine_day
-            ]
+            routines = deepcopy(self._draft["routines"])
+            self._copied_days = _copy_targets(
+                user_input.get("copy_to", []), self._routine_day
+            )
             for day in self._copied_days:
-                routines[day] = deepcopy(source)
-            self._draft_profile["routines"] = routines
+                routines[day] = deepcopy(routines[self._routine_day])
+            self._draft["routines"] = routines
             self._changes["routines"] = deepcopy(routines)
-            return await self.async_step_confirm()
+            return await self._async_confirm_edit()
 
+        days = [day for day in DAYS if day != self._routine_day]
         return self.async_show_form(
-            step_id="routine_copy", data_schema=self._routine_copy_schema()
-        )
-
-    async def async_step_confirm(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Show a summary and atomically save only after confirmation."""
-        if self._draft_profile is None or self._expected_revision is None:
-            return self.async_abort(reason="profile_editor_unavailable")
-
-        if user_input is not None:
-            if not user_input["confirm"]:
-                return self._confirm_form(errors={"confirm": "confirmation_required"})
-            try:
-                coordinator = self.config_entry.runtime_data.coordinator
-            except AttributeError, RuntimeError:
-                return self.async_abort(reason="profile_editor_unavailable")
-            try:
-                await coordinator.async_edit_profile(
-                    deepcopy(self._changes), self._expected_revision
-                )
-            except RevisionConflictError:
-                return self._confirm_form(errors={"base": "revision_conflict"})
-            except HomeAssistantError, ProfileValidationError:
-                return self._confirm_form(errors={"base": "profile_save_failed"})
-            return self.async_create_entry(data=dict(self.config_entry.options))
-
-        return self._confirm_form()
-
-    async def async_step_schedule_confirm(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Submit the shared confirmation step for schedules."""
-        return await self.async_step_confirm(user_input)
-
-    async def async_step_routine_confirm(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Submit the shared confirmation step for routines."""
-        return await self.async_step_confirm(user_input)
-
-    async def async_step_basic_confirm(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Submit the shared confirmation step for light and audio values."""
-        return await self.async_step_confirm(user_input)
-
-    async def async_step_playlist_confirm(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Submit the shared confirmation step for a playlist."""
-        return await self.async_step_confirm(user_input)
-
-    async def async_step_clock_settings_confirm(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Submit the shared confirmation step for clock settings."""
-        return await self.async_step_confirm(user_input)
-
-    async def async_step_routine_settings_confirm(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Submit the shared confirmation step for routine settings."""
-        return await self.async_step_confirm(user_input)
-
-    def _confirm_form(self, errors: dict[str, str] | None = None) -> ConfigFlowResult:
-        """Build the final confirmation form and summary values."""
-        assert self._draft_profile is not None
-        assert self._expected_revision is not None
-        placeholders = {"revision": str(self._expected_revision)}
-        if self._editor == "schedule":
-            ready = self._draft_profile["ready_to_rise"]["times"]
-            sleepy = self._draft_profile["sleepy_times"]
-            alarm = self._draft_profile["alarm"]
-            placeholders.update(
+            step_id="routine_copy",
+            data_schema=vol.Schema(
                 {
-                    "ready_count": str(
-                        sum(value is not None for value in ready.values())
-                    ),
-                    "sleepy_count": str(
-                        sum(value is not None for value in sleepy.values())
-                    ),
-                    "alarm_count": str(
-                        sum(value != 9 for value in alarm["days"].values())
-                    ),
-                    "alarm_sound": str(alarm["sound"] + 1),
-                }
-            )
-        elif self._editor == "routine":
-            assert self._routine_day is not None
-            routine = self._draft_profile["routines"][self._routine_day]
-            placeholders.update(
-                {
-                    "day": self._routine_day,
-                    "task_count": str(
-                        sum(slot is not None for slot in routine["slots"])
-                    ),
-                    "copy_count": str(len(self._copied_days)),
-                    "zero_count": str(
-                        sum(
-                            slot is not None and slot["task"] == 0
-                            for slot in routine["slots"]
-                        )
-                    ),
-                }
-            )
-        elif self._editor == "basic":
-            placeholders.update(
-                {
-                    name: str(self._draft_profile[name])
-                    for name in (
-                        "brightness",
-                        "color",
-                        "light_duration",
-                        "volume",
-                        "playlist_duration",
+                    vol.Optional("copy_to", default=[]): _select(
+                        days, "weekday", multiple=True
                     )
                 }
-            )
-        elif self._editor == "playlist":
-            playlist = self._draft_profile["playlist"]
-            placeholders.update(
-                {
-                    "song_count": str(len(playlist)),
-                    "songs": ", ".join(map(str, playlist)) or "—",
-                }
-            )
-        elif self._editor == "clock_settings":
-            clock = self._draft_profile["clock_settings"]
-            placeholders.update(
-                {
-                    "display": str(clock["display"]),
-                    "brightness": str(clock["brightness"]),
-                    "format": str(clock["format"]),
-                }
-            )
-        elif self._editor == "routine_settings":
-            routine_settings = self._draft_profile["routine_settings"]
-            placeholders.update(
-                {name: str(value) for name, value in routine_settings.items()}
-            )
+            ),
+        )
+
+    async def _async_edit(
+        self,
+        step_id: str,
+        user_input: dict[str, Any] | None,
+        schema: Callable[[], vol.Schema],
+        parse: Callable[[dict[str, Any]], dict[str, Any]],
+        next_step: Callable[[], Awaitable[ConfigFlowResult]] | None = None,
+        *,
+        editor: str | None = None,
+    ) -> ConfigFlowResult:
+        """Show one draft form, or validate it into the draft and continue."""
+        if not self._ensure_draft(editor or step_id):
+            return self.async_abort(reason="entry_not_loaded")
+        assert self._draft is not None
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            try:
+                changes = parse(user_input)
+                validate_profile(changes)
+            except KeyError, TypeError, ValueError:
+                errors["base"] = f"invalid_{step_id}"
+            else:
+                self._draft.update(changes)
+                self._changes.update(deepcopy(changes))
+                return await (next_step or self._async_confirm_edit)()
         return self.async_show_form(
-            step_id=f"{self._editor}_confirm",
+            step_id=step_id, data_schema=schema(), errors=errors
+        )
+
+    # Confirmation and the only profile write of this flow.
+
+    async def _async_confirm_edit(self) -> ConfigFlowResult:
+        """Preview the complete draft change before it is saved."""
+        assert self._revision is not None
+        changes, revision = deepcopy(self._changes), self._revision
+
+        async def save(coordinator: Any) -> None:
+            await coordinator.async_edit_profile(deepcopy(changes), revision)
+
+        self._pending = (f"{self._editor}_confirm", self._edit_summary(), save)
+        return await self._async_confirm()
+
+    async def _async_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Save a previewed profile change only after explicit confirmation."""
+        assert self._pending is not None
+        step_id, placeholders, save = self._pending
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            if not user_input[CONF_CONFIRM]:
+                errors[CONF_CONFIRM] = "confirmation_required"
+            elif (coordinator := self._coordinator()) is None:
+                return self.async_abort(reason="entry_not_loaded")
+            else:
+                try:
+                    await save(coordinator)
+                except RevisionConflictError:
+                    errors["base"] = "revision_conflict"
+                except HomeAssistantError, ValueError:
+                    errors["base"] = "profile_save_failed"
+                else:
+                    return self.async_create_entry(data=dict(self.config_entry.options))
+        return self.async_show_form(
+            step_id=step_id,
             data_schema=vol.Schema(
-                {vol.Required("confirm", default=False): selector.BooleanSelector()}
+                {vol.Required(CONF_CONFIRM, default=False): selector.BooleanSelector()}
             ),
             errors=errors,
             description_placeholders=placeholders,
             last_step=True,
         )
 
-    def _ensure_profile_draft(self, editor: str) -> bool:
+    # Each preview has its own translated step; all submit to one handler.
+    async_step_basic_confirm = _async_confirm
+    async_step_playlist_confirm = _async_confirm
+    async_step_clock_settings_confirm = _async_confirm
+    async_step_routine_settings_confirm = _async_confirm
+    async_step_schedule_confirm = _async_confirm
+    async_step_routine_confirm = _async_confirm
+    async_step_import_profile_confirm = _async_confirm
+    async_step_read_profile_confirm = _async_confirm
+
+    def _edit_summary(self) -> dict[str, str]:
+        """Return description placeholders for the current editor's preview."""
+        assert self._draft is not None
+        draft = self._draft
+        summary: dict[str, Any] = {"revision": self._revision}
+        if self._editor == "basic":
+            summary |= {name: draft[name] for name in PROFILE_RANGES}
+        elif self._editor == "playlist":
+            playlist = draft["playlist"]
+            summary |= {
+                "song_count": len(playlist),
+                "songs": ", ".join(map(str, playlist)) or "—",
+            }
+        elif self._editor in ("clock_settings", "routine_settings"):
+            summary |= draft[self._editor]
+        elif self._editor == "schedule":
+            alarm = draft["alarm"]
+            summary |= {
+                "ready_count": sum(
+                    value is not None
+                    for value in draft["ready_to_rise"]["times"].values()
+                ),
+                "sleepy_count": sum(
+                    value is not None for value in draft["sleepy_times"].values()
+                ),
+                "alarm_count": sum(value != 9 for value in alarm["days"].values()),
+                "alarm_sound": alarm["sound"] + 1,
+            }
+        else:
+            assert self._routine_day is not None
+            slots = draft["routines"][self._routine_day]["slots"]
+            summary |= {
+                "day": self._routine_day,
+                "task_count": sum(slot is not None for slot in slots),
+                "copy_count": len(self._copied_days),
+                "zero_count": sum(
+                    slot is not None and slot["task"] == 0 for slot in slots
+                ),
+            }
+        return {name: str(value) for name, value in summary.items()}
+
+    def _ensure_draft(self, editor: str) -> bool:
         """Capture one detached profile revision for this flow."""
-        if self._draft_profile is not None:
-            return self._editor == editor
-        record = self._profile_record()
-        if record is None:
-            return False
-        self._draft_profile = deepcopy(record.desired_profile)
-        self._expected_revision = record.revision
-        self._editor = editor
+        if self._draft is None:
+            if (record := self._record()) is None:
+                return False
+            self._draft = deepcopy(record.desired_profile)
+            self._revision = record.revision
+            self._editor = editor
         return True
 
-    def _has_no_desired_profile(self) -> bool:
-        """Return whether this entry needs its first profile-source choice.
-
-        An unloaded entry cannot safely expose a stored profile.  Treat it as
-        requiring a source choice; actions that need the private Store then
-        clearly abort instead of inventing default values.
-        """
-        record = self._profile_record()
-        return record is None or not record.desired_profile
-
-    def _profile_record(self) -> Any | None:
-        """Get the loaded immutable profile record without touching Bluetooth."""
+    def _record(self) -> Any | None:
+        """Get the loaded profile record without touching Bluetooth."""
         coordinator = self._coordinator()
-        if coordinator is None:
-            return None
-        try:
-            return coordinator.profile_record
-        except AttributeError, RuntimeError:
-            return None
+        return None if coordinator is None else coordinator.profile_record
 
     def _coordinator(self) -> Any | None:
         """Return the loaded coordinator, never creating one from a flow."""
         try:
             return self.config_entry.runtime_data.coordinator
-        except AttributeError, RuntimeError:
+        except AttributeError:
             return None
 
-    def _import_schema(self) -> vol.Schema:
-        """Request an export envelope as multiline JSON, not entry options."""
+    # Draft parsing that needs the current draft.
+
+    def _parse_schedule_copy(self, user_input: dict[str, Any]) -> dict[str, Any]:
+        assert self._draft is not None
+        ready_to_rise = deepcopy(self._draft["ready_to_rise"])
+        sleepy_times = deepcopy(self._draft["sleepy_times"])
+        for week, prefix in (
+            (ready_to_rise["times"], "ready_to_rise"),
+            (sleepy_times, "sleepy"),
+        ):
+            source = user_input[f"{prefix}_copy_from"]
+            for day in _copy_targets(user_input.get(f"{prefix}_copy_to", []), source):
+                week[day] = deepcopy(week[source])
+        return {"ready_to_rise": ready_to_rise, "sleepy_times": sleepy_times}
+
+    def _parse_routine_tasks(self, user_input: dict[str, Any]) -> dict[str, Any]:
+        """Build twelve strict slots while retaining unknown task-zero rows."""
+        assert self._routine_day is not None
+        routines = self._current_routines()
+        current = routines[self._routine_day]
+        slots: list[dict[str, int] | None] = []
+        for index, existing in enumerate(current["slots"], start=1):
+            selected = user_input.get(f"task_{index}")
+            if selected is None:
+                keep = existing is not None and existing["task"] == 0
+                slots.append(deepcopy(existing) if keep else None)
+                continue
+            task = int(selected)
+            if task not in range(1, 12):
+                raise ValueError("Unsupported routine task")
+            step = existing["step"] if existing is not None else index
+            slots.append({"step": step, "task": task})
+        routines[self._routine_day] = {
+            "time": (
+                _parse_time(user_input["routine_time"])
+                if user_input["routine_has_time"]
+                else None
+            ),
+            "slots": slots,
+        }
+        return {"routines": routines}
+
+    def _current_routines(self) -> dict[str, dict[str, Any]]:
+        """Return a detached complete seven-day routine block."""
+        assert self._draft is not None
+        if "routines" in self._draft:
+            return deepcopy(self._draft["routines"])
+        return {
+            day: {"time": None, "slots": [None] * MAX_ROUTINE_TASKS} for day in DAYS
+        }
+
+    # Form schemas. Absent blocks are shown as new draft values.
+
+    def _basic_schema(self) -> vol.Schema:
+        """Return native selectors for private light and audio values."""
+        assert self._draft is not None
         return vol.Schema(
             {
-                vol.Required(CONF_PROFILE_JSON): selector.TextSelector(
-                    selector.TextSelectorConfig(multiline=True)
+                vol.Required(name, default=str(self._draft.get(name, 0))): _select(
+                    _options(first, last)
                 )
+                for name, (first, last) in PROFILE_RANGES.items()
             }
         )
 
-    def _import_confirm_form(
-        self, errors: dict[str, str] | None = None
-    ) -> ConfigFlowResult:
-        """Show the validated import preview before the only Store mutation."""
-        assert self._import_payload is not None
-        assert self._import_profile is not None
-        assert self._import_revision is not None
-        return self.async_show_form(
-            step_id="import_profile_confirm",
-            data_schema=vol.Schema(
-                {vol.Required("confirm", default=False): selector.BooleanSelector()}
-            ),
-            errors=errors,
-            description_placeholders={
-                "schema_version": str(self._import_payload["schema_version"]),
-                "scope": str(self._import_payload["scope"]),
-                "field_count": str(len(self._import_profile)),
-                "revision": str(self._import_revision),
-                "removed_count": str(len(self._import_removed_fields)),
-                "removed_fields": ", ".join(self._import_removed_fields) or "—",
+    def _playlist_schema(self) -> vol.Schema:
+        """Return twelve fixed ordered playlist rows, including empty rows."""
+        assert self._draft is not None
+        playlist = self._draft.get("playlist", [])
+        schema = vol.Schema(
+            {
+                vol.Optional(f"song_{index}"): _select(_options(1, 12))
+                for index in range(1, MAX_PLAYLIST_SONGS + 1)
+            }
+        )
+        return self.add_suggested_values_to_schema(
+            schema,
+            {f"song_{index}": str(song) for index, song in enumerate(playlist, 1)},
+        )
+
+    def _clock_settings_schema(self) -> vol.Schema:
+        """Return native controls for one complete clock settings block."""
+        assert self._draft is not None
+        clock = self._draft.get(
+            "clock_settings", {"display": False, "brightness": 0, "format": 0}
+        )
+        return vol.Schema(
+            {
+                vol.Required(
+                    "clock_display", default=clock["display"]
+                ): selector.BooleanSelector(),
+                vol.Required(
+                    "clock_brightness", default=str(clock["brightness"])
+                ): _select(_options(0, 9)),
+                vol.Required("clock_format", default=str(clock["format"])): _select(
+                    _options(0, 1)
+                ),
+            }
+        )
+
+    def _routine_settings_schema(self) -> vol.Schema:
+        """Return native controls for one complete routine settings block."""
+        assert self._draft is not None
+        settings = self._draft.get(
+            "routine_settings",
+            {
+                "enabled": False,
+                "music": 0,
+                "volume": 0,
+                "task_reward_sfx": 0,
+                "routine_reward_sfx": 0,
             },
-            last_step=True,
+        )
+        return vol.Schema(
+            {
+                vol.Required(
+                    "routine_enabled", default=settings["enabled"]
+                ): selector.BooleanSelector(),
+                vol.Required("routine_music", default=settings["music"]): (
+                    _byte_selector()
+                ),
+                vol.Required("routine_volume", default=settings["volume"]): (
+                    _byte_selector()
+                ),
+                vol.Required(
+                    "task_reward_sfx", default=str(settings["task_reward_sfx"])
+                ): _select(_options(0, 15)),
+                vol.Required(
+                    "routine_reward_sfx", default=str(settings["routine_reward_sfx"])
+                ): _select(_options(0, 15)),
+            }
         )
 
     def _schedule_schema(self) -> vol.Schema:
         """Return native controls for both seven-day time blocks."""
-        assert self._draft_profile is not None
-        ready = self._draft_profile.get(
-            "ready_to_rise",
-            {"enabled": False, "times": {day: None for day in DAYS}},
+        assert self._draft is not None
+        empty_week = dict.fromkeys(DAYS)
+        ready = self._draft.get(
+            "ready_to_rise", {"enabled": False, "times": empty_week}
         )
-        sleepy = self._draft_profile.get("sleepy_times", {day: None for day in DAYS})
+        sleepy = self._draft.get("sleepy_times", empty_week)
         fields: dict[vol.Marker, Any] = {
             vol.Required(
                 "ready_to_rise_enabled", default=ready["enabled"]
@@ -1183,320 +1042,58 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
                     vol.Required(f"{prefix}_{day}_has_time", default=value is not None)
                 ] = selector.BooleanSelector()
                 fields[
-                    vol.Required(
-                        f"{prefix}_{day}_time", default=self._format_time(value)
-                    )
+                    vol.Required(f"{prefix}_{day}_time", default=_format_time(value))
                 ] = selector.TimeSelector()
-        return vol.Schema(fields)
-
-    def _alarm_schema(self) -> vol.Schema:
-        """Return translated alarm offset and sound selectors."""
-        assert self._draft_profile is not None
-        alarm = self._draft_profile.get(
-            "alarm", {"days": {day: 9 for day in DAYS}, "sound": 0}
-        )
-        fields: dict[vol.Marker, Any] = {}
-        for day in DAYS:
-            fields[vol.Required(f"alarm_{day}", default=str(alarm["days"][day]))] = (
-                selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=_ALARM_OPTIONS, translation_key="alarm_offset"
-                    )
-                )
-            )
-        fields[vol.Required("alarm_sound", default=str(alarm["sound"]))] = (
-            selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=_ALARM_SOUND_OPTIONS, translation_key="alarm_sound"
-                )
-            )
-        )
         return vol.Schema(fields)
 
     def _schedule_copy_schema(self) -> vol.Schema:
         """Return source and multi-day target pickers for weekly times."""
         fields: dict[vol.Marker, Any] = {}
         for prefix in ("ready_to_rise", "sleepy"):
-            fields[vol.Required(f"{prefix}_copy_from", default=DAYS[0])] = (
-                selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=list(DAYS), translation_key="weekday"
-                    )
-                )
+            fields[vol.Required(f"{prefix}_copy_from", default=DAYS[0])] = _select(
+                list(DAYS), "weekday"
             )
-            fields[vol.Optional(f"{prefix}_copy_to", default=[])] = (
-                selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=list(DAYS),
-                        multiple=True,
-                        translation_key="weekday",
-                    )
-                )
+            fields[vol.Optional(f"{prefix}_copy_to", default=[])] = _select(
+                list(DAYS), "weekday", multiple=True
             )
         return vol.Schema(fields)
 
-    def _basic_schema(self) -> vol.Schema:
-        """Return native selectors for private light and audio values."""
-        assert self._draft_profile is not None
-        fields: dict[vol.Marker, Any] = {}
-        for name, options in (
-            ("brightness", _BASIC_VALUE_OPTIONS),
-            ("color", _BASIC_VALUE_OPTIONS),
-            ("light_duration", _LIGHT_DURATION_OPTIONS),
-            ("volume", _BASIC_VALUE_OPTIONS),
-            ("playlist_duration", _PLAYLIST_DURATION_OPTIONS),
-        ):
-            marker = vol.Required(name, default=str(self._draft_profile.get(name, 0)))
-            fields[marker] = selector.SelectSelector(
-                selector.SelectSelectorConfig(options=options)
+    def _alarm_schema(self) -> vol.Schema:
+        """Return translated alarm offset and sound selectors."""
+        assert self._draft is not None
+        alarm = self._draft.get("alarm", {"days": dict.fromkeys(DAYS, 9), "sound": 0})
+        fields: dict[vol.Marker, Any] = {
+            vol.Required(f"alarm_{day}", default=str(alarm["days"][day])): _select(
+                _options(0, 10), "alarm_offset"
             )
-        return vol.Schema(fields)
-
-    def _playlist_schema(self) -> vol.Schema:
-        """Return twelve fixed ordered playlist rows, including empty rows."""
-        assert self._draft_profile is not None
-        playlist = self._draft_profile.get("playlist", [])
-        suggested_values = {
-            f"song_{index}": str(song) for index, song in enumerate(playlist, start=1)
+            for day in DAYS
         }
-        fields: dict[vol.Marker, Any] = {}
-        for index in range(1, MAX_PLAYLIST_SONGS + 1):
-            fields[vol.Optional(f"song_{index}")] = selector.SelectSelector(
-                selector.SelectSelectorConfig(options=_SONG_OPTIONS)
-            )
-        return self.add_suggested_values_to_schema(vol.Schema(fields), suggested_values)
-
-    def _clock_settings_schema(self) -> vol.Schema:
-        """Return native controls for one complete clock settings block."""
-        assert self._draft_profile is not None
-        clock = self._draft_profile.get(
-            "clock_settings", {"display": False, "brightness": 0, "format": 0}
+        fields[vol.Required("alarm_sound", default=str(alarm["sound"]))] = _select(
+            _options(0, 15), "alarm_sound"
         )
-        return vol.Schema(
-            {
-                vol.Required("clock_display", default=clock["display"]): (
-                    selector.BooleanSelector()
-                ),
-                vol.Required("clock_brightness", default=str(clock["brightness"])): (
-                    selector.SelectSelector(
-                        selector.SelectSelectorConfig(options=_BASIC_VALUE_OPTIONS)
-                    )
-                ),
-                vol.Required("clock_format", default=str(clock["format"])): (
-                    selector.SelectSelector(
-                        selector.SelectSelectorConfig(options=_CLOCK_FORMAT_OPTIONS)
-                    )
-                ),
-            }
-        )
-
-    def _routine_settings_schema(self) -> vol.Schema:
-        """Return native controls for one complete routine settings block."""
-        assert self._draft_profile is not None
-        routine_settings = self._draft_profile.get(
-            "routine_settings",
-            {
-                "enabled": False,
-                "music": 0,
-                "volume": 0,
-                "task_reward_sfx": 0,
-                "routine_reward_sfx": 0,
-            },
-        )
-        return vol.Schema(
-            {
-                vol.Required("routine_enabled", default=routine_settings["enabled"]): (
-                    selector.BooleanSelector()
-                ),
-                vol.Required("routine_music", default=routine_settings["music"]): (
-                    self._byte_selector()
-                ),
-                vol.Required("routine_volume", default=routine_settings["volume"]): (
-                    self._byte_selector()
-                ),
-                vol.Required(
-                    "task_reward_sfx", default=str(routine_settings["task_reward_sfx"])
-                ): selector.SelectSelector(
-                    selector.SelectSelectorConfig(options=_ALARM_SOUND_OPTIONS)
-                ),
-                vol.Required(
-                    "routine_reward_sfx",
-                    default=str(routine_settings["routine_reward_sfx"]),
-                ): selector.SelectSelector(
-                    selector.SelectSelectorConfig(options=_ALARM_SOUND_OPTIONS)
-                ),
-            }
-        )
-
-    def _routine_day_schema(self) -> vol.Schema:
-        """Return a translated day picker."""
-        return vol.Schema(
-            {
-                vol.Required("routine_day", default=DAYS[0]): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=list(DAYS), translation_key="weekday"
-                    )
-                )
-            }
-        )
+        return vol.Schema(fields)
 
     def _routine_tasks_schema(self) -> vol.Schema:
         """Return twelve ordered task rows plus an explicit no-time toggle."""
         assert self._routine_day is not None
         routine = self._current_routines()[self._routine_day]
-        suggested_values: dict[str, str] = {}
         fields: dict[vol.Marker, Any] = {
-            vol.Required("routine_has_time", default=routine["time"] is not None): (
-                selector.BooleanSelector()
-            ),
             vol.Required(
-                "routine_time", default=self._format_time(routine["time"])
+                "routine_has_time", default=routine["time"] is not None
+            ): selector.BooleanSelector(),
+            vol.Required(
+                "routine_time", default=_format_time(routine["time"])
             ): selector.TimeSelector(),
         }
-        for index, slot in enumerate(routine["slots"], start=1):
-            if slot is not None and slot["task"] != 0:
-                suggested_values[f"task_{index}"] = str(slot["task"])
-            marker = vol.Optional(f"task_{index}")
-            fields[marker] = selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=_ROUTINE_TASK_OPTIONS,
-                    translation_key="routine_task",
-                )
-            )
-        return self.add_suggested_values_to_schema(vol.Schema(fields), suggested_values)
-
-    def _routine_copy_schema(self) -> vol.Schema:
-        """Return a multi-day copy target picker."""
-        assert self._routine_day is not None
-        return vol.Schema(
-            {
-                vol.Optional("copy_to", default=[]): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=[day for day in DAYS if day != self._routine_day],
-                        multiple=True,
-                        translation_key="weekday",
-                    )
-                )
-            }
-        )
-
-    def _week_from_input(
-        self, user_input: dict[str, Any], prefix: str
-    ) -> dict[str, dict[str, int] | None]:
-        """Decode toggled time selectors without conflating null and midnight."""
-        return {
-            day: (
-                self._parse_time(user_input[f"{prefix}_{day}_time"])
-                if user_input[f"{prefix}_{day}_has_time"]
-                else None
-            )
-            for day in DAYS
-        }
-
-    @staticmethod
-    def _schedule_copy_targets(value: Any, source: str) -> list[str]:
-        """Validate and normalize selected copy targets, excluding the source."""
-        if source not in DAYS or not isinstance(value, list):
-            raise ValueError("Unsupported schedule copy selection")
-        targets: list[str] = []
-        for day in value:
-            if day not in DAYS:
-                raise ValueError("Unsupported schedule copy target")
-            if day != source and day not in targets:
-                targets.append(day)
-        return targets
-
-    def _routine_from_input(self, user_input: dict[str, Any]) -> dict[str, Any]:
-        """Build twelve strict slots while retaining unknown task-zero rows."""
-        assert self._routine_day is not None
-        current = self._current_routines()[self._routine_day]
-        slots: list[dict[str, int] | None] = []
         for index in range(1, MAX_ROUTINE_TASKS + 1):
-            existing = current["slots"][index - 1]
-            selected = user_input.get(f"task_{index}")
-            if selected is None:
-                slots.append(
-                    deepcopy(existing)
-                    if existing is not None and existing["task"] == 0
-                    else None
-                )
-                continue
-            task = int(selected)
-            if task not in range(1, 12):
-                raise ValueError("Unsupported routine task")
-            step = existing["step"] if existing is not None else index
-            slots.append({"step": step, "task": task})
-        return {
-            "time": (
-                self._parse_time(user_input["routine_time"])
-                if user_input["routine_has_time"]
-                else None
-            ),
-            "slots": slots,
-        }
-
-    def _current_routines(self) -> dict[str, dict[str, Any]]:
-        """Return a detached complete seven-day routine block."""
-        assert self._draft_profile is not None
-        routines = self._draft_profile.get("routines")
-        if routines is None:
-            routines = {
-                day: {"time": None, "slots": [None] * MAX_ROUTINE_TASKS} for day in DAYS
-            }
-        return deepcopy(routines)
-
-    def _routines_with(
-        self, day: str, routine: dict[str, Any]
-    ) -> dict[str, dict[str, Any]]:
-        routines = self._current_routines()
-        routines[day] = routine
-        return routines
-
-    @staticmethod
-    def _byte_selector() -> selector.NumberSelector:
-        """Return an integer byte selector instead of a guessed music enum."""
-        return selector.NumberSelector(
-            selector.NumberSelectorConfig(
-                min=0,
-                max=255,
-                step=1,
-                mode=selector.NumberSelectorMode.BOX,
+            fields[vol.Optional(f"task_{index}")] = _select(
+                _options(1, 11), "routine_task"
             )
-        )
-
-    @staticmethod
-    def _integer_input(value: Any) -> int:
-        """Accept selector floats only when they exactly represent an integer."""
-        if type(value) not in (int, float) or int(value) != value:
-            raise ValueError("Value must be an integer")
-        return int(value)
-
-    @staticmethod
-    def _parse_time(value: Any) -> dict[str, int]:
-        """Parse a minute-resolution native time selector value."""
-        if not isinstance(value, str):
-            raise ValueError("Invalid time")
-        parsed = time.fromisoformat(value)
-        if parsed.second or parsed.microsecond or parsed.tzinfo is not None:
-            raise ValueError("Time must have minute resolution")
-        return {"hour": parsed.hour, "minute": parsed.minute}
-
-    @staticmethod
-    def _format_time(value: dict[str, int] | None) -> str:
-        """Format a profile time for the native selector."""
-        if value is None:
-            return "00:00:00"
-        return f"{value['hour']:02d}:{value['minute']:02d}:00"
-
-    def _options_schema(self) -> vol.Schema:
-        """Return options while keeping unavailable restore disabled."""
-        return vol.Schema(
+        return self.add_suggested_values_to_schema(
+            vol.Schema(fields),
             {
-                vol.Required(
-                    CONF_AUTO_RESTORE,
-                    default=self.config_entry.options.get(
-                        CONF_AUTO_RESTORE, DEFAULT_AUTO_RESTORE
-                    ),
-                ): bool
-            }
+                f"task_{index}": str(slot["task"])
+                for index, slot in enumerate(routine["slots"], start=1)
+                if slot is not None and slot["task"] != 0
+            },
         )

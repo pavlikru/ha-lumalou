@@ -4,30 +4,50 @@ from __future__ import annotations
 
 from typing import Any
 
-from homeassistant.components.binary_sensor import BinarySensorEntity
+from homeassistant.components.binary_sensor import (
+    BinarySensorDeviceClass,
+    BinarySensorEntity,
+)
 from homeassistant.const import EntityCategory
 
 from .entity import LumalouEntity
+
+PARALLEL_UPDATES = 0
 
 
 async def async_setup_entry(hass: Any, entry: Any, async_add_entities: Any) -> None:
     """Set up saved-profile diagnostic binary sensors."""
     async_add_entities(
         [
+            LumalouConnectionBinarySensor(entry),
             LumalouProfilePendingBinarySensor(entry),
             LumalouProfilePresentBinarySensor(entry),
         ]
     )
 
 
+class LumalouConnectionBinarySensor(LumalouEntity, BinarySensorEntity):
+    """Report whether the coordinator has a live device connection."""
+
+    _attr_translation_key = "connection"
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    @property
+    def available(self) -> bool:
+        """The diagnostic itself remains readable while BLE is offline."""
+        return True
+
+    @property
+    def is_on(self) -> bool:
+        return bool(self.coordinator.available)
+
+
 class LumalouProfilePendingBinarySensor(LumalouEntity, BinarySensorEntity):
     """Report whether saved profile changes still need verification."""
 
+    _attr_translation_key = "profile_pending"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    def __init__(self, entry: Any) -> None:
-        super().__init__(entry, "Profile pending", "profile_pending")
-        self._attr_translation_key = "profile_pending"
 
     @property
     def available(self) -> bool:
@@ -42,11 +62,8 @@ class LumalouProfilePendingBinarySensor(LumalouEntity, BinarySensorEntity):
 class LumalouProfilePresentBinarySensor(LumalouEntity, BinarySensorEntity):
     """Report whether any saved profile revision or content exists."""
 
+    _attr_translation_key = "profile_present"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    def __init__(self, entry: Any) -> None:
-        super().__init__(entry, "Profile present", "profile_present")
-        self._attr_translation_key = "profile_present"
 
     @property
     def available(self) -> bool:
