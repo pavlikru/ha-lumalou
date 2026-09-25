@@ -17,7 +17,7 @@ dev = [
   "fnv-hash-fast==2.0.3",
   "homekit-audio-proxy==1.2.1",
   "lumalou-gld09==0.3.0",
-  "mypy==1.18.2",
+  "mypy==2.3.1",
   "pre-commit==4.3.0",
   "PyTurboJPEG==1.8.3",
   "PyQRCode==1.2.1",
