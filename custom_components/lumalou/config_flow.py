@@ -18,22 +18,28 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_DEVICE_FINGERPRINT,
     CONF_IDENTIFICATION_SOURCE,
-    CONF_PRODUCT_CODE,
-    CONF_READ_DEVICE_INFORMATION,
+    CONF_PROTOCOL_VERIFIED,
     DOMAIN,
-    IDENTIFICATION_SOURCE_DEVICE_INFORMATION,
-    IDENTIFICATION_SOURCE_LABEL,
+    IDENTIFICATION_SOURCE_FACTORY_TOKEN,
     SUPPORTED_PRODUCT_CODE,
 )
-from .identity import async_read_device_information
+from .identity import (
+    FactoryIdentityLibraryUnavailable,
+    FactoryIdentityProbeError,
+    async_read_device_information,
+    async_read_factory_device_fingerprint,
+)
 from .models import (
     DAYS,
     ProfileValidationError,
     RevisionConflictError,
+    export_profile_payload,
     import_profile_payload,
     validate_profile,
 )
+from .upstream_api import MissingUpstreamCapabilities, require_factory_identity_api
 
 CONF_AUTO_RESTORE = "auto_restore"
 DEFAULT_AUTO_RESTORE = False
@@ -49,7 +55,7 @@ _ROUTINE_TASK_OPTIONS = [str(value) for value in range(1, 12)]
 _BASIC_VALUE_OPTIONS = [str(value) for value in range(10)]
 _LIGHT_DURATION_OPTIONS = [str(value) for value in range(6)]
 _PLAYLIST_DURATION_OPTIONS = [str(value) for value in range(7)]
-_SONG_OPTIONS = [str(value) for value in range(1, 19)]
+_SONG_OPTIONS = [str(value) for value in range(1, 13)]
 _CLOCK_FORMAT_OPTIONS = ["0", "1"]
 
 
@@ -60,24 +66,41 @@ def _is_supported(info: BluetoothServiceInfoBleak) -> bool:
 
 
 def _device_title(info: BluetoothServiceInfoBleak) -> str:
-    """Build a user-facing discovery title."""
-    if info.name and info.name != info.address:
+    """Build a user-facing title without exposing the numeric BLE name."""
+    if info.name and info.name != info.address and not info.name.isdecimal():
         return info.name
     return "Lumalou"
 
 
-def _normalize_product_code(value: Any) -> str:
-    """Normalize user-confirmed label text without guessing compatibility."""
-    return value.strip().upper() if isinstance(value, str) else ""
-
-
-def _product_code_schema() -> vol.Schema:
-    """Offer label transcription or a read-only standard GATT probe."""
-    return vol.Schema(
-        {
-            vol.Optional(CONF_PRODUCT_CODE, default=""): str,
-            vol.Optional(CONF_READ_DEVICE_INFORMATION, default=True): bool,
-        }
+def _read_profile_summary(profile: dict[str, Any]) -> str:
+    """Build a compact preview of persistent values without IDs or raw bytes."""
+    ready_times = profile["ready_to_rise"]["times"]
+    sleepy_times = profile["sleepy_times"]
+    routines = profile["routines"]
+    wake_count = sum(value is not None for value in ready_times.values())
+    wake_midnight = sum(
+        value == {"hour": 0, "minute": 0} for value in ready_times.values()
+    )
+    sleepy_count = sum(value is not None for value in sleepy_times.values())
+    sleepy_midnight = sum(
+        value == {"hour": 0, "minute": 0} for value in sleepy_times.values()
+    )
+    routine_days = sum(value["time"] is not None for value in routines.values())
+    routine_tasks = sum(
+        slot is not None for value in routines.values() for slot in value["slots"]
+    )
+    active_alarms = sum(value != 9 for value in profile["alarm"]["days"].values())
+    clock = profile["clock_settings"]
+    return (
+        f"Light {profile['brightness']}/9, color {profile['color']}; "
+        f"volume {profile['volume']}/9; playlist {len(profile['playlist'])}/12; "
+        f"clock {'on' if clock['display'] else 'off'}, "
+        f"brightness {clock['brightness']}/9, "
+        f"{'24' if clock['format'] else '12'}-hour; "
+        f"wake {wake_count}/7 ({wake_midnight} at midnight); "
+        f"bedtime {sleepy_count}/7 ({sleepy_midnight} at midnight); "
+        f"alarms {active_alarms}/7; routines {routine_days}/7, "
+        f"{routine_tasks}/84 tasks"
     )
 
 
@@ -109,9 +132,11 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="not_connectable")
         if not _is_supported(discovery_info):
             return self.async_abort(reason="unsupported_device")
-
-        await self.async_set_unique_id(discovery_info.address)
-        self._abort_if_unique_id_configured()
+        if any(
+            entry.data.get(CONF_ADDRESS) == discovery_info.address
+            for entry in self._async_current_entries()
+        ):
+            return self.async_abort(reason="already_configured")
 
         self._discovered = discovery_info
         title = _device_title(discovery_info)
@@ -121,67 +146,72 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_bluetooth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Confirm a discovered Lumalou from a label or standard GATT identity."""
+        """Identify a discovered device using read-only authenticated fields."""
         assert self._discovered is not None
 
         if user_input is not None:
-            product_code, source, error = await self._async_resolve_product_code(
-                user_input,
+            fingerprint, error = await self._async_resolve_device_fingerprint(
                 self._discovered.device,
                 _device_title(self._discovered),
             )
             if error is not None:
                 return self.async_show_form(
                     step_id="bluetooth_confirm",
-                    data_schema=_product_code_schema(),
+                    data_schema=vol.Schema({}),
                     errors=error,
                     description_placeholders=self.context["title_placeholders"],
                 )
-            assert product_code is not None
-            assert source is not None
+            assert fingerprint is not None
+            await self.async_set_unique_id(fingerprint)
+            self._abort_if_unique_id_configured()
             return self.async_create_entry(
                 title=_device_title(self._discovered),
                 data={
                     CONF_ADDRESS: self._discovered.address,
-                    CONF_PRODUCT_CODE: product_code,
-                    CONF_IDENTIFICATION_SOURCE: source,
+                    CONF_DEVICE_FINGERPRINT: fingerprint,
+                    CONF_IDENTIFICATION_SOURCE: IDENTIFICATION_SOURCE_FACTORY_TOKEN,
+                    CONF_PROTOCOL_VERIFIED: False,
                 },
                 options={CONF_AUTO_RESTORE: DEFAULT_AUTO_RESTORE},
             )
 
         return self.async_show_form(
             step_id="bluetooth_confirm",
-            data_schema=_product_code_schema(),
+            data_schema=vol.Schema({}),
             description_placeholders=self.context["title_placeholders"],
         )
 
-    async def _async_resolve_product_code(
+    async def _async_resolve_device_fingerprint(
         self,
-        user_input: dict[str, Any],
         device: BLEDevice | None,
         name: str,
-    ) -> tuple[str | None, str | None, dict[str, str] | None]:
-        """Resolve GLD09 without treating an advertisement as model evidence."""
-        product_code = _normalize_product_code(user_input.get(CONF_PRODUCT_CODE))
-        if product_code:
-            if product_code != SUPPORTED_PRODUCT_CODE:
-                return None, None, {CONF_PRODUCT_CODE: "unsupported_product_code"}
-            return product_code, IDENTIFICATION_SOURCE_LABEL, None
-
-        if not user_input.get(CONF_READ_DEVICE_INFORMATION, True):
-            return None, None, {CONF_PRODUCT_CODE: "identity_required"}
+    ) -> tuple[str | None, dict[str, str] | None]:
+        """Verify the user-selected signed device key without guessing a SKU."""
         if device is None:
-            return None, None, {"base": "device_unavailable"}
+            return None, {"base": "device_unavailable"}
+        try:
+            require_factory_identity_api()
+        except MissingUpstreamCapabilities:
+            return None, {"base": "factory_verifier_unavailable"}
         try:
             identity = await async_read_device_information(device, name)
         except Exception:
-            return None, None, {"base": "cannot_connect"}
-        detected = _normalize_product_code(identity.model_number)
-        if not detected:
-            return None, None, {"base": "model_not_reported"}
-        if detected != SUPPORTED_PRODUCT_CODE:
-            return None, None, {CONF_PRODUCT_CODE: "unsupported_product_code"}
-        return detected, IDENTIFICATION_SOURCE_DEVICE_INFORMATION, None
+            return None, {"base": "cannot_connect"}
+        detected = (
+            identity.model_number.strip().upper() if identity.model_number else ""
+        )
+        if detected and detected != SUPPORTED_PRODUCT_CODE:
+            return None, {"base": "unsupported_product_code"}
+
+        # Device Information is only a conflict check. The signed key binds
+        # every later session to the device selected and confirmed by the user.
+        try:
+            fingerprint = await async_read_factory_device_fingerprint(device, name)
+        except FactoryIdentityLibraryUnavailable:
+            return None, {"base": "factory_verifier_unavailable"}
+        except FactoryIdentityProbeError:
+            return None, {"base": "identity_unconfirmed"}
+        return fingerprint, None
 
     @override
     async def async_step_user(
@@ -200,19 +230,19 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     errors={"base": "device_unavailable"},
                 )
 
-            await self.async_set_unique_id(address)
-            self._abort_if_unique_id_configured()
             self._discovered = discovery_info
             self.context["title_placeholders"] = {"name": _device_title(discovery_info)}
             return await self.async_step_bluetooth_confirm()
 
-        configured_ids = self._async_current_ids(include_ignore=False)
+        configured_addresses = {
+            entry.data.get(CONF_ADDRESS) for entry in self._async_current_entries()
+        }
         self._discovered_devices = {
             info.address: info
             for info in bluetooth.async_discovered_service_info(
                 self.hass, connectable=True
             )
-            if _is_supported(info) and info.address not in configured_ids
+            if _is_supported(info) and info.address not in configured_addresses
         }
         if not self._discovered_devices:
             return self.async_abort(reason="no_devices_found")
@@ -250,39 +280,115 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Let legacy entries confirm GLD09 by label or standard GATT identity."""
-        entry = self._get_reconfigure_entry()
-        if user_input is not None:
-            device = None
-            if not _normalize_product_code(
-                user_input.get(CONF_PRODUCT_CODE)
-            ) and user_input.get(CONF_READ_DEVICE_INFORMATION, True):
-                from homeassistant.components import bluetooth
+        """Rebind an entry to a user-selected, signed device after address changes."""
+        from homeassistant.components import bluetooth
 
-                device = bluetooth.async_ble_device_from_address(
-                    self.hass, entry.data[CONF_ADDRESS], connectable=True
+        entry = self._get_reconfigure_entry()
+        other_entries = [
+            other
+            for other in self._async_current_entries()
+            if other.entry_id != entry.entry_id
+        ]
+        if user_input is not None:
+            address = user_input[CONF_ADDRESS]
+            selected = self._discovered_devices.get(address)
+            if selected is None:
+                return self.async_show_form(
+                    step_id="reconfigure",
+                    data_schema=self._reconfigure_schema(),
+                    errors={"base": "device_unavailable"},
                 )
-            product_code, source, error = await self._async_resolve_product_code(
-                user_input, device, entry.title or "Lumalou"
+            if any(other.data.get(CONF_ADDRESS) == address for other in other_entries):
+                return self.async_show_form(
+                    step_id="reconfigure",
+                    data_schema=self._reconfigure_schema(),
+                    errors={"base": "already_configured"},
+                )
+            # Resolve the selected address again through HA so an old form
+            # cannot retain a stale or no longer connectable BLEDevice.
+            live = next(
+                (
+                    info
+                    for info in bluetooth.async_discovered_service_info(
+                        self.hass, connectable=True
+                    )
+                    if info.address == address and _is_supported(info)
+                ),
+                None,
+            )
+            if live is None:
+                return self.async_show_form(
+                    step_id="reconfigure",
+                    data_schema=self._reconfigure_schema(),
+                    errors={"base": "device_unavailable"},
+                )
+            fingerprint, error = await self._async_resolve_device_fingerprint(
+                live.device,
+                _device_title(live),
             )
             if error is None:
-                assert product_code is not None
-                assert source is not None
+                assert fingerprint is not None
+                enrolled = entry.data.get(CONF_DEVICE_FINGERPRINT)
+                if enrolled is None and entry.unique_id != entry.data.get(CONF_ADDRESS):
+                    # Older entries use the address as unique ID. A migrated
+                    # entry may already carry its signed key as unique ID.
+                    enrolled = entry.unique_id
+                if enrolled is not None and fingerprint != enrolled:
+                    error = {"base": "identity_unconfirmed"}
+                elif any(
+                    other.unique_id == fingerprint
+                    or other.data.get(CONF_DEVICE_FINGERPRINT) == fingerprint
+                    or other.data.get(CONF_ADDRESS) == address
+                    for other in self._async_current_entries()
+                    if other.entry_id != entry.entry_id
+                ):
+                    error = {"base": "already_configured"}
+            if error is None:
                 return self.async_update_reload_and_abort(
                     entry,
-                    data_updates={
-                        CONF_PRODUCT_CODE: product_code,
-                        CONF_IDENTIFICATION_SOURCE: source,
+                    unique_id=fingerprint,
+                    data={
+                        CONF_ADDRESS: address,
+                        CONF_DEVICE_FINGERPRINT: fingerprint,
+                        CONF_IDENTIFICATION_SOURCE: IDENTIFICATION_SOURCE_FACTORY_TOKEN,
+                        CONF_PROTOCOL_VERIFIED: False,
                     },
                 )
             return self.async_show_form(
                 step_id="reconfigure",
-                data_schema=_product_code_schema(),
+                data_schema=self._reconfigure_schema(),
                 errors=error,
             )
 
+        self._discovered_devices = {
+            info.address: info
+            for info in bluetooth.async_discovered_service_info(
+                self.hass, connectable=True
+            )
+            if _is_supported(info)
+            and not any(
+                other.data.get(CONF_ADDRESS) == info.address for other in other_entries
+            )
+        }
+        if not self._discovered_devices:
+            return self.async_abort(reason="no_devices_found")
         return self.async_show_form(
-            step_id="reconfigure", data_schema=_product_code_schema()
+            step_id="reconfigure", data_schema=self._reconfigure_schema()
+        )
+
+    def _reconfigure_schema(self) -> vol.Schema:
+        """List discovered candidates without revealing advertising serials."""
+        return vol.Schema(
+            {
+                vol.Required(CONF_ADDRESS): vol.In(
+                    {
+                        address: f"{_device_title(info)} {index}"
+                        for index, (address, info) in enumerate(
+                            self._discovered_devices.items(), start=1
+                        )
+                    }
+                )
+            }
         )
 
 
@@ -426,8 +532,82 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
     async def async_step_read_profile(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Never claim an unimplemented device readback capability."""
-        return self.async_abort(reason="profile_readback_unavailable")
+        """Read one complete fresh profile, then show a CAS-protected preview."""
+        coordinator = self._coordinator()
+        record = self._profile_record()
+        if coordinator is None or record is None:
+            return self.async_abort(reason="entry_not_loaded")
+        try:
+            (
+                snapshot,
+                expected_revision,
+            ) = await coordinator.async_read_profile_snapshot()
+            self._import_payload = export_profile_payload(snapshot)
+        except HomeAssistantError, ProfileValidationError, ValueError:
+            return self.async_abort(reason="profile_read_failed")
+
+        self._import_profile = deepcopy(snapshot)
+        self._import_revision = expected_revision
+        self._import_removed_fields = sorted(
+            set(record.desired_profile) - set(snapshot)
+        )
+        return await self.async_step_read_profile_confirm()
+
+    async def async_step_read_profile_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Replace saved intent only after the user confirms a full fresh read."""
+        if (
+            self._import_payload is None
+            or self._import_profile is None
+            or self._import_revision is None
+        ):
+            return self.async_abort(reason="profile_read_failed")
+        if user_input is not None:
+            if not user_input["confirm"]:
+                return self._read_profile_confirm_form(
+                    errors={"confirm": "confirmation_required"}
+                )
+            coordinator = self._coordinator()
+            if coordinator is None:
+                return self.async_abort(reason="entry_not_loaded")
+            try:
+                await coordinator.async_accept_device_profile(
+                    deepcopy(self._import_profile),
+                    self._import_revision,
+                    confirmed=True,
+                )
+            except RevisionConflictError:
+                return self._read_profile_confirm_form(
+                    errors={"base": "revision_conflict"}
+                )
+            except HomeAssistantError, ProfileValidationError, ValueError:
+                return self._read_profile_confirm_form(
+                    errors={"base": "profile_import_failed"}
+                )
+            return self.async_create_entry(data=dict(self.config_entry.options))
+        return self._read_profile_confirm_form()
+
+    def _read_profile_confirm_form(
+        self, *, errors: dict[str, str] | None = None
+    ) -> ConfigFlowResult:
+        """Show snapshot completeness and saved revision without device secrets."""
+        assert self._import_payload is not None
+        assert self._import_profile is not None
+        assert self._import_revision is not None
+        return self.async_show_form(
+            step_id="read_profile_confirm",
+            data_schema=vol.Schema(
+                {vol.Required("confirm", default=False): selector.BooleanSelector()}
+            ),
+            errors=errors or {},
+            description_placeholders={
+                "field_count": str(len(self._import_profile)),
+                "revision": str(self._import_revision),
+                "summary": _read_profile_summary(self._import_profile),
+            },
+            last_step=True,
+        )
 
     async def async_step_behavior(
         self, user_input: dict[str, Any] | None = None

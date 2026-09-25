@@ -28,7 +28,7 @@ def _payload() -> dict:
     return {
         "schema_version": 1,
         "scope": "supported_subset",
-        "profile": {"playlist": [18, 2, 2], "volume": 1},
+        "profile": {"playlist": [12, 2, 2], "volume": 1},
     }
 
 
