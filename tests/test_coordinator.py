@@ -114,6 +114,10 @@ class FakeDevice:
                 self.state.update(lightStatus=1, activityState=1)
         elif opcode == 0x3E:
             self.state.update(lightStatus=0, activityState=0)
+        elif opcode == 0x7B:  # routine start: routine mode, silent preview
+            self.state["operationMode"] = 7
+        elif opcode == 0x6B and args[0] in (3, 4):  # complete all / cancel
+            self.state["operationMode"] = 0
         elif opcode == 0x3F:  # source 0 is the soother: music and light
             self.state.update(musicStatus=1, lightStatus=int(args[0] == 0) or 0)
         elif opcode == 0x38:
@@ -285,6 +289,7 @@ def rig():
         # Tests do not wait out the hardware reconnect gap.
         patch("custom_components.lumalou.coordinator.RECONNECT_DELAY", 0),
         patch("custom_components.lumalou.coordinator.STATE_CONFIRM_TIMEOUT", 0.05),
+        patch("custom_components.lumalou.coordinator.ROUTINE_START_DELAY", 0),
     ):
         yield SimpleNamespace(
             coordinator=coordinator,

@@ -191,22 +191,20 @@
       },
       "routine_tasks": {
         "title": "Edit daily routine",
-        "description": "Rows are stored in order. Clear a row to remove it. Existing source task ID 0 rows are retained but are not shown as a named choice. Drag-and-drop reordering is unavailable in Home Assistant options flows; move choices between fixed rows instead.",
+        "description": "Choose the start time and the tasks in order: row 1 is step 1, row 2 step 2, and so on. Empty rows are skipped; each task can be used once. Leave every row empty for no routine on this day. Nothing is sent to the device; use the `lumalou.set_routine` action to write a routine to Lumalou directly.",
         "data": {
-          "routine_has_time": "Routine has a start time",
-          "routine_time": "Routine start time",
-          "task_1": "Task row 1",
-          "task_2": "Task row 2",
-          "task_3": "Task row 3",
-          "task_4": "Task row 4",
-          "task_5": "Task row 5",
-          "task_6": "Task row 6",
-          "task_7": "Task row 7",
-          "task_8": "Task row 8",
-          "task_9": "Task row 9",
-          "task_10": "Task row 10",
-          "task_11": "Task row 11",
-          "task_12": "Task row 12"
+          "routine_time": "Start time",
+          "task_1": "Step 1",
+          "task_2": "Step 2",
+          "task_3": "Step 3",
+          "task_4": "Step 4",
+          "task_5": "Step 5",
+          "task_6": "Step 6",
+          "task_7": "Step 7",
+          "task_8": "Step 8",
+          "task_9": "Step 9",
+          "task_10": "Step 10",
+          "task_11": "Step 11"
         }
       },
       "routine_copy": {
@@ -225,7 +223,7 @@
       },
       "routine_confirm": {
         "title": "Confirm daily routine",
-        "description": "Revision {revision}: {day}, {task_count} task rows, {copy_count} matching copied days, {zero_count} preserved unnamed task ID 0 rows. Saving changes only the private profile; it does not write to the device.",
+        "description": "Revision {revision}: {day} at {time}: {tasks}. Copied to {copy_count} more days. Saving changes only the private profile; it does not write to the device.",
         "data": {
           "confirm": "Save this routine"
         }
@@ -256,7 +254,7 @@
       "invalid_schedule": "Enter valid minute-resolution schedule times.",
       "invalid_schedule_copy": "Choose supported source and target days for schedule copying.",
       "invalid_schedule_alarm": "Choose a supported alarm offset and sound.",
-      "invalid_routine_tasks": "Use no more than 12 supported task rows and a valid minute-resolution time.",
+      "invalid_routine_tasks": "Choose each task only once and a valid minute-resolution time.",
       "invalid_playlist": "Use at most 12 song IDs from 1 through 12.",
       "invalid_clock_settings": "Choose a supported clock display, brightness, and format.",
       "invalid_routine_settings": "Use whole music and volume values from 0 to 15 and supported reward sounds.",
@@ -319,17 +317,17 @@
     },
     "routine_task": {
       "options": {
-        "1": "Get dressed",
-        "2": "Wash up",
-        "3": "Brush teeth",
-        "4": "Bathroom",
-        "5": "Backpack",
-        "6": "Meal",
-        "7": "Story",
-        "8": "Tidy up",
-        "9": "Heart",
-        "10": "Swirl",
-        "11": "Star"
+        "get_dressed": "Get dressed",
+        "wash_up": "Wash up",
+        "brush_teeth": "Brush teeth",
+        "toilet": "Toilet",
+        "backpack": "Backpack",
+        "meal": "Meal",
+        "story": "Story",
+        "tidy_up": "Tidy up",
+        "heart": "Heart",
+        "swirl": "Swirl",
+        "star": "Star"
       }
     }
   },
@@ -373,6 +371,42 @@
         "expected_revision": {
           "name": "Expected revision",
           "description": "Optional saved revision to restore; the action fails if the profile changed. Defaults to the current revision."
+        }
+      }
+    },
+    "set_routine": {
+      "name": "Set routine",
+      "description": "Save the routine for the chosen weekdays and write it to Lumalou, verified with a fresh read. Tasks run in the given order, one per step; an empty task list removes the routine on those days.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Device",
+          "description": "Lumalou configuration entry."
+        },
+        "days": {
+          "name": "Days",
+          "description": "Weekdays that get this routine."
+        },
+        "time": {
+          "name": "Time",
+          "description": "Start time; required when there are tasks."
+        },
+        "tasks": {
+          "name": "Tasks",
+          "description": "Tasks in order, each at most once (up to 11)."
+        }
+      }
+    },
+    "start_routine": {
+      "name": "Start routine",
+      "description": "Start today's routine now, like the scheduled start: the first task becomes current with its music. With tasks, those tasks run instead, this time only; today's saved routine is written back when the routine ends.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Device",
+          "description": "Lumalou configuration entry."
+        },
+        "tasks": {
+          "name": "Tasks",
+          "description": "Optional tasks in order for this run only."
         }
       }
     }
@@ -422,6 +456,15 @@
     },
     "clock_untrusted": {
       "message": "The Home Assistant clock does not look set, so the Lumalou clock was not changed."
+    },
+    "routine_running": {
+      "message": "A routine is already running on Lumalou. Wait until it ends or cancel it."
+    },
+    "routine_not_running": {
+      "message": "No routine is running on Lumalou."
+    },
+    "invalid_routine": {
+      "message": "Invalid routine: use each task at most once, and a start time when there are tasks."
     }
   },
   "issues": {
@@ -461,6 +504,18 @@
     "button": {
       "sync_clock": {
         "name": "Synchronize clock"
+      },
+      "start_routine": {
+        "name": "Start routine"
+      },
+      "complete_task": {
+        "name": "Complete task"
+      },
+      "previous_task": {
+        "name": "Previous task"
+      },
+      "cancel_routine": {
+        "name": "Cancel routine"
       }
     },
     "light": {
@@ -553,6 +608,32 @@
           "applying": "Applying",
           "error": "Error"
         }
+      },
+      "routine": {
+        "name": "Routine",
+        "state": {
+          "off": "Off",
+          "ready": "Ready",
+          "in_progress": "In progress",
+          "completed": "Completed"
+        }
+      },
+      "current_task": {
+        "name": "Current task",
+        "state": {
+          "none": "None",
+          "get_dressed": "Get dressed",
+          "wash_up": "Wash up",
+          "brush_teeth": "Brush teeth",
+          "toilet": "Toilet",
+          "backpack": "Backpack",
+          "meal": "Meal",
+          "story": "Story",
+          "tidy_up": "Tidy up",
+          "heart": "Heart",
+          "swirl": "Swirl",
+          "star": "Star"
+        }
       }
     },
     "switch": {
@@ -561,11 +642,56 @@
       },
       "clock_display": {
         "name": "Clock display"
+      },
+      "routines": {
+        "name": "Routines"
+      },
+      "routine_music": {
+        "name": "Routine music"
+      },
+      "task_reward_sound": {
+        "name": "Task reward sound"
+      },
+      "routine_reward_sound": {
+        "name": "Routine reward sound"
       }
     },
     "number": {
       "clock_brightness": {
         "name": "Clock brightness"
+      },
+      "routine_volume": {
+        "name": "Routine volume"
+      }
+    },
+    "event": {
+      "routine": {
+        "name": "Routine",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "task_completed": "Task completed",
+              "routine_completed": "Routine completed",
+              "routine_cancelled": "Routine cancelled"
+            }
+          },
+          "task": {
+            "name": "Task",
+            "state": {
+              "get_dressed": "Get dressed",
+              "wash_up": "Wash up",
+              "brush_teeth": "Brush teeth",
+              "toilet": "Toilet",
+              "backpack": "Backpack",
+              "meal": "Meal",
+              "story": "Story",
+              "tidy_up": "Tidy up",
+              "heart": "Heart",
+              "swirl": "Swirl",
+              "star": "Star"
+            }
+          }
+        }
       }
     }
   }

@@ -27,6 +27,9 @@ from custom_components.lumalou import (
     button as button_platform,
 )
 from custom_components.lumalou import (
+    event as event_platform,
+)
+from custom_components.lumalou import (
     light as light_platform,
 )
 from custom_components.lumalou import (
@@ -45,22 +48,38 @@ from custom_components.lumalou import (
     switch as switch_platform,
 )
 from custom_components.lumalou.binary_sensor import LumalouConnectionBinarySensor
-from custom_components.lumalou.button import LumalouSyncClockButton
+from custom_components.lumalou.button import (
+    LumalouCancelRoutineButton,
+    LumalouCompleteTaskButton,
+    LumalouPreviousTaskButton,
+    LumalouStartRoutineButton,
+    LumalouSyncClockButton,
+)
+from custom_components.lumalou.event import LumalouRoutineEvent
 from custom_components.lumalou.light import LumalouLight
 from custom_components.lumalou.media_player import LumalouMediaPlayer
-from custom_components.lumalou.number import LumalouClockBrightnessNumber
+from custom_components.lumalou.number import (
+    LumalouClockBrightnessNumber,
+    LumalouRoutineVolumeNumber,
+)
 from custom_components.lumalou.select import (
     LumalouClockFormatSelect,
     LumalouLightDurationSelect,
     LumalouPlaylistDurationSelect,
 )
 from custom_components.lumalou.sensor import (
+    LumalouCurrentTaskSensor,
     LumalouFirmwareSensor,
     LumalouProfileSyncStatusSensor,
+    LumalouRoutineSensor,
 )
 from custom_components.lumalou.switch import (
     LumalouClockDisplaySwitch,
     LumalouMaintenanceSwitch,
+    LumalouRoutineMusicSwitch,
+    LumalouRoutineRewardSoundSwitch,
+    LumalouRoutinesSwitch,
+    LumalouTaskRewardSoundSwitch,
 )
 
 FINGERPRINT = "f" * 64
@@ -91,9 +110,19 @@ class FakeCoordinator:
         self.async_stop_audio = AsyncMock()
         self.async_set_maintenance = AsyncMock()
         self.async_sync_clock = AsyncMock()
+        self.async_set_routine_settings = AsyncMock()
+        self.async_start_routine = AsyncMock()
+        self.async_routine_control = AsyncMock()
+        self.routine_phase = "off"
+        self.current_task = "none"
+        self.routine_listeners = []
 
     def async_add_listener(self, callback):
         return lambda: None
+
+    def async_add_routine_listener(self, callback):
+        self.routine_listeners.append(callback)
+        return lambda: self.routine_listeners.remove(callback)
 
 
 def make_entry(
@@ -337,6 +366,7 @@ async def test_platform_setup_callbacks_add_all_entities():
     for platform in (
         binary_sensor_platform,
         button_platform,
+        event_platform,
         light_platform,
         media_player_platform,
         number_platform,
@@ -346,7 +376,7 @@ async def test_platform_setup_callbacks_add_all_entities():
     ):
         await platform.async_setup_entry(None, entry, add_entities)
 
-    assert sum(len(call.args[0]) for call in add_entities.call_args_list) == 12
+    assert sum(len(call.args[0]) for call in add_entities.call_args_list) == 24
 
 
 def test_diagnostic_sensor_values_remain_readable_offline():
@@ -455,3 +485,116 @@ def test_controls_stay_unavailable_until_protocol_is_verified():
     assert all(entity.available for entity in controls)
     coordinator.available = False
     assert not any(entity.available for entity in controls)
+
+
+async def test_routine_buttons_start_and_control_only_while_running():
+    """Start is a plain control; the others need a running routine (mode 7)."""
+    entry, coordinator = make_entry({"operationMode": 0})
+    start = LumalouStartRoutineButton(entry)
+    controls = {
+        LumalouCompleteTaskButton(entry): 0,
+        LumalouPreviousTaskButton(entry): 1,
+        LumalouCancelRoutineButton(entry): 4,
+    }
+    assert start.entity_category is None
+    assert start.available
+    assert not any(button.available for button in controls)
+
+    coordinator.data = {"operationMode": 7}
+    assert all(button.available for button in controls)
+    coordinator.protocol_verified = False
+    assert not any(button.available for button in (start, *controls))
+    coordinator.protocol_verified = True
+
+    await start.async_press()
+    coordinator.async_start_routine.assert_awaited_once_with()
+    for button, code in controls.items():
+        assert button.entity_category is None
+        await button.async_press()
+        coordinator.async_routine_control.assert_awaited_with(code)
+    assert {button.unique_id for button in controls} == {
+        f"{FINGERPRINT}_complete_task",
+        f"{FINGERPRINT}_previous_task",
+        f"{FINGERPRINT}_cancel_routine",
+    }
+
+
+async def test_routine_setting_switches_and_volume():
+    """Routines and the three sounds are booleans; volume is 0..9."""
+    entry, coordinator = make_entry(
+        {
+            "routineModeStatus": 1,
+            "routineMusicStatus": 0,
+            "taskRewardSfx": 1,
+            "routineRewardSfx": 0,
+            "routineVolume": 2,
+        }
+    )
+    switches = {
+        LumalouRoutinesSwitch(entry): ("enabled", True, True),
+        LumalouRoutineMusicSwitch(entry): ("music", False, 1),
+        LumalouTaskRewardSoundSwitch(entry): ("task_reward_sfx", True, 1),
+        LumalouRoutineRewardSoundSwitch(entry): ("routine_reward_sfx", False, 1),
+    }
+    for switch, (setting, is_on, on_value) in switches.items():
+        assert switch.entity_category is EntityCategory.CONFIG
+        assert switch.is_on is is_on
+        await switch.async_turn_on()
+        coordinator.async_set_routine_settings.assert_awaited_with(
+            **{setting: on_value}
+        )
+        await switch.async_turn_off()
+        coordinator.async_set_routine_settings.assert_awaited_with(
+            **{setting: False if setting == "enabled" else 0}
+        )
+
+    volume = LumalouRoutineVolumeNumber(entry)
+    assert volume.entity_category is EntityCategory.CONFIG
+    assert volume.native_value == 2
+    assert (volume.native_min_value, volume.native_max_value) == (0, 9)
+    await volume.async_set_native_value(4.0)
+    coordinator.async_set_routine_settings.assert_awaited_with(volume=4)
+
+    coordinator.data = None
+    assert LumalouRoutinesSwitch(entry).is_on is None
+
+
+def test_routine_sensors_are_enums_fed_by_the_coordinator():
+    entry, coordinator = make_entry({"operationMode": 7})
+    routine = LumalouRoutineSensor(entry)
+    task = LumalouCurrentTaskSensor(entry)
+
+    assert routine.options == ["off", "ready", "in_progress", "completed"]
+    assert task.options[:4] == ["none", "get_dressed", "wash_up", "brush_teeth"]
+    assert len(task.options) == 12
+    assert routine.entity_category is None
+    coordinator.routine_phase = "in_progress"
+    coordinator.current_task = "brush_teeth"
+    assert routine.native_value == "in_progress"
+    assert task.native_value == "brush_teeth"
+
+
+async def test_routine_event_entity_fires_coordinator_events(hass: HomeAssistant):
+    entry, coordinator = make_entry({"operationMode": 7})
+    event = LumalouRoutineEvent(entry)
+    event.hass = hass
+    event.entity_id = "event.lumalou_routine"
+    event.async_write_ha_state = Mock()
+    assert event.event_types == [
+        "task_completed",
+        "routine_completed",
+        "routine_cancelled",
+    ]
+
+    await event.async_added_to_hass()
+    (listener,) = coordinator.routine_listeners
+    listener("task_completed", {"task": "brush_teeth"})
+
+    assert event.state_attributes == {
+        "event_type": "task_completed",
+        "task": "brush_teeth",
+    }
+    event.async_write_ha_state.assert_called_once()
+    for remove in event._on_remove or []:
+        remove()
+    assert coordinator.routine_listeners == []

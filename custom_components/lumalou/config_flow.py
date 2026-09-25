@@ -24,12 +24,15 @@ from .const import (
     CONF_PROTOCOL_VERIFIED,
     DEFAULT_AUTO_RESTORE,
     DOMAIN,
+    ROUTINE_TASKS,
 )
 from .models import (
     DAYS,
     ROUTINE_NIBBLE_MAX,
     RevisionConflictError,
     profile_is_complete,
+    routine_from_tasks,
+    routine_task_ids,
     validate_profile,
 )
 from .transport import async_read_device_fingerprint
@@ -39,7 +42,8 @@ _LOGGER = logging.getLogger(__name__)
 CONF_CONFIRM = "confirm"
 MANUFACTURER_ID = 950
 MANUFACTURER_PREFIX = b"MB"
-MAX_ROUTINE_TASKS = 12
+# One row per step; a task appears at most once, so one row per task type.
+ROUTINE_ROWS = len(ROUTINE_TASKS)
 MAX_PLAYLIST_SONGS = 12
 EDITORS = (
     "playlist",
@@ -672,19 +676,34 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
             await coordinator.async_edit_profile(deepcopy(changes), revision)
 
         summary = self._edit_summary()
-        if "day" in summary:
-            summary["day"] = await self._async_day_name(summary["day"])
+        if self._editor == "routine":
+            assert self._draft is not None
+            assert self._routine_day is not None
+            names = await self._async_option_names()
+            routine = self._draft["routines"][self._routine_day]
+            summary["day"] = names("weekday", self._routine_day)
+            summary["tasks"] = (
+                " → ".join(
+                    names("routine_task", ROUTINE_TASKS[task - 1])
+                    for task in routine_task_ids(routine)
+                )
+                or "—"
+            )
         self._pending = (f"{self._editor}_confirm", summary, save)
         return await self._async_confirm()
 
-    async def _async_day_name(self, day: str) -> str:
-        """Translate a weekday key for a placeholder (the frontend cannot)."""
+    async def _async_option_names(self) -> Callable[[str, str], str]:
+        """Translate selector options for placeholders (the frontend cannot)."""
         translations = await async_get_translations(
             self.hass, self.hass.config.language, "selector", {DOMAIN}
         )
-        return translations.get(
-            f"component.{DOMAIN}.selector.weekday.options.{day}", day
-        )
+
+        def name(selector_key: str, option: str) -> str:
+            return translations.get(
+                f"component.{DOMAIN}.selector.{selector_key}.options.{option}", option
+            )
+
+        return name
 
     async def _async_confirm(
         self, user_input: dict[str, Any] | None = None
@@ -753,14 +772,10 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
             }
         else:
             assert self._routine_day is not None
-            slots = draft["routines"][self._routine_day]["slots"]
+            time = draft["routines"][self._routine_day]["time"]
             summary |= {
-                "day": self._routine_day,
-                "task_count": sum(slot is not None for slot in slots),
+                "time": "—" if time is None else _format_time(time)[:5],
                 "copy_count": len(self._copied_days),
-                "zero_count": sum(
-                    slot is not None and slot["task"] == 0 for slot in slots
-                ),
             }
         return {name: str(value) for name, value in summary.items()}
 
@@ -804,30 +819,21 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
         return {"ready_to_rise": ready_to_rise, "sleepy_times": sleepy_times}
 
     def _parse_routine_tasks(self, user_input: dict[str, Any]) -> dict[str, Any]:
-        """Build twelve strict slots while retaining unknown task-zero rows."""
+        """Build one task per step from the filled rows, in row order.
+
+        Empty rows are skipped; a task may appear once; no tasks means no
+        routine that day (the time is then not kept).
+        """
         assert self._routine_day is not None
+        tasks = [
+            ROUTINE_TASKS.index(selected) + 1
+            for index in range(1, ROUTINE_ROWS + 1)
+            if (selected := user_input.get(f"task_{index}"))
+        ]
         routines = self._current_routines()
-        current = routines[self._routine_day]
-        slots: list[dict[str, int] | None] = []
-        for index, existing in enumerate(current["slots"], start=1):
-            selected = user_input.get(f"task_{index}")
-            if selected is None:
-                keep = existing is not None and existing["task"] == 0
-                slots.append(deepcopy(existing) if keep else None)
-                continue
-            task = int(selected)
-            if task not in range(1, 12):
-                raise ValueError("Unsupported routine task")
-            step = existing["step"] if existing is not None else index
-            slots.append({"step": step, "task": task})
-        routines[self._routine_day] = {
-            "time": (
-                _parse_time(user_input["routine_time"])
-                if user_input["routine_has_time"]
-                else None
-            ),
-            "slots": slots,
-        }
+        routines[self._routine_day] = routine_from_tasks(
+            _parse_time(user_input["routine_time"]), tasks
+        )
         return {"routines": routines}
 
     def _current_routines(self) -> dict[str, dict[str, Any]]:
@@ -943,26 +949,22 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
         return vol.Schema(fields)
 
     def _routine_tasks_schema(self) -> vol.Schema:
-        """Return twelve ordered task rows plus an explicit no-time toggle."""
+        """Return the start time and ordered task rows (step 1, 2, ...)."""
         assert self._routine_day is not None
         routine = self._current_routines()[self._routine_day]
         fields: dict[vol.Marker, Any] = {
             vol.Required(
-                "routine_has_time", default=routine["time"] is not None
-            ): selector.BooleanSelector(),
-            vol.Required(
                 "routine_time", default=_format_time(routine["time"])
             ): selector.TimeSelector(),
         }
-        for index in range(1, MAX_ROUTINE_TASKS + 1):
+        for index in range(1, ROUTINE_ROWS + 1):
             fields[vol.Optional(f"task_{index}")] = _select(
-                _options(1, 11), "routine_task"
+                list(ROUTINE_TASKS), "routine_task"
             )
         return self.add_suggested_values_to_schema(
             vol.Schema(fields),
             {
-                f"task_{index}": str(slot["task"])
-                for index, slot in enumerate(routine["slots"], start=1)
-                if slot is not None and slot["task"] != 0
+                f"task_{index}": ROUTINE_TASKS[task - 1]
+                for index, task in enumerate(routine_task_ids(routine), start=1)
             },
         )

@@ -19,15 +19,20 @@ from homeassistant.core import (
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 
-from .const import DOMAIN
-from .models import ProfileValidationError, RevisionConflictError
+from .const import DOMAIN, ROUTINE_TASKS
+from .models import DAYS, ProfileValidationError, RevisionConflictError
 
 ATTR_PROFILE = "profile"
 ATTR_EXPECTED_REVISION = "expected_revision"
+ATTR_DAYS = "days"
+ATTR_TIME = "time"
+ATTR_TASKS = "tasks"
 
 SERVICE_EXPORT_PROFILE = "export_profile"
 SERVICE_IMPORT_PROFILE = "import_profile"
 SERVICE_RESTORE_PROFILE = "restore_profile"
+SERVICE_SET_ROUTINE = "set_routine"
+SERVICE_START_ROUTINE = "start_routine"
 
 
 def _strict_revision(value: Any) -> int:
@@ -46,6 +51,19 @@ IMPORT_SCHEMA = ENTRY_SCHEMA.extend(
 )
 RESTORE_SCHEMA = ENTRY_SCHEMA.extend(
     {vol.Optional(ATTR_EXPECTED_REVISION): _strict_revision}
+)
+_TASKS = vol.All(cv.ensure_list, [vol.In(ROUTINE_TASKS)])
+SET_ROUTINE_SCHEMA = ENTRY_SCHEMA.extend(
+    {
+        vol.Required(ATTR_DAYS): vol.All(
+            cv.ensure_list, [vol.In(DAYS)], vol.Length(min=1)
+        ),
+        vol.Optional(ATTR_TIME): cv.time,
+        vol.Required(ATTR_TASKS): _TASKS,
+    }
+)
+START_ROUTINE_SCHEMA = ENTRY_SCHEMA.extend(
+    {vol.Optional(ATTR_TASKS): vol.All(_TASKS, vol.Length(min=1))}
 )
 
 
@@ -104,6 +122,32 @@ async def _async_import_profile(
     return None
 
 
+def _restore_error(err: Any) -> HomeAssistantError:
+    """Translate a restore that did not reach a verified state."""
+    outcome = err.result
+    return HomeAssistantError(
+        translation_domain=DOMAIN,
+        translation_key=outcome.error or "restore_verify",
+        translation_placeholders={
+            "applied": str(len(outcome.applied_steps)),
+            "planned": str(len(outcome.planned_steps)),
+            # Block names stay in the log and diagnostics.
+            "count": str(len(outcome.mismatched_blocks)),
+        },
+    )
+
+
+def _task_ids(tasks: list[str]) -> list[int]:
+    """Map task keys to device task ids 1..11."""
+    return [ROUTINE_TASKS.index(task) + 1 for task in tasks]
+
+
+def _routine_error() -> ServiceValidationError:
+    return ServiceValidationError(
+        translation_domain=DOMAIN, translation_key="invalid_routine"
+    )
+
+
 async def _async_restore_profile(
     hass: HomeAssistant, call: ServiceCall
 ) -> ServiceResponse | None:
@@ -117,17 +161,7 @@ async def _async_restore_profile(
     try:
         result = await coordinator.async_restore_profile(revision, confirmed=True)
     except ProfileRestoreError as err:
-        outcome = err.result
-        raise HomeAssistantError(
-            translation_domain=DOMAIN,
-            translation_key=outcome.error or "restore_verify",
-            translation_placeholders={
-                "applied": str(len(outcome.applied_steps)),
-                "planned": str(len(outcome.planned_steps)),
-                # Block names stay in the log and diagnostics.
-                "count": str(len(outcome.mismatched_blocks)),
-            },
-        ) from err
+        raise _restore_error(err) from err
     except (ProfileValidationError, RevisionConflictError) as err:
         raise _validation_error(err) from err
     if call.return_response:
@@ -138,6 +172,44 @@ async def _async_restore_profile(
             "clock_synced": result.clock_synced,
         }
     return None
+
+
+async def _async_set_routine(
+    hass: HomeAssistant, call: ServiceCall
+) -> ServiceResponse | None:
+    """Save day routines and write them to the device, verified."""
+    from .coordinator import ProfileRestoreError
+
+    coordinator = _coordinator(hass, call)
+    start = call.data.get(ATTR_TIME)
+    try:
+        result = await coordinator.async_set_routines(
+            list(dict.fromkeys(call.data[ATTR_DAYS])),
+            None if start is None else {"hour": start.hour, "minute": start.minute},
+            _task_ids(call.data[ATTR_TASKS]),
+        )
+    except ProfileRestoreError as err:
+        raise _restore_error(err) from err
+    except ProfileValidationError as err:
+        raise _routine_error() from err
+    if call.return_response:
+        return {
+            "revision": result.revision,
+            "verified": result.verified,
+            "applied_steps": list(result.applied_steps),
+        }
+    return None
+
+
+async def _async_start_routine(hass: HomeAssistant, call: ServiceCall) -> None:
+    """Start today's routine now, optionally with other tasks this once."""
+    tasks = call.data.get(ATTR_TASKS)
+    try:
+        await _coordinator(hass, call).async_start_routine(
+            None if tasks is None else _task_ids(tasks)
+        )
+    except ProfileValidationError as err:
+        raise _routine_error() from err
 
 
 @callback
@@ -169,6 +241,18 @@ def async_setup_services(hass: HomeAssistant) -> None:
             partial(_async_restore_profile, hass),
             RESTORE_SCHEMA,
             SupportsResponse.OPTIONAL,
+        ),
+        (
+            SERVICE_SET_ROUTINE,
+            partial(_async_set_routine, hass),
+            SET_ROUTINE_SCHEMA,
+            SupportsResponse.OPTIONAL,
+        ),
+        (
+            SERVICE_START_ROUTINE,
+            partial(_async_start_routine, hass),
+            START_ROUTINE_SCHEMA,
+            SupportsResponse.NONE,
         ),
     )
 
