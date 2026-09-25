@@ -17,5 +17,5 @@
   "issue_tracker": "https://github.com/pavlikru/ha-lumalou/issues",
   "loggers": ["lumalou"],
   "requirements": ["lumalou-gld09==0.2.0"],
-  "version": "0.0.0"
+  "version": "0.1.0b1"
 }

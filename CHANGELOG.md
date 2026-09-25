@@ -6,10 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Planned as the first release, `0.1.0`, preceded by `0.1.0b1` pre-releases for
-hardware validation. When tagging, move these entries under
-`## [0.1.0] - YYYY-MM-DD`; the release workflow uses that section as release
-notes.
+## [0.1.0b1] - 2026-09-25
+
+First beta for hardware validation. Not yet validated on a real device; see
+`docs/hardware-validation.md`.
 
 ### Added
 
@@ -113,4 +113,5 @@ Hardware validation: summary of passed phases (anonymized).
 Requires Home Assistant 2026.9.0 or newer and lumalou-gld09==0.2.0.
 -->
 
-[Unreleased]: https://github.com/pavlikru/ha-lumalou/commits/main
+[Unreleased]: https://github.com/pavlikru/ha-lumalou/compare/v0.1.0b1...HEAD
+[0.1.0b1]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b1
