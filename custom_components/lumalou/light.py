@@ -50,7 +50,7 @@ class LumalouLight(LumalouControlEntity, LightEntity):
     @property
     def brightness(self) -> int | None:
         value = self.snapshot_value("lightBrightness")
-        return None if value is None else round(int(value) * 255 / 9)
+        return None if value is None else min(255, round(int(value) * 255 / 9))
 
     @property
     def effect(self) -> str | None:

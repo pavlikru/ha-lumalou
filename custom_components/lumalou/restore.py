@@ -370,3 +370,18 @@ def clock_offset_seconds(device: CurrentDate, moment: datetime) -> int:
     )
     difference = (device_seconds - local_seconds) % _WEEK_SECONDS
     return min(difference, _WEEK_SECONDS - difference)
+
+
+def is_whole_hour_offset(offset: int, tolerance: int) -> bool:
+    """Return whether a clock offset is whole hours (DST or time zone)."""
+    return min(offset % 3600, 3600 - offset % 3600) <= tolerance
+
+
+def is_factory_clock(device: CurrentDate, window: int) -> bool:
+    """Return whether the device clock runs from the power-loss 05:00 Sunday.
+
+    After a power loss the clock restarts at 05:00:00 on Sunday; ``window``
+    bounds how long it can have run since (seconds).
+    """
+    since_reset = device.hour * 3600 + device.minute * 60 + device.second - 5 * 3600
+    return device.weekday == 0 and 0 <= since_reset <= window

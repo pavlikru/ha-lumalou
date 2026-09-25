@@ -215,3 +215,18 @@ def test_clock_offset_is_circular_over_the_week():
         3 * 86400 + 12 * 3600
     )
     assert set_current_date_payload(saturday) == bytes([0x30, 0x23, 0x59, 0x55, 6])
+
+
+def test_whole_hour_offsets_and_the_power_loss_clock():
+    from custom_components.lumalou.restore import (
+        is_factory_clock,
+        is_whole_hour_offset,
+    )
+
+    assert is_whole_hour_offset(3600 + 90, 120)
+    assert is_whole_hour_offset(7200 - 90, 120)
+    assert not is_whole_hour_offset(3600 + 300, 120)
+    assert is_factory_clock(CurrentDate(5, 0, 0, 0), 0)
+    assert is_factory_clock(CurrentDate(6, 0, 0, 0), 3600)
+    assert not is_factory_clock(CurrentDate(6, 0, 1, 0), 3600)
+    assert not is_factory_clock(CurrentDate(5, 0, 0, 1), 3600)

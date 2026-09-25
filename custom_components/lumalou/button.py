@@ -41,6 +41,14 @@ class LumalouStartRoutineButton(LumalouControlEntity, ButtonEntity):
 
     _attr_translation_key = "start_routine"
 
+    @property
+    def available(self) -> bool:
+        """Not while a routine runs."""
+        return (
+            super().available
+            and self.snapshot_value("operationMode") != ROUTINE_OPERATION_MODE
+        )
+
     async def async_press(self) -> None:
         await self.coordinator.async_start_routine()
 

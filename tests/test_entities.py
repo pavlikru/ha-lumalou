@@ -117,6 +117,14 @@ class FakeCoordinator:
         self.current_task = "none"
         self.routine_listeners = []
 
+    @property
+    def maintenance(self):
+        return self.profile_record.maintenance
+
+    @property
+    def sync_status(self):
+        return self.profile_record.sync_status
+
     def async_add_listener(self, callback):
         return lambda: None
 
@@ -502,12 +510,15 @@ async def test_routine_buttons_start_and_control_only_while_running():
 
     coordinator.data = {"operationMode": 7}
     assert all(button.available for button in controls)
+    assert not start.available
     coordinator.protocol_verified = False
     assert not any(button.available for button in (start, *controls))
     coordinator.protocol_verified = True
 
+    coordinator.data = {"operationMode": 0}
     await start.async_press()
     coordinator.async_start_routine.assert_awaited_once_with()
+    coordinator.data = {"operationMode": 7}
     for button, code in controls.items():
         assert button.entity_category is None
         await button.async_press()

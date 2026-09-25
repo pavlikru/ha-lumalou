@@ -58,7 +58,7 @@ class LumalouProfileSyncStatusSensor(LumalouEntity, SensorEntity):
 
     @property
     def native_value(self) -> str:
-        return self.coordinator.profile_record.sync_status
+        return self.coordinator.sync_status
 
 
 class LumalouRoutineSensor(LumalouEntity, SensorEntity):
