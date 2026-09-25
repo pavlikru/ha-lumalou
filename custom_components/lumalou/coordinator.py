@@ -154,6 +154,9 @@ _ERRORS = {
     "clock_untrusted": "Home Assistant clock is not trustworthy",
     "routine_running": "A Lumalou routine is already running",
     "routine_not_running": "No Lumalou routine is running",
+    "profile_saved_not_applied": (
+        "The change was saved but could not be written to Lumalou"
+    ),
 }
 
 
@@ -688,22 +691,21 @@ class LumalouCoordinator:
     def _detect_restore_needed(
         self, record: ProfileRecord, observed: dict[str, Any], *, reset: bool
     ) -> RestoreNeeded | None:
-        """Flag a verified revision that the device no longer matches.
+        """Flag a saved revision that the device does not match.
 
-        Only a current revision verified on this same device key qualifies;
-        pending/unverified intent is never treated as a power-loss signal.
-        The light and sound block also changes in everyday use (device
-        buttons), so it is compared only with the reset marker (a far-off
-        device clock). A reset stays a reset until it is resolved, even after
-        the clock was corrected.
+        The current revision qualifies when it is, or was edited from, a
+        revision verified on this same device key: a verified profile the
+        device lost (for example after a power loss) or a pending edit that
+        could not be written yet. The light and sound block also changes in
+        everyday use (device buttons), so it is compared only with the reset
+        marker (a far-off device clock). A reset stays a reset until it is
+        resolved, even after the clock was corrected.
         """
         need: RestoreNeeded | None = None
         previous = self.restore_needed
         reset = reset or (previous is not None and previous.reset)
-        if (
-            record.is_verified
-            and record.verified_fingerprint == self.device_fingerprint
-            and profile_is_complete(record.desired_profile)
+        if record.verified_fingerprint == self.device_fingerprint and (
+            profile_is_complete(record.desired_profile)
         ):
             blocks = changed_blocks(record.desired_profile, observed, live=reset)
             if blocks:
@@ -1420,12 +1422,10 @@ class LumalouCoordinator:
         time: dict[str, int] | None,
         tasks: list[int],
     ) -> ProfileRestoreResult:
-        """Save day routines and write them to Lumalou, verified by a fresh read.
+        """Save day routines and write them to Lumalou, verified.
 
-        Uses the profile restore path: a new session reads the device, the
-        saved profile gets the new routines (the everyday light and sound
-        levels are taken from the device), and the blocks that differ are
-        written and verified. No tasks means no routine on those days.
+        See ``async_apply_profile_edit``. No tasks means no routine on those
+        days.
         """
         if tasks and time is None:
             raise ProfileValidationError("A routine with tasks needs a start time")
@@ -1436,26 +1436,62 @@ class LumalouCoordinator:
             or any(day not in DAYS for day in days)
         ):
             raise ProfileValidationError("Invalid routine days")
-        async with self._device_write_operation():
+        record = self._profile_record
+        if not profile_is_complete(record.desired_profile):
+            raise _error("control_locked")
+        routines = deepcopy(record.desired_profile["routines"])
+        for day in days:
+            routines[day] = deepcopy(routine)
+        return await self.async_apply_profile_edit(
+            {"routines": routines}, record.revision
+        )
+
+    async def async_apply_profile_edit(
+        self, changes: dict[str, Any], expected_revision: int
+    ) -> ProfileRestoreResult:
+        """Save profile block changes and write them to Lumalou, verified.
+
+        The restore path: a new session reads the device, the saved profile
+        gets the changes as a new revision (the everyday light and sound levels
+        are taken from the device read, so button changes are not reverted),
+        and only the differing blocks are written and then verified with a
+        fresh read. When Lumalou cannot be reached (or maintenance is on) the
+        changes are still saved, as a pending revision that a reconnect offers
+        to write (Repair, or automatic restore after a reset), and
+        ``profile_saved_not_applied`` is raised. A running routine refuses the
+        edit and saves nothing.
+        """
+        validated = validate_profile(changes)
+        validate_integer(expected_revision, 0, _MAX_REVISION, "expected revision")
+        async with self._operation():
             record = self._profile_record
+            if expected_revision != record.revision:
+                raise RevisionConflictError(
+                    "The saved profile changed; reopen the editor"
+                )
+            if not self.protocol_verified or not profile_is_complete(
+                record.desired_profile
+            ):
+                raise _error("control_locked")
             if record.verified_fingerprint not in (None, self.device_fingerprint):
                 raise _error("profile_other_device")
-            if not profile_is_complete(record.desired_profile):
-                raise _error("control_locked")
+            desired = {**record.desired_profile, **validated}
             try:
+                if record.maintenance:
+                    raise _error("maintenance_mode")
                 client, snapshot = await self._async_fresh_snapshot()
                 clock_synced = await self._async_sync_clock_if_needed(
                     client, snapshot.clock, snapshot.read_at
                 )
             except Exception as err:
                 await self._disconnect()
-                raise _error("profile_read_failed") from err
+                if desired != record.desired_profile:
+                    await self._save(_new_revision(record, desired))
+                raise _error("profile_saved_not_applied") from err
             if snapshot.state["operationMode"] == ROUTINE_OPERATION_MODE:
                 raise _error("routine_running")
-            desired = deepcopy(record.desired_profile)
-            for day in days:
-                desired["routines"][day] = deepcopy(routine)
-            desired[LIVE_BLOCK] = deepcopy(snapshot.profile[LIVE_BLOCK])
+            if LIVE_BLOCK not in validated:
+                desired[LIVE_BLOCK] = deepcopy(snapshot.profile[LIVE_BLOCK])
             if desired != record.desired_profile:
                 await self._save(_new_revision(record, desired))
             return await self._async_restore(

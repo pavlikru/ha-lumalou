@@ -26,6 +26,7 @@ from .const import (
     DOMAIN,
     ROUTINE_TASKS,
 )
+from .coordinator import ProfileRestoreError
 from .models import (
     DAYS,
     ROUTINE_NIBBLE_MAX,
@@ -673,7 +674,8 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
         changes, revision = deepcopy(self._changes), self._revision
 
         async def save(coordinator: Any) -> None:
-            await coordinator.async_edit_profile(deepcopy(changes), revision)
+            # Written to Lumalou and verified; saved as pending if it fails.
+            await coordinator.async_apply_profile_edit(deepcopy(changes), revision)
 
         summary = self._edit_summary()
         if self._editor == "routine":
@@ -722,7 +724,18 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
                     await save(coordinator)
                 except RevisionConflictError:
                     errors["base"] = "revision_conflict"
-                except HomeAssistantError, ValueError:
+                except HomeAssistantError as err:
+                    key = getattr(err, "translation_key", None)
+                    if key == "profile_saved_not_applied" or isinstance(
+                        err, ProfileRestoreError
+                    ):
+                        # Saved, only not written yet: nothing to retry here.
+                        return self.async_abort(reason="saved_not_applied")
+                    if key == "routine_running":
+                        errors["base"] = "routine_running"
+                    else:
+                        errors["base"] = "profile_save_failed"
+                except ValueError:
                     errors["base"] = "profile_save_failed"
                 else:
                     return self.async_create_entry(data=dict(self.config_entry.options))

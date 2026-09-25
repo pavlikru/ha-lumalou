@@ -40,6 +40,11 @@ Based on a hardware check of every Bluetooth command on firmware 0.3.7.
 
 ### Changed
 
+- Confirming a profile editor in **Configure** now writes the change to the
+  Lumalou right away and verifies it with a fresh read, instead of only
+  saving a pending revision. If the device cannot be reached, the change is
+  saved, a message says so, and the Repair offers to write it after the next
+  reconnect (a reset restores it automatically).
 - One Bluetooth session stays open while the device is reachable. State comes
   from the device's own pushes (also for button presses on the device); a
   command is done when the device acknowledges it, with no reconnect or read

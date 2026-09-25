@@ -190,6 +190,8 @@ async def _async_set_routine(
         )
     except ProfileRestoreError as err:
         raise _restore_error(err) from err
+    except RevisionConflictError as err:
+        raise _validation_error(err) from err
     except ProfileValidationError as err:
         raise _routine_error() from err
     if call.return_response:

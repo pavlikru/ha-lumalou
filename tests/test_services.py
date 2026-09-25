@@ -449,6 +449,11 @@ async def test_set_routine_translates_validation_and_restore_errors(
         await hass.services.async_call(DOMAIN, SERVICE_SET_ROUTINE, call, blocking=True)
     assert err.value.translation_key == "invalid_routine"
 
+    coordinator.async_set_routines.side_effect = RevisionConflictError("edited")
+    with pytest.raises(ServiceValidationError) as err:
+        await hass.services.async_call(DOMAIN, SERVICE_SET_ROUTINE, call, blocking=True)
+    assert err.value.translation_key == "revision_conflict"
+
     coordinator.async_set_routines.side_effect = ProfileRestoreError(
         "failed",
         ProfileRestoreResult(

@@ -1215,14 +1215,33 @@ async def test_auto_restore_attempts_are_bounded_per_event(rig):
     assert coordinator.restore_needed is None
 
 
-@pytest.mark.parametrize("reason", ["pending_edit", "other_device", "no_option"])
-async def test_auto_restore_requires_verified_revision_of_same_device(rig, reason):
+async def test_pending_edit_is_offered_on_reconnect_and_restored_after_reset(rig):
+    """An edit that could not be written is applied later, never forgotten."""
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    await coordinator.async_edit_profile({"playlist": [9]}, expected_revision=1)
+
+    # Reconnect without a reset: the Repair offers to write it.
+    await coordinator._disconnect()
+    await coordinator._async_recover()
+    assert coordinator.repair_needed.changed_blocks == ("playlist",)
+    assert not coordinator.repair_needed.reset
+
+    # A reset (power loss) restores it automatically, verified.
+    rig.fake.clock = CurrentDate(5, 0, 0, 0)
+    await coordinator._disconnect()
+    await coordinator._async_recover()
+    assert coordinator.restore_needed is None
+    assert coordinator.profile_record.is_verified
+    assert rig.fake.playlist == MusicPlaylist.from_songs([9])
+
+
+@pytest.mark.parametrize("reason", ["other_device", "no_option"])
+async def test_auto_restore_requires_revision_of_same_device(rig, reason):
     coordinator = rig.coordinator
     await verified_profile(rig)
     coordinator.entry.options = {"auto_restore": reason != "no_option"}
-    if reason == "pending_edit":
-        await coordinator.async_edit_profile({"playlist": [9]}, expected_revision=1)
-    elif reason == "other_device":
+    if reason == "other_device":
         coordinator._profile_record = replace(
             coordinator._profile_record, verified_fingerprint="b" * 64
         )
@@ -1273,7 +1292,8 @@ async def test_recovery_keeps_a_differing_pending_revision_pending(rig):
 
     assert coordinator.profile_record.pending
     assert not coordinator.profile_record.is_verified
-    assert coordinator.restore_needed is None
+    # Not written automatically without a reset: the Repair offers it.
+    assert coordinator.repair_needed.changed_blocks == ("playlist",)
     assert rig.store.async_save.await_count == saves
 
 

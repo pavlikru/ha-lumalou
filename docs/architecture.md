@@ -77,7 +77,14 @@ controls stay locked until a device read is confirmed again.
 - A revision is **verified** when a fresh complete read on the enrolled device
   key matched it (`verified_revision`, `verified_fingerprint`): a confirmed
   device read, a successful restore, or a reconnect whose read already equals
-  a pending revision. Editor saves and imports are pending until then.
+  a pending revision. Editor confirmations and `lumalou.set_routine` apply
+  the edit at once through the restore executor
+  (`async_apply_profile_edit`: fresh read, new revision with the light and
+  sound levels taken from that read, minimal writes, verifying read). If the
+  device cannot be read (or maintenance is on) the edit is saved as a pending
+  revision and a translated `profile_saved_not_applied` error is shown; a
+  running routine refuses the edit without saving. Imports stay pending until
+  restored.
 - Editors and imports require a complete profile; they never invent default
   values and never drop saved blocks.
 - The observed state is the latest GLOBAL_STATE the live session received,
@@ -108,7 +115,8 @@ controls stay locked until a device read is confirmed again.
   writes the clock from Home Assistant local time if it is more than
   60 seconds off (never when the host clock looks unset), marks a pending
   revision verified if the device already matches it exactly, and compares
-  the profile with the current verified revision.
+  the profile with the current revision when it is verified, or pending but
+  edited from a revision verified on this device key.
 - The device pushes CURRENT_DATE at least every minute. A pushed clock more
   than 60 seconds off (DST, drift) is corrected in the live session, at most
   once an hour; a failed automatic write pauses automatic writes for an hour.
@@ -138,7 +146,7 @@ controls stay locked until a device read is confirmed again.
   routines of the saved profile (new revision; the light and sound levels are
   taken from the device read so the action never reverts button changes) and
   applies it with the restore executor, so the result is verified by a fresh
-  read. The options-flow editor only saves a pending revision.
+  read. The Daily routines editor uses the same path.
 - A routine is one task per step (`step` 1..N), task ids 1..11, each task at
   most once, because ROUTINE_TASK_STATUS reports progress per task id. No
   tasks means no routine that day (no time).
