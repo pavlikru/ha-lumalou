@@ -16,6 +16,7 @@ from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import selector
+from homeassistant.helpers.translation import async_get_translations
 
 from .const import (
     CONF_AUTO_RESTORE,
@@ -727,8 +728,20 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
         async def save(coordinator: Any) -> None:
             await coordinator.async_edit_profile(deepcopy(changes), revision)
 
-        self._pending = (f"{self._editor}_confirm", self._edit_summary(), save)
+        summary = self._edit_summary()
+        if "day" in summary:
+            summary["day"] = await self._async_day_name(summary["day"])
+        self._pending = (f"{self._editor}_confirm", summary, save)
         return await self._async_confirm()
+
+    async def _async_day_name(self, day: str) -> str:
+        """Translate a weekday key for a placeholder (the frontend cannot)."""
+        translations = await async_get_translations(
+            self.hass, self.hass.config.language, "selector", {DOMAIN}
+        )
+        return translations.get(
+            f"component.{DOMAIN}.selector.weekday.options.{day}", day
+        )
 
     async def _async_confirm(
         self, user_input: dict[str, Any] | None = None
