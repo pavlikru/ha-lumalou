@@ -400,7 +400,7 @@
     },
     "start_routine": {
       "name": "Start routine",
-      "description": "Start today's routine now, like the scheduled start: the first task becomes current with its music. With tasks, those tasks run instead, this time only; today's saved routine is written back when the routine ends.",
+      "description": "Start today's routine now, like the scheduled start: the first task becomes current with its music. With tasks, those tasks run instead, this time only; today's saved routine is written back when the routine ends. Needs the Routines switch on.",
       "fields": {
         "config_entry_id": {
           "name": "Device",
@@ -473,6 +473,12 @@
     },
     "routine_not_started": {
       "message": "Lumalou did not start the routine. Nothing was changed; try again."
+    },
+    "routine_mode_off": {
+      "message": "Lumalou starts a routine only while Routines is on. Turn on the Routines switch (keep it on) and try again. Nothing was changed."
+    },
+    "routine_blocks_control": {
+      "message": "A routine is running on Lumalou, and it ignores light and sound commands until the routine ends. Finish or cancel the routine first."
     },
     "setting_not_confirmed": {
       "message": "Lumalou did not apply the setting (sent twice). Check the connection and try again."

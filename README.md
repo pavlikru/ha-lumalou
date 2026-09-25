@@ -137,7 +137,7 @@ runs in English; check the actual IDs in the entity settings.
 | --- | --- | --- |
 | `light.lumalou_light` | Light | On/off, brightness, palette colors as effects: `warm` (yellow shimmering to pink), `red`, `yellow`, `orange`, `green`, `blue`, `purple`, `night_light` (steady green), `cool` (blue), `rainbow` (cycling); translated in the UI. "On" without an effect uses the current color. While the soother cycles the colors, no effect is shown. |
 | `media_player.lumalou_audio` | Media player (speaker) | On starts the sleep playlist (the soother: music and a color-cycling light); off stops sound only; volume; source selects a built-in sound (`sleep_playlist`, `custom_playlist`, `pink_noise` (heard as white noise), `ocean`, `rain`, `brown_noise`, `nature`, `highway`). The source shown is the playing sound; for the two playlists (which share songs) it is the one Home Assistant started, or `sleep_playlist` when the soother runs (also from the remote), otherwise empty. |
-| Light duration, Playlist duration | Select (configuration) | Device timers (options such as `min_15`, `continuous`). |
+| Light duration, Playlist duration | Select (configuration) | Device timers (options such as `min_15`, `continuous`). They are global: they also apply to the light and sound started with the remote or the device buttons. |
 | Clock format | Select (configuration) | `h12` or `h24` (24-hour). |
 | Clock display | Switch (configuration) | Shows or hides the clock. |
 | Clock brightness | Number (configuration) | 0–9. |
@@ -146,12 +146,12 @@ runs in English; check the actual IDs in the entity settings.
 | Connection | Binary sensor (connectivity, diagnostic) | On while a Bluetooth session is live. |
 | Firmware | Sensor (diagnostic) | Advertised firmware version; available while the device advertises, even without a session. |
 | Profile sync status | Sensor (enum, diagnostic) | `empty`, `saved`, `pending`, `applying` or `error`. Revisions and the last error are in the diagnostics download. |
-| `button.lumalou_start_routine` | Button | Starts today's routine now (see [Routines](#routines)); unavailable while a routine runs. |
+| `button.lumalou_start_routine` | Button | Starts today's routine now (see [Routines](#routines)); needs **Routines** on; unavailable while a routine runs. |
 | `button.lumalou_complete_task`, `button.lumalou_previous_task`, `button.lumalou_cancel_routine` | Button | Only while a routine runs. Complete task is the remote's check-mark button. |
 | `sensor.lumalou_routine` | Sensor (enum) | `off`, `ready` (silent preview before the first task), `in_progress`, `completed`. |
 | `sensor.lumalou_current_task` | Sensor (enum) | `none` or the current task (`get_dressed`, `wash_up`, `brush_teeth`, `toilet`, `backpack`, `meal`, `story`, `tidy_up`, `heart`, `swirl`, `star`). |
 | `event.lumalou_routine` | Event | `task_completed` (attribute `task`), `routine_completed`, `routine_cancelled`, `routine_expired`. |
-| Routines | Switch (configuration) | Automatic start at each day's routine time. |
+| Routines | Switch (configuration) | Routine mode: automatic start at each day's routine time. Must also be on for **Start routine** and `lumalou.start_routine`. |
 | Routine music, Task reward sound, Routine reward sound | Switch (configuration) | Routine sounds. |
 | Routine volume | Number (configuration) | 0–9. |
 
@@ -163,6 +163,10 @@ or the big button on the remote) plays sleep music *and* switches on a
 color-cycling light. Turning the media player off stops the music only; the
 light stays on until you turn the light off. Both entities show exactly what
 the device reports.
+
+**During a routine** the device ignores light and sound commands, so the
+light and the media player refuse them with an error ("a routine is
+running"): finish or cancel the routine first. The entities stay available.
 
 ### How data is updated
 
@@ -252,7 +256,7 @@ and a switch on the device (see [Entities](#entities)).
 | `lumalou.import_profile` | Saves a complete exported `profile` if `expected_revision` matches the current revision. Does not write to the device. |
 | `lumalou.restore_profile` | Writes the saved profile to the device and verifies it (see above). Optional `expected_revision` (default: the current revision) fails the action if the profile changed meanwhile. Can return `{revision, verified, applied_steps, clock_synced}`. |
 | `lumalou.set_routine` | Sets the routine of the given `days` (`time`, ordered `tasks`) in the saved profile and on the device, verified. See [Routines](#routines). |
-| `lumalou.start_routine` | Starts today's routine now; optional `tasks` run instead, this time only. See [Routines](#routines). |
+| `lumalou.start_routine` | Starts today's routine now (needs **Routines** on); optional `tasks` run instead, this time only. See [Routines](#routines). |
 
 Example: a quiet night light at bedtime.
 
@@ -303,7 +307,10 @@ reward sounds and the routine volume are configuration entities too. All of
 these are part of the saved profile and come back after a power loss.
 
 **Start a routine now** with the **Start routine** button or
-`lumalou.start_routine`. Like the scheduled start, the first task becomes
+`lumalou.start_routine`. **Routines** must be on: with routine mode off the
+device ignores a start, so Home Assistant refuses it with an error before
+writing anything (it never switches Routines on by itself). Like the
+scheduled start, the first task becomes
 current with its music right away (if the Lumalou does not enter routine mode,
 you get an error and nothing stays changed). "Today" is the weekday of the
 device clock. With `tasks`, those tasks run instead of
@@ -350,6 +357,105 @@ automation:
       - action: notify.notify
         data:
           message: Teeth brushed!
+```
+
+## Scheduling routines with automations
+
+The device keeps one routine per weekday. Either store it there
+(`lumalou.set_routine`) and let the device start it at its time with
+**Routines** on, or start it by hand with **Start routine** or
+`lumalou.start_routine` without `tasks`; both work.
+
+For several routines a day, let Home Assistant schedule them:
+
+- Keep **Routines** on (a start is refused otherwise).
+- Keep the day routines empty (no tasks), so the device starts nothing by
+  itself. A one-off start writes its tasks for today and writes the empty
+  day back when the routine ends.
+- One time trigger per routine; its trigger `id` is the task key, passed to
+  `lumalou.start_routine` as `tasks`. A condition picks the weekdays.
+- A routine still running (`ready`, `in_progress` or `completed`) is
+  cancelled first; otherwise the start is refused.
+
+```yaml
+automation:
+  - alias: Lumalou routines
+    mode: queued
+    triggers:
+      - trigger: time
+        at: "07:15:00"
+        id: get_dressed
+      - trigger: time
+        at: "07:45:00"
+        id: meal
+      - trigger: time
+        at: "19:30:00"
+        id: brush_teeth
+    conditions:
+      - condition: time
+        weekday: [mon, tue, wed, thu, fri]
+    actions:
+      - if:
+          - condition: state
+            entity_id: sensor.lumalou_routine
+            state: [ready, in_progress, completed]
+        then:
+          - action: button.press
+            target:
+              entity_id: button.lumalou_cancel_routine
+          - wait_template: "{{ is_state('sensor.lumalou_routine', 'off') }}"
+            timeout: "00:00:10"
+      - action: lumalou.start_routine
+        data:
+          config_entry_id: YOUR_ENTRY_ID
+          tasks: ["{{ trigger.id }}"]
+```
+
+**Wake-up and sleep.** The light and playlist timers (**Light duration**,
+**Playlist duration**) are device settings, not per automation: they also
+switch off light and sound started with the remote. With both at 15 minutes
+(`min_15`), a wake-up light with music and a sleep soother end by
+themselves. Keep them outside routine times: a running routine refuses light
+and sound commands.
+
+```yaml
+# Once (the timers are kept in the saved profile):
+action: select.select_option
+target:
+  entity_id:
+    - select.lumalou_light_duration
+    - select.lumalou_playlist_duration
+data:
+  option: min_15
+```
+
+```yaml
+automation:
+  - alias: Lumalou wake-up
+    triggers:
+      - trigger: time
+        at: "07:00:00"
+    actions:
+      - action: light.turn_on
+        target:
+          entity_id: light.lumalou_light
+        data:
+          effect: rainbow
+      - action: media_player.select_source
+        target:
+          entity_id: media_player.lumalou_audio
+        data:
+          source: custom_playlist
+  - alias: Lumalou sleep
+    triggers:
+      - trigger: time
+        at: "20:00:00"
+    actions:
+      - action: media_player.select_source
+        target:
+          entity_id: media_player.lumalou_audio
+        data:
+          source: sleep_playlist
 ```
 
 ## Apple Home (HomeKit Bridge)
@@ -428,6 +534,8 @@ in the UI.
 | --- | --- |
 | Lumalou is not discovered | Close other apps connected to it, move the adapter or proxy closer, and check that the adapter supports active connections. |
 | "Could not connect for the read-only identity probe", or entities stay unavailable although the device is near | Another client (Fisher-Price app, a browser tab with Web Bluetooth) holds the single connection. Close it; if that does not help, unplug the Lumalou for a few seconds. |
+| Starting a routine fails with "Lumalou starts a routine only while Routines is on" | Switch **Routines** on and keep it on (see [Scheduling routines with automations](#scheduling-routines-with-automations)). |
+| Light or sound commands fail with "A routine is running" | The device ignores them during a routine. Finish or cancel the routine first. |
 | Controls fail with "Read and confirm the device profile…" | Open **Configure → Read the device profile** and confirm the result. |
 | Repairs: "Lumalou settings differ from the saved profile" | Choose **Restore saved profile** or **Keep device settings**. If a restore fails, bring the adapter closer and try again; the diagnostics download shows which step failed. |
 | Entities unavailable | The device is out of range or unpowered, **Maintenance** is on, or another client is connected. |
@@ -474,6 +582,15 @@ entry with `lumalou.import_profile` and write it with
 - Naps are not supported.
 - **Complete task**, **Previous task** and **Cancel routine** are available
   only while a routine runs; **Start routine** only while none runs.
+- A routine starts only with **Routines** (routine mode) on; the device
+  ignores a start otherwise, and Home Assistant refuses it.
+- During a routine the device ignores light and sound commands; Home
+  Assistant refuses them until the routine ends.
+- The device keeps one routine per weekday; for more, schedule one-off
+  routines with automations (see
+  [Scheduling routines with automations](#scheduling-routines-with-automations)).
+- The light and playlist timers are global device settings and also apply to
+  light and sound started with the remote.
 - Routine events come only from changes seen while connected. An event
   entity shows its last event again after being unavailable; use
   `not_from: unavailable` in automations (see [Routines](#routines)).

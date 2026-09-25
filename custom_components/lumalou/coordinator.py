@@ -153,6 +153,10 @@ _ERRORS = {
     "routine_running": "A Lumalou routine is already running",
     "routine_not_running": "No Lumalou routine is running",
     "routine_not_started": "Lumalou did not start the routine",
+    "routine_mode_off": "Routine mode is off; Lumalou ignores a routine start",
+    "routine_blocks_control": (
+        "A Lumalou routine is running; the device ignores light and sound commands"
+    ),
     "setting_not_confirmed": "Lumalou did not confirm the setting",
     "profile_saved_not_applied": (
         "The change was saved but could not be written to Lumalou"
@@ -168,6 +172,8 @@ _USER_STATE_ERRORS = frozenset(
         "clock_untrusted",
         "routine_running",
         "routine_not_running",
+        "routine_mode_off",
+        "routine_blocks_control",
     }
 )
 
@@ -1434,6 +1440,16 @@ class LumalouCoordinator:
             raise _error("command_failed")
         return self.data
 
+    def _refuse_while_routine_runs(self) -> None:
+        """Refuse light and sound commands in routine mode.
+
+        Hardware (firmware 0.3.7): in routine mode the device acknowledges
+        light and audio commands but ignores them, so they would look
+        successful without doing anything.
+        """
+        if self._live_state()["operationMode"] == ROUTINE_OPERATION_MODE:
+            raise _error("routine_blocks_control")
+
     async def _state_confirms(self, expected: dict[str, int]) -> bool:
         """Wait briefly for a pushed GLOBAL_STATE that shows ``expected``."""
         try:
@@ -1500,6 +1516,7 @@ class LumalouCoordinator:
         if color is not None:
             validate_integer(color, 0, 9, "color")
         async with self._live_write_operation():
+            self._refuse_while_routine_runs()
             state = self._live_state()
             on = []
             if color is not None or brightness is None or not state["lightStatus"]:
@@ -1520,6 +1537,7 @@ class LumalouCoordinator:
 
     async def async_turn_off_light(self) -> None:
         async with self._live_write_operation():
+            self._refuse_while_routine_runs()
             await self._write(commands.turn_off_backlight())
 
     async def async_set_level(self, key: str, value: int) -> None:
@@ -1577,12 +1595,14 @@ class LumalouCoordinator:
         """Play a built-in sound; source 0 is the soother (music and light)."""
         validate_integer(source, 0, 7, "audio source")
         async with self._live_write_operation():
+            self._refuse_while_routine_runs()
             await self._write(commands.play_audio(source))
             self.playing_source = source
 
     async def async_stop_audio(self) -> None:
         """Stop audio only; a soother light stays on until turned off."""
         async with self._live_write_operation():
+            self._refuse_while_routine_runs()
             await self._write(commands.turn_off_audio())
 
     # ---- Routines ----
@@ -1657,14 +1677,20 @@ class LumalouCoordinator:
         on the next connection. "Today" is the device clock's weekday when it
         is known. If the device does not enter routine mode, a one-off
         routine is written back and ``routine_not_started`` is raised.
+
+        The device ignores the start while routine mode (the Routines
+        switch) is off (hardware), so that is refused before any write.
         """
         if tasks is not None:
             if not tasks:
                 raise ProfileValidationError("A routine needs at least one task")
             routine_from_tasks(None, tasks)
         async with self._live_write_operation():
-            if self._live_state()["operationMode"] == ROUTINE_OPERATION_MODE:
+            state = self._live_state()
+            if state["operationMode"] == ROUTINE_OPERATION_MODE:
                 raise _error("routine_running")
+            if not state[ROUTINE_SETTING_FIELDS["enabled"]]:
+                raise _error("routine_mode_off")
             temporary: tuple[str, dict[str, Any]] | None = None
             saved_routine: dict[str, Any] = {}
             if tasks is not None:
