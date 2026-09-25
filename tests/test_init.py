@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from homeassistant.const import EVENT_CORE_CONFIG_UPDATE
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -14,12 +17,26 @@ from custom_components.lumalou import (
     async_setup_entry,
     async_unload_entry,
 )
-from custom_components.lumalou.const import DOMAIN, ISSUE_ID_PROFILE_STORAGE, PLATFORMS
+from custom_components.lumalou.const import (
+    CONF_DEVICE_FINGERPRINT,
+    DOMAIN,
+    ISSUE_ID_PROFILE_RESTORE_NEEDED,
+    PLATFORMS,
+)
+
+FINGERPRINT = "a" * 64
 
 
-def _profile_storage_issue_id(entry: MockConfigEntry) -> str:
-    """Return the entry-scoped saved-profile Repairs issue id."""
-    return f"{entry.entry_id}_{ISSUE_ID_PROFILE_STORAGE}"
+@pytest.fixture(autouse=True)
+def no_daily_timer() -> Generator[None]:
+    """Setup is called directly here, so no unload cancels the daily timer."""
+    with patch("custom_components.lumalou.async_track_time_change"):
+        yield
+
+
+def _restore_issue_id(entry: MockConfigEntry) -> str:
+    """Return the entry-scoped restore Repairs issue id."""
+    return f"{entry.entry_id}_{ISSUE_ID_PROFILE_RESTORE_NEEDED}"
 
 
 async def test_offline_setup_starts_callbacks_and_forwards_platforms(
@@ -28,7 +45,7 @@ async def test_offline_setup_starts_callbacks_and_forwards_platforms(
     """Setup starts HA-owned callbacks without requiring an online device."""
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data={"address": "synthetic-device"},
+        data={"address": "synthetic-device", CONF_DEVICE_FINGERPRINT: FINGERPRINT},
         unique_id="synthetic-device",
     )
     coordinator = Mock()
@@ -56,17 +73,18 @@ async def test_offline_setup_starts_callbacks_and_forwards_platforms(
     forward.assert_awaited_once_with(entry, PLATFORMS)
 
 
-async def test_unhealthy_profile_creates_entry_scoped_repair_issue(
+async def test_clock_check_runs_daily_and_on_time_zone_change(
     hass: HomeAssistant,
 ) -> None:
-    """A failed saved-profile load is visible without replacing the profile."""
-    entry = MockConfigEntry(domain=DOMAIN, data={"address": "synthetic-device"})
-    coordinator = Mock(
-        profile_storage_healthy=False,
-        async_setup=AsyncMock(),
-        async_start=Mock(),
-        async_shutdown=AsyncMock(),
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"address": "synthetic-device", CONF_DEVICE_FINGERPRINT: FINGERPRINT},
     )
+    entry.add_to_hass(hass)
+    coordinator = Mock(
+        async_setup=AsyncMock(), async_start=Mock(), async_shutdown=AsyncMock()
+    )
+    daily_unsubscribe = Mock()
 
     with (
         patch(
@@ -74,103 +92,84 @@ async def test_unhealthy_profile_creates_entry_scoped_repair_issue(
             return_value=coordinator,
         ),
         patch.object(
-            hass.config_entries,
-            "async_forward_entry_setups",
-            new=AsyncMock(),
+            hass.config_entries, "async_forward_entry_setups", new=AsyncMock()
         ),
+        patch(
+            "custom_components.lumalou.async_track_time_change",
+            return_value=daily_unsubscribe,
+        ) as track,
     ):
         assert await async_setup_entry(hass, entry)
 
-    issue = ir.async_get(hass).async_get_issue(DOMAIN, _profile_storage_issue_id(entry))
-    assert issue is not None
-    assert issue.is_fixable is True
-    assert issue.is_persistent is False
-    assert issue.severity is ir.IssueSeverity.ERROR
-    assert issue.translation_key == ISSUE_ID_PROFILE_STORAGE
-    assert issue.data == {"entry_id": entry.entry_id}
+    track.assert_called_once_with(
+        hass, coordinator.async_schedule_clock_check, hour=3, minute=5, second=0
+    )
+    hass.bus.async_fire(EVENT_CORE_CONFIG_UPDATE, {"latitude": 1})
+    await hass.async_block_till_done()
+    coordinator.async_schedule_clock_check.assert_not_called()
+    hass.bus.async_fire(EVENT_CORE_CONFIG_UPDATE, {"time_zone": "Etc/GMT-9"})
+    await hass.async_block_till_done()
+    coordinator.async_schedule_clock_check.assert_called_once()
+
+    entry.runtime_data = Mock(coordinator=coordinator)
+    with patch.object(
+        hass.config_entries, "async_unload_platforms", new=AsyncMock(return_value=True)
+    ):
+        await entry._async_process_on_unload(hass)
+    daily_unsubscribe.assert_called_once_with()
+    hass.bus.async_fire(EVENT_CORE_CONFIG_UPDATE, {"time_zone": "UTC"})
+    await hass.async_block_till_done()
+    coordinator.async_schedule_clock_check.assert_called_once()
 
 
-async def test_healthy_entry_only_deletes_its_own_stale_profile_issue(
+async def test_entry_without_device_identity_fails_setup(
     hass: HomeAssistant,
 ) -> None:
-    """A recovered entry cannot clear another entry's profile recovery issue."""
-    unhealthy_entry = MockConfigEntry(
-        domain=DOMAIN, data={"address": "unhealthy-device"}
-    )
-    healthy_entry = MockConfigEntry(domain=DOMAIN, data={"address": "healthy-device"})
-    ir.async_create_issue(
-        hass,
-        DOMAIN,
-        _profile_storage_issue_id(unhealthy_entry),
-        is_fixable=False,
-        severity=ir.IssueSeverity.ERROR,
-        translation_key=ISSUE_ID_PROFILE_STORAGE,
-    )
-    ir.async_create_issue(
-        hass,
-        DOMAIN,
-        _profile_storage_issue_id(healthy_entry),
-        is_fixable=False,
-        severity=ir.IssueSeverity.ERROR,
-        translation_key=ISSUE_ID_PROFILE_STORAGE,
-    )
-    coordinator = Mock(
-        profile_storage_healthy=True,
-        async_setup=AsyncMock(),
-        async_start=Mock(),
-        async_shutdown=AsyncMock(),
-    )
+    """Only unreleased builds created such entries; they must be re-added."""
+    entry = MockConfigEntry(domain=DOMAIN, data={"address": "synthetic-device"})
 
     with (
-        patch(
-            "custom_components.lumalou.coordinator.LumalouCoordinator",
-            return_value=coordinator,
-        ),
-        patch.object(
-            hass.config_entries,
-            "async_forward_entry_setups",
-            new=AsyncMock(),
-        ),
+        patch("custom_components.lumalou.coordinator.LumalouCoordinator") as factory,
+        pytest.raises(ConfigEntryError) as err,
     ):
-        assert await async_setup_entry(hass, healthy_entry)
+        await async_setup_entry(hass, entry)
 
-    registry = ir.async_get(hass)
-    assert (
-        registry.async_get_issue(DOMAIN, _profile_storage_issue_id(unhealthy_entry))
-        is not None
-    )
-    assert (
-        registry.async_get_issue(DOMAIN, _profile_storage_issue_id(healthy_entry))
-        is None
-    )
+    assert err.value.translation_key == "identity_not_enrolled"
+    factory.assert_not_called()
 
 
 async def test_removing_entry_only_deletes_its_own_profile_issue(
     hass: HomeAssistant,
 ) -> None:
     """Removing an entry clears its Repairs issue but retains other entries' issues."""
-    removed_entry = MockConfigEntry(domain=DOMAIN, data={"address": "removed-device"})
-    retained_entry = MockConfigEntry(domain=DOMAIN, data={"address": "retained-device"})
+    removed_entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"address": "removed-device", CONF_DEVICE_FINGERPRINT: FINGERPRINT},
+    )
+    retained_entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"address": "retained-device", CONF_DEVICE_FINGERPRINT: FINGERPRINT},
+    )
     for entry in (removed_entry, retained_entry):
         ir.async_create_issue(
             hass,
             DOMAIN,
-            _profile_storage_issue_id(entry),
+            _restore_issue_id(entry),
             is_fixable=False,
-            severity=ir.IssueSeverity.ERROR,
-            translation_key=ISSUE_ID_PROFILE_STORAGE,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_ID_PROFILE_RESTORE_NEEDED,
         )
 
-    await async_remove_entry(hass, removed_entry)
+    with patch(
+        "custom_components.lumalou.ProfileStore.async_remove", new=AsyncMock()
+    ) as remove_store:
+        await async_remove_entry(hass, removed_entry)
 
+    remove_store.assert_awaited_once_with()
     registry = ir.async_get(hass)
+    assert registry.async_get_issue(DOMAIN, _restore_issue_id(removed_entry)) is None
     assert (
-        registry.async_get_issue(DOMAIN, _profile_storage_issue_id(removed_entry))
-        is None
-    )
-    assert (
-        registry.async_get_issue(DOMAIN, _profile_storage_issue_id(retained_entry))
-        is not None
+        registry.async_get_issue(DOMAIN, _restore_issue_id(retained_entry)) is not None
     )
 
 
@@ -178,7 +177,10 @@ async def test_unload_closes_coordinator_after_platforms(
     hass: HomeAssistant,
 ) -> None:
     """Successful platform unload closes coordinator resources."""
-    entry = MockConfigEntry(domain=DOMAIN, data={"address": "synthetic-device"})
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"address": "synthetic-device", CONF_DEVICE_FINGERPRINT: FINGERPRINT},
+    )
     coordinator = Mock(async_shutdown=AsyncMock())
     entry.runtime_data = Mock(coordinator=coordinator)
 
@@ -197,7 +199,10 @@ async def test_failed_platform_unload_keeps_coordinator(
     hass: HomeAssistant,
 ) -> None:
     """A failed unload leaves the still-loaded runtime intact."""
-    entry = MockConfigEntry(domain=DOMAIN, data={"address": "synthetic-device"})
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"address": "synthetic-device", CONF_DEVICE_FINGERPRINT: FINGERPRINT},
+    )
     coordinator = Mock(async_shutdown=AsyncMock())
     entry.runtime_data = Mock(coordinator=coordinator)
 
@@ -213,7 +218,10 @@ async def test_failed_platform_unload_keeps_coordinator(
 
 async def test_platform_forward_failure_cleans_up(hass: HomeAssistant) -> None:
     """Partial setup cannot leak coordinator resources."""
-    entry = MockConfigEntry(domain=DOMAIN, data={"address": "synthetic-device"})
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"address": "synthetic-device", CONF_DEVICE_FINGERPRINT: FINGERPRINT},
+    )
     coordinator = Mock(async_setup=AsyncMock(), async_shutdown=AsyncMock())
 
     with (
@@ -235,7 +243,10 @@ async def test_platform_forward_failure_cleans_up(hass: HomeAssistant) -> None:
 
 async def test_callback_start_failure_cleans_up(hass: HomeAssistant) -> None:
     """A partial Bluetooth callback registration cannot leak resources."""
-    entry = MockConfigEntry(domain=DOMAIN, data={"address": "synthetic-device"})
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"address": "synthetic-device", CONF_DEVICE_FINGERPRINT: FINGERPRINT},
+    )
     coordinator = Mock(
         async_setup=AsyncMock(),
         async_start=Mock(side_effect=RuntimeError("synthetic callback failure")),
@@ -253,3 +264,22 @@ async def test_callback_start_failure_cleans_up(hass: HomeAssistant) -> None:
 
     assert entry.runtime_data.coordinator is coordinator
     coordinator.async_shutdown.assert_awaited_once_with()
+
+
+async def test_removing_entry_deletes_only_its_private_profile_store(
+    hass: HomeAssistant,
+) -> None:
+    """HA convention: entry removal leaves no orphaned .storage profile."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"address": "removed-device", CONF_DEVICE_FINGERPRINT: FINGERPRINT},
+    )
+    backend = Mock(async_remove=AsyncMock(), path="/nonexistent/lumalou.profile")
+
+    with patch(
+        "custom_components.lumalou.storage.Store", return_value=backend
+    ) as store_class:
+        await async_remove_entry(hass, entry)
+
+    assert store_class.call_args.args[2] == f"lumalou.{entry.entry_id}.profile"
+    backend.async_remove.assert_awaited_once_with()

@@ -16,21 +16,18 @@ from homeassistant.core import (
     SupportsResponse,
     callback,
 )
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 
 from .const import DOMAIN
+from .models import ProfileValidationError, RevisionConflictError
 
 ATTR_PROFILE = "profile"
 ATTR_EXPECTED_REVISION = "expected_revision"
-ATTR_ENABLED = "enabled"
 
-SERVICE_REFRESH_STATE = "refresh_state"
-SERVICE_SYNC_CLOCK = "sync_clock"
 SERVICE_EXPORT_PROFILE = "export_profile"
 SERVICE_IMPORT_PROFILE = "import_profile"
 SERVICE_RESTORE_PROFILE = "restore_profile"
-SERVICE_SET_MAINTENANCE = "set_maintenance"
 
 
 def _strict_revision(value: Any) -> int:
@@ -47,7 +44,9 @@ IMPORT_SCHEMA = ENTRY_SCHEMA.extend(
         vol.Required(ATTR_EXPECTED_REVISION): _strict_revision,
     }
 )
-MAINTENANCE_SCHEMA = ENTRY_SCHEMA.extend({vol.Required(ATTR_ENABLED): cv.boolean})
+RESTORE_SCHEMA = ENTRY_SCHEMA.extend(
+    {vol.Optional(ATTR_EXPECTED_REVISION): _strict_revision}
+)
 
 
 def _coordinator(hass: HomeAssistant, call: ServiceCall) -> Any:
@@ -67,18 +66,23 @@ def _coordinator(hass: HomeAssistant, call: ServiceCall) -> Any:
     return entry.runtime_data.coordinator
 
 
-async def _async_refresh_state(hass: HomeAssistant, call: ServiceCall) -> None:
-    await _coordinator(hass, call).async_request_refresh()
-
-
-async def _async_sync_clock(hass: HomeAssistant, call: ServiceCall) -> None:
-    await _coordinator(hass, call).async_sync_clock()
+def _validation_error(err: ValueError) -> ServiceValidationError:
+    """Translate saved-profile validation and revision conflicts."""
+    key = (
+        "revision_conflict"
+        if isinstance(err, RevisionConflictError)
+        else "invalid_profile"
+    )
+    return ServiceValidationError(translation_domain=DOMAIN, translation_key=key)
 
 
 async def _async_export_profile(
     hass: HomeAssistant, call: ServiceCall
 ) -> ServiceResponse:
-    response = await _coordinator(hass, call).async_export_profile()
+    try:
+        response = await _coordinator(hass, call).async_export_profile()
+    except ProfileValidationError as err:
+        raise _validation_error(err) from err
     return cast(ServiceResponse, response)
 
 
@@ -86,9 +90,12 @@ async def _async_import_profile(
     hass: HomeAssistant, call: ServiceCall
 ) -> ServiceResponse | None:
     coordinator = _coordinator(hass, call)
-    await coordinator.async_import_profile(
-        call.data[ATTR_PROFILE], call.data[ATTR_EXPECTED_REVISION], confirmed=True
-    )
+    try:
+        await coordinator.async_import_profile(
+            call.data[ATTR_PROFILE], call.data[ATTR_EXPECTED_REVISION], confirmed=True
+        )
+    except (ProfileValidationError, RevisionConflictError) as err:
+        raise _validation_error(err) from err
     if call.return_response:
         return {
             "revision": coordinator.profile_record.revision,
@@ -100,14 +107,37 @@ async def _async_import_profile(
 async def _async_restore_profile(
     hass: HomeAssistant, call: ServiceCall
 ) -> ServiceResponse | None:
-    await _coordinator(hass, call).async_restore_profile()
+    """Write the saved profile, defaulting to the current saved revision."""
+    from .coordinator import ProfileRestoreError
+
+    coordinator = _coordinator(hass, call)
+    revision = call.data.get(
+        ATTR_EXPECTED_REVISION, coordinator.profile_record.revision
+    )
+    try:
+        result = await coordinator.async_restore_profile(revision, confirmed=True)
+    except ProfileRestoreError as err:
+        outcome = err.result
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key=outcome.error or "restore_verify",
+            translation_placeholders={
+                "applied": str(len(outcome.applied_steps)),
+                "planned": str(len(outcome.planned_steps)),
+                # Block names stay in the log and diagnostics.
+                "count": str(len(outcome.mismatched_blocks)),
+            },
+        ) from err
+    except (ProfileValidationError, RevisionConflictError) as err:
+        raise _validation_error(err) from err
     if call.return_response:
-        return {"accepted": True}
+        return {
+            "revision": result.revision,
+            "verified": result.verified,
+            "applied_steps": list(result.applied_steps),
+            "clock_synced": result.clock_synced,
+        }
     return None
-
-
-async def _async_set_maintenance(hass: HomeAssistant, call: ServiceCall) -> None:
-    await _coordinator(hass, call).async_set_maintenance(call.data[ATTR_ENABLED])
 
 
 @callback
@@ -123,18 +153,6 @@ def async_setup_services(hass: HomeAssistant) -> None:
         ...,
     ] = (
         (
-            SERVICE_REFRESH_STATE,
-            partial(_async_refresh_state, hass),
-            ENTRY_SCHEMA,
-            SupportsResponse.NONE,
-        ),
-        (
-            SERVICE_SYNC_CLOCK,
-            partial(_async_sync_clock, hass),
-            ENTRY_SCHEMA,
-            SupportsResponse.NONE,
-        ),
-        (
             SERVICE_EXPORT_PROFILE,
             partial(_async_export_profile, hass),
             ENTRY_SCHEMA,
@@ -149,14 +167,8 @@ def async_setup_services(hass: HomeAssistant) -> None:
         (
             SERVICE_RESTORE_PROFILE,
             partial(_async_restore_profile, hass),
-            ENTRY_SCHEMA,
+            RESTORE_SCHEMA,
             SupportsResponse.OPTIONAL,
-        ),
-        (
-            SERVICE_SET_MAINTENANCE,
-            partial(_async_set_maintenance, hass),
-            MAINTENANCE_SCHEMA,
-            SupportsResponse.NONE,
         ),
     )
 

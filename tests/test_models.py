@@ -1,20 +1,16 @@
 """Full profile validation, partial intent, and persisted-record invariants."""
 
 from copy import deepcopy
-from types import SimpleNamespace
 
 import pytest
 
 from custom_components.lumalou.models import (
     DAYS,
     FULL_PROFILE_FIELDS,
-    PROFILE_RANGES,
-    LumalouRuntimeData,
     ProfileRecord,
     ProfileValidationError,
     export_profile_payload,
     import_profile_payload,
-    migrate_v1_record,
     profile_is_complete,
     require_complete_profile,
     validate_profile,
@@ -36,16 +32,11 @@ def full_profile() -> dict:
         ],
     }
     return {
-        "brightness": 1,
-        "color": 9,
-        "light_duration": 5,
-        "volume": 0,
-        "playlist": [18, 2, 2, 1],
-        "playlist_duration": 6,
+        "playlist": [12, 2, 2, 1],
         "clock_settings": {"display": False, "brightness": 0, "format": 1},
         "routine_settings": {
             "enabled": False,
-            "music": 255,
+            "music": 15,
             "volume": 0,
             "task_reward_sfx": 15,
             "routine_reward_sfx": 0,
@@ -60,25 +51,28 @@ def full_profile() -> dict:
     }
 
 
-@pytest.mark.parametrize("name", PROFILE_RANGES)
-def test_profile_range_boundaries(name):
-    low, high = PROFILE_RANGES[name]
-    for value in (low, high):
-        assert validate_profile({name: value}) == {name: value}
-    for value in (low - 1, high + 1, True, False, "1", 1.0, None):
-        with pytest.raises(ProfileValidationError):
-            validate_profile({name: value})
-
-
 @pytest.mark.parametrize(
-    "value", [None, [], "profile", {"raw_opcode": 0x52}, {"routine": []}]
+    "value",
+    [
+        None,
+        [],
+        "profile",
+        {"raw_opcode": 0x52},
+        {"routine": []},
+        # Live state is not part of the profile.
+        {"brightness": 5},
+        {"color": 1},
+        {"volume": 3},
+        {"light_duration": 1},
+        {"playlist_duration": 1},
+    ],
 )
 def test_unknown_profile_rejected(value):
     with pytest.raises(ProfileValidationError):
         validate_profile(value)
 
 
-@pytest.mark.parametrize("playlist", [[0], [19], [True], [1] * 13, "1", (1, 2)])
+@pytest.mark.parametrize("playlist", [[0], [13], [True], [1] * 13, "1", (1, 2)])
 def test_invalid_playlist_rejected_not_truncated(playlist):
     with pytest.raises(ProfileValidationError):
         validate_profile({"playlist": playlist})
@@ -89,7 +83,7 @@ def test_complete_profile_preserves_order_slots_and_detaches_copy():
     result = require_complete_profile(profile)
     assert result == profile
     assert set(result) == FULL_PROFILE_FIELDS
-    assert result["playlist"] == [18, 2, 2, 1]
+    assert result["playlist"] == [12, 2, 2, 1]
     assert result["routines"]["sunday"]["slots"][:3] == [
         {"step": 2, "task": 0},
         None,
@@ -97,38 +91,21 @@ def test_complete_profile_preserves_order_slots_and_detaches_copy():
     ]
     result["playlist"].append(3)
     result["sleepy_times"]["sunday"]["hour"] = 1
-    assert profile["playlist"] == [18, 2, 2, 1]
+    assert profile["playlist"] == [12, 2, 2, 1]
     assert profile["sleepy_times"]["sunday"] == {"hour": 0, "minute": 0}
 
 
 def test_partial_profile_valid_but_never_complete():
     assert validate_profile({}) == {}
-    assert validate_profile({"volume": 2}) == {"volume": 2}
+    assert validate_profile({"playlist": [2]}) == {"playlist": [2]}
     assert not profile_is_complete({})
-    assert not profile_is_complete({"volume": 2})
+    assert not profile_is_complete({"playlist": [2]})
+    assert not profile_is_complete({"brightness": 5})
     with pytest.raises(ProfileValidationError, match="incomplete"):
-        require_complete_profile({"volume": 2})
+        require_complete_profile({"playlist": [2]})
 
 
-def test_legacy_subset_envelope_remains_versioned_and_strict():
-    profile = {"volume": 2, "playlist": [3, 1]}
-    envelope = export_profile_payload(profile)
-    assert envelope == {
-        "schema_version": 1,
-        "scope": "supported_subset",
-        "profile": profile,
-    }
-    assert import_profile_payload(envelope) == profile
-    envelope["profile"]["clock_settings"] = {
-        "display": False,
-        "brightness": 0,
-        "format": 0,
-    }
-    with pytest.raises(ProfileValidationError):
-        import_profile_payload(envelope)
-
-
-def test_v2_envelope_does_not_masquerade_as_legacy_subset():
+def test_export_envelope_is_versioned_and_strict():
     profile = full_profile()
     envelope = export_profile_payload(profile)
     assert envelope["schema_version"] == 2
@@ -169,7 +146,7 @@ def test_null_is_no_scheduled_time_and_midnight_remains_a_time():
             "routine_settings",
             {
                 "enabled": False,
-                "music": 256,
+                "music": 16,
                 "volume": 0,
                 "task_reward_sfx": 0,
                 "routine_reward_sfx": 0,
@@ -180,7 +157,7 @@ def test_null_is_no_scheduled_time_and_midnight_remains_a_time():
             {
                 "enabled": False,
                 "music": 0,
-                "volume": 256,
+                "volume": 16,
                 "task_reward_sfx": 0,
                 "routine_reward_sfx": 0,
             },
@@ -252,65 +229,41 @@ def test_routine_requires_exact_lossless_slots(slots):
         validate_profile({"routines": routines})
 
 
-def test_record_roundtrip_and_runtime_property():
+def test_record_roundtrip_is_detached():
     record = ProfileRecord(
         revision=2,
-        desired_profile={"volume": 2},
-        previous={"revision": 1, "profile": {"volume": 1}},
+        desired_profile={"playlist": [2]},
+        previous={"revision": 1, "profile": {"playlist": [1]}},
         verified_revision=1,
         pending=True,
-        sync_status="partial",
+        sync_status="pending",
         last_error="synthetic",
         maintenance=True,
     )
     serialized = record.to_dict()
     assert ProfileRecord.from_dict(serialized) == record
-    serialized["desired_profile"]["volume"] = 3
-    assert record.desired_profile == {"volume": 2}
-    coordinator = SimpleNamespace(profile_record=record)
-    assert LumalouRuntimeData(coordinator).profile_record is record
+    serialized["desired_profile"]["playlist"].append(3)
+    assert record.desired_profile == {"playlist": [2]}
 
 
-def test_v1_migration_preserves_metadata_and_partialness():
-    source = {
-        "schema_version": 1,
-        "revision": 8,
-        "desired_profile": {"volume": 4, "playlist": [3, 1]},
-        "previous": {"revision": 7, "profile": {"volume": 3}},
-        "verified_revision": 6,
-        "pending": True,
-        "sync_status": "pending",
-        "last_error": "offline",
-        "maintenance": True,
-    }
-    migrated = migrate_v1_record(source)
-    assert migrated.schema_version == 2
-    assert migrated.revision == 8
-    assert migrated.desired_profile == {"volume": 4, "playlist": [3, 1]}
-    assert migrated.previous == {"revision": 7, "profile": {"volume": 3}}
-    assert migrated.verified_revision == 6
-    assert migrated.pending is True
-    assert migrated.sync_status == "pending"
-    assert migrated.last_error == "offline"
-    assert migrated.maintenance is True
-    assert not profile_is_complete(migrated.desired_profile)
+@pytest.mark.parametrize("field", ["music", "volume"])
+def test_routine_values_are_limited_to_the_readback_nibble(field):
+    """Only 0..15 round-trips through GLOBAL_STATE."""
+    profile = full_profile()
+    profile["routine_settings"][field] = 15
+    assert validate_profile(profile)["routine_settings"][field] == 15
 
-
-@pytest.mark.parametrize(
-    "profile",
-    [
-        {"unknown": 0},
-        {"audio_source": 0},
-        {"playlist": [0]},
-        {"brightness": 0},
-    ],
-)
-def test_v1_migration_rejects_non_v1_or_corrupt_subset(profile):
-    source = ProfileRecord().to_dict()
-    source["schema_version"] = 1
-    source["desired_profile"] = profile
+    profile["routine_settings"][field] = 16
     with pytest.raises(ProfileValidationError):
-        migrate_v1_record(source)
+        validate_profile(profile)
+    with pytest.raises(ProfileValidationError):
+        import_profile_payload(
+            {"schema_version": 2, "scope": "persistent_profile", "profile": profile}
+        )
+    with pytest.raises(ProfileValidationError):
+        ProfileRecord.from_dict(
+            ProfileRecord(revision=1, desired_profile=profile).to_dict()
+        )
 
 
 @pytest.mark.parametrize(
@@ -329,7 +282,7 @@ def test_v1_migration_rejects_non_v1_or_corrupt_subset(profile):
         ("previous", []),
         ("previous", {"profile": {}}),
         ("previous", {"revision": -1, "profile": {}}),
-        ("previous", {"revision": 0, "profile": {"volume": 10}}),
+        ("previous", {"revision": 0, "profile": {"playlist": [13]}}),
     ],
 )
 def test_corrupt_record_rejected(field, value):
@@ -343,3 +296,27 @@ def test_corrupt_record_rejected(field, value):
 def test_record_requires_complete_known_schema(value):
     with pytest.raises(ProfileValidationError):
         ProfileRecord.from_dict(value)
+
+
+def test_record_verification_is_bound_to_a_fingerprint():
+    data = ProfileRecord(revision=2, verified_revision=2).to_dict()
+    assert not ProfileRecord.from_dict(data).is_verified
+    del data["verified_fingerprint"]
+    with pytest.raises(ProfileValidationError):
+        ProfileRecord.from_dict(data)
+    bound = ProfileRecord(
+        revision=2, verified_revision=2, verified_fingerprint="c" * 64
+    )
+    assert ProfileRecord.from_dict(bound.to_dict()) == bound
+    assert bound.is_verified
+    assert not ProfileRecord(
+        revision=3, verified_revision=2, verified_fingerprint="c" * 64
+    ).is_verified
+
+
+@pytest.mark.parametrize("fingerprint", ["", "C" * 64, "c" * 63, 7, True])
+def test_record_rejects_invalid_verified_fingerprint(fingerprint):
+    data = ProfileRecord().to_dict()
+    data["verified_fingerprint"] = fingerprint
+    with pytest.raises(ProfileValidationError):
+        ProfileRecord.from_dict(data)

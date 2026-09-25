@@ -1,30 +1,116 @@
 # Changelog
 
-## Unreleased
+All notable changes to this project are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-- Begin config-entry based Home Assistant integration.
-- Add Home Assistant Bluetooth discovery without an independent scanner.
-- Add persistent profile revision storage for the safely supported subset.
-- Add standard light and media-player entities suitable for HomeKit Bridge.
-- Add protocol audit and explicit hardware-validation gates.
-- Publish valid current-session notifications without changing saved intent.
-- Make profile commits cancellation-safe and require revision checks on import.
-- Document schedule/routine codecs found in the deployed upstream web client.
-- Prepare an unpublished upstream strict-readback and schedule-codec candidate;
-  keep HA restore disabled until it is released and accepted on hardware.
-- Add offline CAS editors for every modeled profile block, including ordered
-  playlists, clock settings, weekly schedules, and all seven daily routines.
-- Add local HACS brand assets and current metadata validation.
-- Add a guarded, validation-gated GitHub prerelease workflow and HACS release
-  archive metadata; placeholder version `0.0.0` cannot be published.
-- Expose profile presence and last verified revision as diagnostics, and create
-  an entry-scoped Home Assistant Repair when private profile storage is corrupt.
-- Document target-observed, read-only `CURRENT_DATE` evidence and its strict
-  unpublished upstream decoder.
-- Add static type checking to local and CI validation.
-- Replay Home Assistant's newest cached advertisement so reload can recover
-  presence without waiting for changed BLE payload bytes.
-- Declare fixed-palette light effects through the standard HA feature flag so
-  normal service calls and HomeKit-facing state retain palette control.
-- Add a strict passive-advertisement codec to the unpublished upstream branch;
-  HA consumption remains blocked until a released version can be exact-pinned.
+## [Unreleased]
+
+Planned as the first release, `0.1.0`, preceded by `0.1.0b1` pre-releases for
+hardware validation. When tagging, move these entries under
+`## [0.1.0] - YYYY-MM-DD`; the release workflow uses that section as release
+notes.
+
+### Added
+
+- Config-entry setup from Home Assistant Bluetooth discovery, with user
+  confirmation and no independent scanner.
+- Per-device enrollment: the signed factory key is verified and only a private
+  fingerprint is stored; every session is bound to it. Reconfigure accepts a
+  new Bluetooth address only for the same signed device.
+- Controls unlock only after one complete, strict profile read from the device
+  has been confirmed.
+- Light (on/off, brightness, palette effects; a plain "on" uses the last
+  brightness seen), media player (play/stop, volume, built-in sources), light
+  and playlist duration selects, maintenance switch, clock-sync and refresh
+  buttons, connectivity binary sensor, firmware sensor and profile sync
+  status sensor.
+- Private, revisioned profile per entry with the persistent configuration
+  (playlist, clock settings, routine settings, weekly schedules, alarms and
+  all seven daily routines), read from the device, with editors for every
+  block; JSON export/import actions with a revision check. Light brightness
+  and color, volume and timers are live state, not profile settings.
+- Verified profile restore (`lumalou.restore_profile`, optional
+  `expected_revision`): fresh read, clock correction, minimal ordered setter
+  writes with activation flags last, and a fresh verification read. A restore
+  never writes light or volume.
+- Power-loss handling: every reconnect of a verified entry reads the full
+  profile, corrects a device clock that is more than 60 seconds off and
+  raises a Repair (restore saved profile or keep device settings) when the
+  device no longer matches the verified profile. A pending revision the device
+  already matches becomes verified. Optional automatic restore, off by
+  default, limited to two attempts per event.
+- Daily clock check at 03:05 and on Home Assistant time zone changes.
+- Push updates while connected; reconnect on advertisement at most every
+  30 seconds with bounded backoff; device loss and return logged once.
+- Repair for differing device settings; redacted diagnostics; translated
+  errors; English and Russian translations; local brand icons.
+- Standard entities for Apple Home through HomeKit Bridge; configuration and
+  diagnostic entities are excluded from HomeKit by default.
+- CI with lint, type checks, tests, hassfest and HACS validation; tag-based
+  release workflow.
+
+### Changed
+
+For users of earlier development builds (there are no migrations; remove the
+old Lumalou entry and add the device again):
+
+- An entry without a verified device identity fails setup and asks to be
+  removed and added again.
+- Light brightness and color, volume and the light and playlist timers are no
+  longer saved in the profile, compared for power loss or restored; the
+  "Light and audio values" editor is gone. A light that is off (brightness 0)
+  no longer raises a *settings differ* Repair.
+- `lumalou.import_profile` accepts only a complete profile.
+- The profile revision, verified revision and last error sensors and the
+  profile pending and present binary sensors are removed; their data is in the
+  diagnostics download.
+- The profile is stored with Home Assistant's `Store` helper; the storage
+  recovery Repair and custom backups are gone.
+- Setup no longer reads Bluetooth Device Information; only the signed
+  identity is read.
+- The same signed device at a new address keeps its unlocked controls.
+- **Breaking:** light effects, media player sources and duration select
+  options are lower-case keys (for example `warm` instead of `WARM`); update
+  automations and scripts.
+- Removed the Create menu and the JSON import from the options flow: editors
+  appear only after a device read, and JSON import remains available as the
+  `lumalou.import_profile` action.
+- Removed the `refresh_state`, `sync_clock` and `set_maintenance` actions; use
+  the Refresh and Synchronize clock buttons and the Maintenance switch.
+- Manual setup no longer asks for a second confirmation after the device is
+  chosen.
+- Removing an entry now deletes its private saved profile; export it first.
+- The requirement is the published `lumalou-gld09==0.2.0` release; Home
+  Assistant 2026.9.0 or newer.
+
+### Security
+
+- No DFU, OTA, firmware or factory-reset access. Only allowlisted opcodes and
+  GATT characteristics are used; pairing-complete and time-prescaler commands
+  are denied. Restore uses only allowlisted profile setters.
+- Bluetooth addresses, fingerprints, tokens and schedules are kept out of the
+  UI, logs and diagnostics.
+
+### Known limitations
+
+- Not yet validated on hardware; see `docs/hardware-validation.md`.
+- Power-loss detection is a heuristic over the persistent profile settings;
+  automatic restore overwrites every other change of them made on the device.
+  Light, volume and timers are not restored after a power loss.
+- Palette colors are not available in Apple Home.
+
+<!-- Release section template:
+## [X.Y.Z] - YYYY-MM-DD
+
+### Added
+### Changed
+### Fixed
+### Security
+### Known limitations
+
+Hardware validation: summary of passed phases (anonymized).
+Requires Home Assistant 2026.9.0 or newer and lumalou-gld09==0.2.0.
+-->
+
+[Unreleased]: https://github.com/pavlikru/ha-lumalou/commits/main

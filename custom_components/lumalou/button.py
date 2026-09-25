@@ -5,8 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.components.button import ButtonEntity
+from homeassistant.const import EntityCategory
 
-from .entity import LumalouEntity
+from .entity import LumalouControlEntity, LumalouEntity
+
+PARALLEL_UPDATES = 0
 
 
 async def async_setup_entry(hass: Any, entry: Any, async_add_entities: Any) -> None:
@@ -14,23 +17,21 @@ async def async_setup_entry(hass: Any, entry: Any, async_add_entities: Any) -> N
     async_add_entities([LumalouSyncClockButton(entry), LumalouRefreshButton(entry)])
 
 
-class LumalouSyncClockButton(LumalouEntity, ButtonEntity):
+class LumalouSyncClockButton(LumalouControlEntity, ButtonEntity):
     """Synchronize the device clock."""
 
-    def __init__(self, entry: Any) -> None:
-        super().__init__(entry, "Synchronize clock", "sync_clock")
-        self._attr_translation_key = "sync_clock"
+    _attr_translation_key = "sync_clock"
+    _attr_entity_category = EntityCategory.CONFIG
 
     async def async_press(self) -> None:
         await self.coordinator.async_sync_clock()
 
 
 class LumalouRefreshButton(LumalouEntity, ButtonEntity):
-    """Request a fresh state snapshot."""
+    """Request a fresh read-only state snapshot."""
 
-    def __init__(self, entry: Any) -> None:
-        super().__init__(entry, "Refresh", "refresh")
-        self._attr_translation_key = "refresh"
+    _attr_translation_key = "refresh"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     @property
     def available(self) -> bool:

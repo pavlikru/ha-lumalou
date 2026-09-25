@@ -6,12 +6,14 @@ body:
   - type: markdown
     attributes:
       value: >-
-        Remove device addresses, private keys, tokens, and personal data from
-        logs before submitting them.
+        Do not post Bluetooth addresses, device fingerprints, exported profiles,
+        schedules, private keys, tokens, or other personal data. The integration's
+        diagnostics download is already redacted.
   - type: input
     id: integration-version
     attributes:
       label: Integration version
+      description: Release tag, or branch and commit for a development install.
       placeholder: 0.1.0
     validations:
       required: true
@@ -20,6 +22,13 @@ body:
     attributes:
       label: Home Assistant version
       placeholder: 2026.9.2
+    validations:
+      required: true
+  - type: input
+    id: bluetooth-adapter
+    attributes:
+      label: Bluetooth adapter or proxy
+      description: For example built-in Raspberry Pi adapter, USB dongle, ESPHome proxy.
     validations:
       required: true
   - type: input
@@ -37,7 +46,17 @@ body:
     validations:
       required: true
   - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: >-
+        Settings → Devices & services → Lumalou → ⋮ → Download diagnostics.
+        Attach the file or paste its contents.
+      render: json
+  - type: textarea
     id: logs
     attributes:
       label: Relevant logs
+      description: >-
+        Enable debug logging for the integration and reproduce the problem.
       render: text

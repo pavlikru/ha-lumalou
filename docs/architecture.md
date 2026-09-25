@@ -1,98 +1,154 @@
 # Architecture
 
-## Goal
-
-Expose a Fisher-Price Lumalou (`gld09`) as a local Home Assistant device while
-keeping Bluetooth protocol details in the upstream `lumalou` Python package.
-
 ## Boundaries
 
-The upstream library owns:
+The protocol library (`lumalou-gld09`, import name `lumalou`) owns MPID framing,
+cryptography, command builders, response parsing, signed factory-key
+verification and session binding. This integration owns only the Home Assistant
+side: Bluetooth discovery and connection lifecycle, config entries, entities,
+the saved profile, diagnostics and translations. Protocol or cryptography code
+is not copied into this repository.
 
-- MPID framing and cryptography
-- BLE protocol commands and response parsing
-- Device client behavior that is not Home Assistant-specific
-
-This integration owns:
-
-- Home Assistant Bluetooth discovery and connection lifecycle
-- Config entries and runtime state
-- Entity mapping, availability, and device registry metadata
-- Home Assistant diagnostics and translations
-
-The integration must use Home Assistant's Bluetooth stack instead of creating a
-separate global scanner. It must not access DFU or firmware-update functions.
+The integration uses Home Assistant's Bluetooth APIs (discovery matchers,
+advertisement and unavailability callbacks, `BLEDevice` lookup). It never
+starts its own scanner and never accesses the DFU service.
 
 ## Modules
 
 ```text
 custom_components/lumalou/
-├── __init__.py       Config entry setup and unload
-├── config_flow.py    Bluetooth discovery and UI setup
-├── const.py          Domain and integration constants
-├── models.py         Validated desired-profile and revision models
-├── storage.py        Private, atomic per-entry profile Store
-├── coordinator.py    Shared BLE state and command serialization
-├── entity.py         Common entity base
-├── light.py          Night-light controls
-├── media_player.py   Audio and volume controls
-├── select.py         Confirmed duration choices
-├── sensor.py         Read-only diagnostics
-├── services.py       Validated entry-targeted actions
-├── diagnostics.py    Redacted support data
-└── manifest.json     Integration metadata and pinned dependency
+├── __init__.py        Entry setup/unload/removal, restore Repair, daily clock check
+├── config_flow.py     Discovery, confirmation, reconfigure, options/profile editors
+├── coordinator.py     One serialized BLE session, reconnects, restore, clock sync
+├── restore.py         Pure readback mapping and ordered restore steps (no I/O)
+├── transport.py       HA connection path, restricted GATT/opcode surface and the
+│                      read-only signed-identity probe
+├── models.py          Profile schema, validation, revisions
+├── storage.py         Per-entry profile on Home Assistant's Store helper
+├── entity.py          Shared entity base and device info
+├── light.py, media_player.py, select.py, switch.py, button.py,
+│   sensor.py, binary_sensor.py
+├── services.py        Entry-targeted profile actions
+├── repairs.py         Fix flow for device settings that differ from the profile
+└── diagnostics.py     Allowlisted, redacted diagnostics
 ```
 
-Standard Home Assistant entities are preferred over custom actions. This also
-lets HomeKit Bridge expose the light and the supported subset of audio control
-without adding Apple-specific transport code. The HomeKit path is implemented,
-but pairing and control on the target Home Assistant/Apple Home are not yet
-verified.
+## Identity and enrollment
+
+1. Discovery matches connectable advertisements with Mattel manufacturer data
+   (`manufacturer_id` 950, prefix `MB`).
+2. The user confirms the candidate.
+3. The flow connects once and reads only the factory token; the library
+   verifies its signature and returns a fingerprint of the signed device key.
+   (The target has no readable Device Information Model Number, and the signed
+   key is the stronger binding, so no other characteristic is read.) Only that fingerprint is
+   stored, in the config entry, and used as the entry's unique ID; entity and
+   device registry IDs derive from it. The token and serial never leave the
+   library call. Manual setup treats choosing the device as the confirmation;
+   Bluetooth discovery shows a confirmation form.
+4. Every later session passes the fingerprint to the library, which refuses a
+   device with a different key before any session or TX write.
+5. Controls stay locked (`protocol_verified` false) until one complete, strict
+   profile read has been previewed and confirmed by the user. The same signed
+   key at a new address (discovery or Reconfigure) only updates the address.
+
+There are no config entry or storage migrations: no version was released. An
+entry without a fingerprint (from an early development build) fails setup with
+a translated error asking to remove and re-add it.
+
+This is per-device enrollment. It does not prove which retail model a device
+is, and it makes no claim about other hardware revisions.
 
 ## State ownership
 
-Each config entry owns one runtime object, coordinator, BLE session, and Store.
-The Store key contains the config-entry ID, so multiple devices cannot share a
-profile. `desired_profile` is the last user-confirmed durable revision.
-`observed_state` is only a current-session device snapshot and never overwrites
-the desired profile implicitly.
+Each config entry owns one coordinator, one BLE session and one private
+`homeassistant.helpers.storage.Store` (`lumalou.<entry_id>.profile`, atomic
+writes). Removing the entry deletes it. Store moves undecodable JSON aside as
+`.corrupt.<timestamp>` and raises its own Repair; an invalid record is ignored
+with a warning. Without a usable saved profile the entry starts empty and
+controls stay locked until a device read is confirmed again.
 
-The coordinator registers address-scoped passive advertisement and unavailable
-callbacks through Home Assistant's Bluetooth manager. Advertisement recovery is
-coalesced and rate-limited and performs only handshake plus fresh state read.
-Unavailable callbacks synchronously invalidate the observation and detach the
-old session before asynchronous cleanup. They do not replay a saved write.
+- `desired_profile` is the last user-confirmed, revisioned profile of
+  persistent configuration only (see `docs/profile-schema.md`). Every edit
+  checks the expected revision (compare-and-swap) under the coordinator lock.
+- A revision is **verified** when a fresh complete read on the enrolled device
+  key matched it (`verified_revision`, `verified_fingerprint`): a confirmed
+  device read, a successful restore, or a reconnect whose read already equals
+  a pending revision. Editor saves and imports are pending until then.
+- Editors and imports require a complete profile; they never invent default
+  values and never drop saved blocks.
+- The observed state is the latest fresh device notification. Light
+  brightness and color, volume and timers live only there; live controls send
+  their command and never change the saved profile. A plain light "on" uses
+  the last non-zero brightness seen (5 before any), because the device
+  reports 0 while the light is off.
+- One-off commands (play, stop, light off) are never queued or replayed.
 
-A persistent edit follows: validate → build revision → atomically save → verify
-the on-disk envelope → publish desired revision → attempt BLE apply → obtain a
-fresh callback. Offline edits remain pending. Play, stop, light off, clock sync,
-and other transient commands are not queued for replay.
+## Connection lifecycle
 
-The options-flow profile editors are offline editors: saving one updates the
-private Store and does not write the device. Only currently supported live
-entity commands (light, audio playback/volume, durations, maintenance, refresh,
-and clock sync) are sent to BLE, subject to the same fresh-state and hardware
-validation limits below.
+- Advertisement callbacks mark the device present and schedule one recovery
+  pass when no session is live: at most one per 30 seconds, with exponential
+  backoff up to 15 minutes on failure. A remote link loss of the live session
+  (for example power loss) also schedules one.
+- Before verification, recovery only reads GLOBAL_STATE. Afterwards it opens a
+  fresh strict session, reads the complete profile and the device clock,
+  writes the clock from Home Assistant local time if it is more than
+  60 seconds off (never when the host clock looks unset), marks a pending
+  revision verified if the device already matches it exactly, and compares
+  the profile with the current verified revision.
+- At 03:05 local time and when the Home Assistant time zone changes, a
+  connected, verified entry reads the device clock in a fresh session and
+  corrects it the same way (DST and drift during long sessions).
+- A mismatch sets `restore_needed` and raises the `profile_restore_needed`
+  Repair. With the `auto_restore` option on, the coordinator runs the restore
+  executor instead, at most twice per detected event; then the Repair takes
+  over with error severity.
+- The unavailability callback invalidates state and detaches the session
+  synchronously, then closes it in the background.
+- All device operations run under one lock; each connection has a generation
+  number so late notifications from an old session are ignored.
+- Maintenance mode disconnects and blocks all device I/O until turned off.
+- Unload cancels running operations and closes Bluetooth; the Store is kept.
 
-## Current recovery boundary
+## Restore executor
 
-`lumalou==0.1.0` only delivers `GLOBAL_STATE` and can return cached data after a
-timeout. The coordinator additionally requires a new callback generation, but
-upstream still zero-pads short payloads and cannot read complete playlists,
-schedules, or seven daily routines. Therefore a snapshot is partial and cannot
-mark a full profile verified. Automatic full restore stays disabled until a
-released upstream API provides strict block parsers and session-bound fresh
-readback.
+`async_restore_profile(expected_revision, confirmed=True)` runs under the
+coordinator lock: revision check, new strict session with a complete read,
+clock correction, the minimal setter writes from `restore.build_restore_steps`
+in a fixed order (clock display, playlist, routine sound and volume, weekly
+times, alarms and routines, then the Ready-to-Rise and routine on/off flags),
+then a new session with a complete read. No light or volume setter is part of
+a restore. Only a full
+match marks the revision verified; otherwise `ProfileRestoreError` reports
+the applied steps and the error (`restore_write`, `restore_verify` or
+`restore_mismatch`). The executor never retries by itself and refuses a
+revision verified on a different device key.
 
-An unpublished upstream candidate implements that strict session contract and
-the schedule/routine codecs. It is not consumed here: repository policy requires
-a reviewed, released, exactly pinned dependency, and hardware validation must
-still establish setter side effects and a safe restore order.
+## Command policy
 
-## Initial milestones
+Only allowlisted application opcodes are sent: live controls (light, audio,
+volume, timers, clock, state request), the profile setters used by restore,
+and read-only profile queries. User-state refusals (controls locked,
+maintenance, untrusted host clock) are `ServiceValidationError`; device
+failures are translated `HomeAssistantError`. Pairing-complete (`0x34`) and time-prescaler
+(`0x52`) are explicitly denied; aggregate state, nap, routine start and
+firmware commands are not in any allowlist. The transport wrapper exposes only
+the factory read, RX subscription, SESSION write and TX write characteristics
+and connects through Home Assistant's `establish_connection`.
 
-1. Config flow, Bluetooth discovery, safe session lifecycle, mocked tests.
-2. Device registry, read-only state, light/audio controls, and profile Store.
-3. Upstream typed schedule/playlist/routine codecs and strict fresh readback.
-4. Import preview, complete manual restore, and hardware side-effect tests.
-5. Background reconnect/auto-restore, ten power cycles, 72-hour soak, prerelease.
+## Apple Home
+
+Only standard entity platforms are used, so HomeKit Bridge can export the light
+(on/off, brightness) and the speaker (on/off switch) without Apple-specific
+code. Configuration and diagnostic entities carry an entity category and are
+excluded from HomeKit by default.
+
+## Library fork
+
+`stramanu/lumalou` 0.1.0 lacks strict fresh reads, schedule and routine codecs,
+and signed identity binding. These are maintained in the
+[`pavlikru/lumalou`](https://github.com/pavlikru/lumalou) fork and published as
+`lumalou-gld09`, keeping the import name `lumalou`. The manifest pins the exact
+release, so no runtime capability check is needed. If upstream releases an
+equivalent API, switching back means changing the manifest requirement and the
+lock file.

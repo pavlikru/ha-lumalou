@@ -265,6 +265,15 @@ wheels = [
 ]
 
 [[package]]
+name = "async-timeout"
+version = "5.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a5/ae/136395dfbfe00dfc94da3f3e136d0b13f394cba8f4841120e34226265780/async_timeout-5.0.1.tar.gz", hash = "sha256:d9321a7a3d5a6a5e187e824d2fa0793ce379a202935782d555d6e9d2735677d3", size = 9274, upload-time = "2024-11-06T16:41:39.6Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fe/ba/e2081de779ca30d473f21f5b30e0e737c438205440784c7dfc81efc2b029/async_timeout-5.0.1-py3-none-any.whl", hash = "sha256:39e3809566ff85354557ec2398b55e096c8364bacac9405a7a1fa429e77fe76c", size = 6233, upload-time = "2024-11-06T16:41:37.9Z" },
+]
+
+[[package]]
 name = "atomicwrites-homeassistant"
 version = "1.4.1"
 source = { registry = "https://pypi.org/simple" }
@@ -338,6 +347,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/47/d7/5bbeb12c44d7c4f2fb5b56abce497eb5ed9f34d85701de869acedd602619/backoff-2.2.1.tar.gz", hash = "sha256:03f829f5bb1923180821643f8753b0502c3b682293992485b0eef2807afa5cba", size = 17001, upload-time = "2022-10-05T19:19:32.061Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/df/73/b6e24bd22e6720ca8ee9a85a0c4a2971af8497d8f3193fa05390cbd46e09/backoff-2.2.1-py3-none-any.whl", hash = "sha256:63579f9a0628e06278f7e47b7d7d5b6ce20dc65c5e96a6f3ca99a6adca0396e8", size = 15148, upload-time = "2022-10-05T19:19:30.546Z" },
+]
+
+[[package]]
+name = "base36"
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/7e/63/e75b652d027bb394b67a61d232fd2f10d032ec3b8658dd81c593a9dfc25e/base36-0.1.1.tar.gz", hash = "sha256:6f221783c5499bd5fd4a1102054df9638d6232ff5ca850c21fd1efe5070c1a96", size = 2782, upload-time = "2014-12-07T10:20:50.808Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d5/25/5ed7384b92e7c35909b8e939096cc24a13d64fc4e3a16c0d4b9438c3f88c/base36-0.1.1-py2.py3-none-any.whl", hash = "sha256:15eec75cf938a2186349e6b6dfc7320c73c065921493be83808c68d909b15763", size = 3530, upload-time = "2014-12-07T10:20:47.952Z" },
 ]
 
 [[package]]
@@ -613,6 +631,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/4e/b5/721b8799b04bf9afe054a3899c6cf4e880fcf8563cc71c15610242490a0c/cfgv-3.5.0.tar.gz", hash = "sha256:d5b1034354820651caa73ede66a6294d6e95c1b00acc5e9b098e917404669132", size = 7334, upload-time = "2025-11-19T20:55:51.612Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/db/3c/33bac158f8ab7f89b2e59426d5fe2e4f63f7ed25df84c036890172b412b5/cfgv-3.5.0-py2.py3-none-any.whl", hash = "sha256:a8dc6b26ad22ff227d2634a65cb388215ce6cc96bbcc5cfde7641ae87e8dacc0", size = 7445, upload-time = "2025-11-19T20:55:50.744Z" },
+]
+
+[[package]]
+name = "chacha20poly1305-reuseable"
+version = "0.13.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cryptography" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c1/ff/6ca12ab8f4d804cfe423e67d7e5de168130b106a0cb749a1043943c23b6b/chacha20poly1305_reuseable-0.13.2.tar.gz", hash = "sha256:dd8be876e25dfc51909eb35602b77a76e0d01a364584756ab3fa848e2407e4ec", size = 8892, upload-time = "2024-07-21T20:11:59.098Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fa/30/a4e44159996e832512f93ec6db89756ed72fe454ce3de1978e3a39c10bcd/chacha20poly1305_reuseable-0.13.2-py3-none-any.whl", hash = "sha256:c7dba7c3604a9fa51bcfef9e4bfdaa3bfaadd88b6c5436a27be1c7e9c4081048", size = 8587, upload-time = "2024-07-21T20:11:57.994Z" },
 ]
 
 [[package]]
@@ -1089,19 +1119,38 @@ wheels = [
 ]
 
 [[package]]
+name = "ha-ffmpeg"
+version = "3.2.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "async-timeout" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1e/3b/bd1284a9bc39cc119b0da551a81be6cf30dc3cfb369ce8c62fb648d7a2ea/ha_ffmpeg-3.2.2.tar.gz", hash = "sha256:80e4a77b3eda73df456ec9cc3295a898ed7cbb8cd2d59798f10e8c10a8e6c401", size = 7608, upload-time = "2024-11-08T13:32:14.181Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/45/66/7863e5a3713bb71c02f050f14a751b02e7a2d50eaf2109c96a1202e65d8b/ha_ffmpeg-3.2.2-py3-none-any.whl", hash = "sha256:4fd4a4f4cdaf3243d2737942f3f41f141e4437d2af1167655815dc03283b1652", size = 8749, upload-time = "2024-11-08T13:32:12.69Z" },
+]
+
+[[package]]
 name = "ha-lumalou"
 version = "0.0.0"
 source = { virtual = "." }
 
 [package.dev-dependencies]
 dev = [
+    { name = "base36" },
+    { name = "fnv-hash-fast" },
+    { name = "ha-ffmpeg" },
+    { name = "hap-python" },
     { name = "homeassistant" },
-    { name = "lumalou" },
+    { name = "homekit-audio-proxy" },
+    { name = "lumalou-gld09" },
     { name = "mypy" },
     { name = "pre-commit" },
+    { name = "pyqrcode" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-homeassistant-custom-component" },
+    { name = "pyturbojpeg" },
     { name = "ruff" },
 ]
 
@@ -1109,13 +1158,20 @@ dev = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "base36", specifier = "==0.1.1" },
+    { name = "fnv-hash-fast", specifier = "==2.0.3" },
+    { name = "ha-ffmpeg", specifier = "==3.2.2" },
+    { name = "hap-python", specifier = "==5.0.0" },
     { name = "homeassistant", specifier = "==2026.9.2" },
-    { name = "lumalou", specifier = "==0.1.0" },
+    { name = "homekit-audio-proxy", specifier = "==1.2.1" },
+    { name = "lumalou-gld09", specifier = "==0.2.0" },
     { name = "mypy", specifier = "==1.18.2" },
     { name = "pre-commit", specifier = "==4.3.0" },
+    { name = "pyqrcode", specifier = "==1.2.1" },
     { name = "pytest", specifier = "==9.0.3" },
     { name = "pytest-cov", specifier = "==7.1.0" },
     { name = "pytest-homeassistant-custom-component", specifier = "==0.13.365" },
+    { name = "pyturbojpeg", specifier = "==1.8.3" },
     { name = "ruff", specifier = "==0.16.8" },
 ]
 
@@ -1142,6 +1198,22 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/2a/94/a76ec3205b702b7c324f6c8a0df23c6d152a5567f95cc716fda9e69ca5f4/habluetooth-7.0.0-cp314-cp314-manylinux_2_41_x86_64.whl", hash = "sha256:fa732cbfb1f02457b1021fbb5b13ad02ed9293c765577cf018e02d748813eb8b", size = 1244637, upload-time = "2026-09-09T13:28:24.926Z" },
     { url = "https://files.pythonhosted.org/packages/7b/07/eae2ba9879c3e0b67017716a7856fbbd1ff9861d0914d84c431efd4c0455/habluetooth-7.0.0-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:6a9afe761cfa6ed2f29bf5c9a996d6c7c8238c73d0eeb10f3992acccc31cf7e6", size = 1196591, upload-time = "2026-09-09T13:43:35.02Z" },
     { url = "https://files.pythonhosted.org/packages/be/e5/9dc4f24bb9e474f561336fffa016250d707a04921e2b1d1d9ee7a64034a4/habluetooth-7.0.0-cp314-cp314-musllinux_1_2_armv7l.whl", hash = "sha256:7fe9f9c756ec0ca8bc1d4c02db9a8c8764cdfaecf811f653f0d6f482d204b304", size = 1145401, upload-time = "2026-09-09T13:43:36.854Z" },
+]
+
+[[package]]
+name = "hap-python"
+version = "5.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "chacha20poly1305-reuseable" },
+    { name = "cryptography" },
+    { name = "h11" },
+    { name = "orjson" },
+    { name = "zeroconf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d2/c1/5eaf042f06183ea87976f525bc69c309f57b20dabf2787023464b88b0393/hap_python-5.0.0.tar.gz", hash = "sha256:455d3ac0721cc9cbb6373cf8c9422c3182db2d95c472f94d3a65cc94dda7434d", size = 290982, upload-time = "2025-08-25T12:11:59.945Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/71/eb/57af891c844f80b193cc1da96e55ca14430e16739c12a7b48f21585f3d36/hap_python-5.0.0-py3-none-any.whl", hash = "sha256:c1ca3abc68adbfb0a4a50be3fff2399ab7ed7ac3d91f66f4e9d9d26037c04ed7", size = 264621, upload-time = "2025-08-25T12:11:58.668Z" },
 ]
 
 [[package]]
@@ -1241,6 +1313,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/cb/69/003f7a74a214bc1d16660d13f2c1aecee8feb3e7e7fd112bda7a6c8e6eb0/homeassistant-2026.9.2.tar.gz", hash = "sha256:0a79cd4f13642bea4ed18733699891a0da651f6b3be1fcc2bfb5c459dc6f77e1", size = 37573601, upload-time = "2026-09-11T19:54:12.867Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1e/96/68aca50af11b18d6fd697fccb408c7ed63560bcdce006910462f743c13ff/homeassistant-2026.9.2-py3-none-any.whl", hash = "sha256:2fbe341e624cf61510c2f32b3830828675a0de0253f173aadda78efc44c29b6b", size = 61201540, upload-time = "2026-09-11T19:54:07.284Z" },
+]
+
+[[package]]
+name = "homekit-audio-proxy"
+version = "1.2.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cryptography" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/09/7a/9e29072aa64c23d629690b5fd4f58251b68e46106c94f8d8a2ce9af9808e/homekit_audio_proxy-1.2.1.tar.gz", hash = "sha256:9c65f57fcc4e2c59f117bba4dac33260f45d15d7ca26ea2158035bd144fd5495", size = 16955, upload-time = "2026-03-09T10:13:50.54Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3f/f1/a44abfc486b5e7feccfbf4d7ec85421d5465b1fcc42416df8c5039dae222/homekit_audio_proxy-1.2.1-py3-none-any.whl", hash = "sha256:b1af19e897b265121aef523bfabf5d247db0d002715dcd51ad589d75d00814ea", size = 12148, upload-time = "2026-03-09T10:13:49.274Z" },
 ]
 
 [[package]]
@@ -1395,16 +1479,16 @@ wheels = [
 ]
 
 [[package]]
-name = "lumalou"
-version = "0.1.0"
+name = "lumalou-gld09"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bleak" },
     { name = "cryptography" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/85/e9/af49fa8db13249fe991be4749fba6d2b38a78e66618642e6eca6f318b1f6/lumalou-0.1.0.tar.gz", hash = "sha256:8248458d3e2400836e4bf2e6fa0dde3dd6b8b89a6d79c157438557db3528474a", size = 12799, upload-time = "2026-07-23T09:41:53.794Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e1/a0/de32bba597ae0fe7e4f2c6fc782335ae8cd38aebcd18f2e29f9cad8038d9/lumalou_gld09-0.2.0.tar.gz", hash = "sha256:37654e619bf3ee31270a12b1bc273cb6123c8902551b9f1cca63ae86935b3907", size = 42001, upload-time = "2026-09-25T12:47:28.858Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cf/5d/f55a5dff1d2a17344c0b4a958700860c707dcd704fe19fb20284066b463a/lumalou-0.1.0-py3-none-any.whl", hash = "sha256:b869ea08c7c832d8bda6d0f5e2be7274b807270d5d68382959b2ed98a700012a", size = 13698, upload-time = "2026-07-23T09:41:52.616Z" },
+    { url = "https://files.pythonhosted.org/packages/f4/2c/5e6228488f246a7d5b7821b2fabc4ba27e5e3eb5e7ef30face4862218b2d/lumalou_gld09-0.2.0-py3-none-any.whl", hash = "sha256:434f8f206aaf5d1f5e53fe153148eabda0c844abd565b1288072b90d5208cc85", size = 30080, upload-time = "2026-09-25T12:47:27.5Z" },
 ]
 
 [[package]]
@@ -2121,6 +2205,12 @@ wheels = [
 ]
 
 [[package]]
+name = "pyqrcode"
+version = "1.2.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/37/61/f07226075c347897937d4086ef8e55f0a62ae535e28069884ac68d979316/PyQRCode-1.2.1.tar.gz", hash = "sha256:fdbf7634733e56b72e27f9bce46e4550b75a3a2c420414035cae9d9d26b234d5", size = 36989, upload-time = "2016-06-20T03:28:03.411Z" }
+
+[[package]]
 name = "pyrfc3339"
 version = "2.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2352,6 +2442,15 @@ sdist = { url = "https://files.pythonhosted.org/packages/87/c7/5e1547c44e31da50a
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a4/62/02da182e544a51a5c3ccf4b03ab79df279f9c60c5e82d5e8bec7ca26ac11/python_slugify-8.0.4-py2.py3-none-any.whl", hash = "sha256:276540b79961052b66b7d116620b36518847f52d5fd9e3a70164fc8c50faa6b8", size = 10051, upload-time = "2024-02-08T18:32:43.911Z" },
 ]
+
+[[package]]
+name = "pyturbojpeg"
+version = "1.8.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f2/2b/5fc7a7f51af947708a5d75d7637e923d2d4e60f43f6a4cfe55ae1ea241a2/pyturbojpeg-1.8.3.tar.gz", hash = "sha256:c131591a3990cc57f45a8b2705d6261c25df913a19b1fe88de5e911dbe04a1d4", size = 12757, upload-time = "2026-02-17T02:32:53.192Z" }
 
 [[package]]
 name = "pytz"

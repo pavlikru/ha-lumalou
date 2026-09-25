@@ -3,7 +3,7 @@ name: Validate
 on:
   workflow_call:
   push:
-    branches: [main, feat/lumalou-integration]
+    branches: [main]
   pull_request:
   workflow_dispatch:
   schedule:
@@ -50,39 +50,5 @@ jobs:
         uses: hacs/action@1ebf01c408f29afcb6406bd431bc98fd8cbb15aa
         with:
           category: integration
+          # Remove once the GitHub repository has a description and topics.
           ignore: description topics
-
-  artifact:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Build HACS archive
-        run: python scripts/build_hacs_zip.py lumalou.zip
-      - name: Verify HACS archive layout
-        shell: bash
-        run: |
-          set -euo pipefail
-          listing="$(unzip -Z1 lumalou.zip)"
-
-          for required in manifest.json __init__.py brand/icon.png; do
-            if ! grep -Fxq "$required" <<<"$listing"; then
-              echo "Missing $required at the archive root." >&2
-              exit 1
-            fi
-          done
-
-          if grep -q '^custom_components/' <<<"$listing"; then
-            echo "Archive must not contain a custom_components/ prefix." >&2
-            exit 1
-          fi
-
-          if grep -Eq '(^|/)__pycache__/|\.(pyc|pyo)$' <<<"$listing"; then
-            echo "Archive contains cache or bytecode files." >&2
-            exit 1
-          fi
-      - name: Upload archive
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: lumalou
-          path: lumalou.zip
