@@ -46,8 +46,9 @@ this document. Record each as confirmed, refuted or not observed.
 - [ ] Setup confirmation creates exactly one entry; the fingerprint and
       factory token do not appear in the UI or logs.
 - [ ] **A12**: setup and the first profile read connect reliably through the
-      adapter in use (record the adapter model, for example a Raspberry Pi 4
-      onboard adapter, or proxy). Note any retries in the debug log.
+      adapter in use (the Raspberry Pi 4 onboard adapter, CYW43455, unless an
+      external USB adapter or proxy is used; record which). Note any retries
+      in the debug log.
 - [ ] **Read the device profile** succeeds; the summary looks plausible;
       confirm it. Export the profile (`lumalou.export_profile`) and keep it
       privately as the baseline.
@@ -199,7 +200,8 @@ The code relies on these assumptions; none is proven on hardware yet.
     profile reads.
 11. **A11** A second full read right after writes returns the new values.
 12. **A12** `establish_connection` with the service cache works on the
-    Raspberry Pi 4 onboard adapter (BCM43438).
+    Raspberry Pi 4 onboard adapter (CYW43455), or on the external USB adapter
+    if one is used (record which during validation).
 
 ## Evidence so far
 
