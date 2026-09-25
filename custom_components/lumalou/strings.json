@@ -427,7 +427,7 @@
       "message": "Read and confirm the device profile in the Lumalou options before controlling the device."
     },
     "identity_not_enrolled": {
-      "message": "This Lumalou entry has no verified device identity. Reconfigure the entry."
+      "message": "This Lumalou entry was created by a development build and has no verified device identity. Remove the entry and add the device again."
     },
     "profile_read_failed": {
       "message": "Could not read a complete, consistent profile from Lumalou. Nothing was written."
@@ -449,10 +449,6 @@
     }
   },
   "issues": {
-    "identity_enrollment": {
-      "title": "Verify the device for {title}",
-      "description": "This Lumalou entry was created before signed device verification, so Home Assistant does not connect to it. Open Settings > Devices & services > Lumalou, choose Reconfigure for this entry and select your Lumalou. Its entities and history are kept."
-    },
     "profile_restore_needed": {
       "title": "Lumalou settings differ from the saved profile",
       "fix_flow": {

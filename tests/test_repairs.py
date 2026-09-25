@@ -13,7 +13,11 @@ from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.lumalou import async_setup_entry, async_unload_entry
-from custom_components.lumalou.const import DOMAIN, ISSUE_ID_PROFILE_RESTORE_NEEDED
+from custom_components.lumalou.const import (
+    CONF_DEVICE_FINGERPRINT,
+    DOMAIN,
+    ISSUE_ID_PROFILE_RESTORE_NEEDED,
+)
 from custom_components.lumalou.coordinator import ProfileRestoreError
 from custom_components.lumalou.repairs import (
     ProfileRestoreRepairFlow,
@@ -140,7 +144,10 @@ async def test_restore_repair_aborts_when_resolved_or_unloaded(
 
 async def test_restore_issue_follows_coordinator_state(hass: HomeAssistant) -> None:
     """The issue exists exactly while a mismatch is reported, and not after unload."""
-    entry = MockConfigEntry(domain=DOMAIN, data={"address": "synthetic"})
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"address": "synthetic", CONF_DEVICE_FINGERPRINT: "a" * 64},
+    )
     entry.add_to_hass(hass)
     listeners = []
     coordinator = Mock(

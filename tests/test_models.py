@@ -15,7 +15,6 @@ from custom_components.lumalou.models import (
     RevisionConflictError,
     export_profile_payload,
     import_profile_payload,
-    migrate_v1_record,
     plan_profile_reconciliation,
     profile_is_complete,
     require_complete_profile,
@@ -151,25 +150,7 @@ def test_reconciliation_plan_rejects_revision_conflict_and_partial_snapshots():
         )
 
 
-def test_legacy_subset_envelope_remains_versioned_and_strict():
-    profile = {"volume": 2, "playlist": [3, 1]}
-    envelope = export_profile_payload(profile)
-    assert envelope == {
-        "schema_version": 1,
-        "scope": "supported_subset",
-        "profile": profile,
-    }
-    assert import_profile_payload(envelope) == profile
-    envelope["profile"]["clock_settings"] = {
-        "display": False,
-        "brightness": 0,
-        "format": 0,
-    }
-    with pytest.raises(ProfileValidationError):
-        import_profile_payload(envelope)
-
-
-def test_v2_envelope_does_not_masquerade_as_legacy_subset():
+def test_export_envelope_is_versioned_and_strict():
     profile = full_profile()
     envelope = export_profile_payload(profile)
     assert envelope["schema_version"] == 2
@@ -314,7 +295,7 @@ def test_record_roundtrip_and_runtime_property():
 
 @pytest.mark.parametrize("field", ["music", "volume"])
 def test_routine_values_are_limited_to_the_readback_nibble(field):
-    """Only 0..15 round-trips through GLOBAL_STATE; older saved bytes still load."""
+    """Only 0..15 round-trips through GLOBAL_STATE."""
     profile = full_profile()
     profile["routine_settings"][field] = 15
     assert validate_profile(profile)["routine_settings"][field] == 15
@@ -326,65 +307,10 @@ def test_routine_values_are_limited_to_the_readback_nibble(field):
         import_profile_payload(
             {"schema_version": 2, "scope": "persistent_profile", "profile": profile}
         )
-
-    profile["routine_settings"][field] = 255
-    assert validate_profile(profile, stored=True) == profile
-    record = ProfileRecord.from_dict(
-        ProfileRecord(
-            revision=2,
-            desired_profile=profile,
-            previous={"revision": 1, "profile": deepcopy(profile)},
-        ).to_dict()
-    )
-    assert record.desired_profile == profile
-    assert not profile_is_complete(record.desired_profile)
     with pytest.raises(ProfileValidationError):
-        require_complete_profile(record.desired_profile)
-    profile["routine_settings"][field] = 256
-    with pytest.raises(ProfileValidationError):
-        validate_profile(profile, stored=True)
-
-
-def test_v1_migration_preserves_metadata_and_partialness():
-    source = {
-        "schema_version": 1,
-        "revision": 8,
-        "desired_profile": {"volume": 4, "playlist": [3, 1]},
-        "previous": {"revision": 7, "profile": {"volume": 3}},
-        "verified_revision": 6,
-        "pending": True,
-        "sync_status": "pending",
-        "last_error": "offline",
-        "maintenance": True,
-    }
-    migrated = migrate_v1_record(source)
-    assert migrated.schema_version == 2
-    assert migrated.revision == 8
-    assert migrated.desired_profile == {"volume": 4, "playlist": [3, 1]}
-    assert migrated.previous == {"revision": 7, "profile": {"volume": 3}}
-    assert migrated.verified_revision == 6
-    assert migrated.pending is True
-    assert migrated.sync_status == "pending"
-    assert migrated.last_error == "offline"
-    assert migrated.maintenance is True
-    assert not profile_is_complete(migrated.desired_profile)
-
-
-@pytest.mark.parametrize(
-    "profile",
-    [
-        {"unknown": 0},
-        {"audio_source": 0},
-        {"playlist": [0]},
-        {"brightness": 0},
-    ],
-)
-def test_v1_migration_rejects_non_v1_or_corrupt_subset(profile):
-    source = ProfileRecord().to_dict()
-    source["schema_version"] = 1
-    source["desired_profile"] = profile
-    with pytest.raises(ProfileValidationError):
-        migrate_v1_record(source)
+        ProfileRecord.from_dict(
+            ProfileRecord(revision=1, desired_profile=profile).to_dict()
+        )
 
 
 @pytest.mark.parametrize(
@@ -419,15 +345,12 @@ def test_record_requires_complete_known_schema(value):
         ProfileRecord.from_dict(value)
 
 
-def test_record_without_verified_fingerprint_loads_as_unbound():
-    """Records saved before device-key binding stay loadable but unverified."""
+def test_record_verification_is_bound_to_a_fingerprint():
     data = ProfileRecord(revision=2, verified_revision=2).to_dict()
+    assert not ProfileRecord.from_dict(data).is_verified
     del data["verified_fingerprint"]
-
-    record = ProfileRecord.from_dict(data)
-
-    assert record.verified_fingerprint is None
-    assert not record.is_verified
+    with pytest.raises(ProfileValidationError):
+        ProfileRecord.from_dict(data)
     bound = ProfileRecord(
         revision=2, verified_revision=2, verified_fingerprint="c" * 64
     )

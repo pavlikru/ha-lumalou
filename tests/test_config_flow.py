@@ -24,9 +24,7 @@ from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType, InvalidData
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.lumalou.config_flow import (
@@ -38,8 +36,6 @@ from custom_components.lumalou.const import (
     CONF_DEVICE_FINGERPRINT,
     CONF_PROTOCOL_VERIFIED,
     DOMAIN,
-    ISSUE_ID_IDENTITY_ENROLLMENT,
-    SUPPORTED_PRODUCT_CODE,
 )
 from custom_components.lumalou.identity import (
     DeviceInformation,
@@ -768,166 +764,6 @@ async def test_manual_flow_also_requires_signed_identity(hass: HomeAssistant) ->
     setup.assert_awaited_once()
 
 
-async def test_legacy_entry_reconfigure_uses_automatic_identity(
-    hass: HomeAssistant,
-) -> None:
-    """An old address-only entry receives the verified device fingerprint."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        unique_id=ADDRESS,
-        data={CONF_ADDRESS: ADDRESS},
-        options={CONF_AUTO_RESTORE: False},
-    )
-    entry.add_to_hass(hass)
-    info = service_info()
-    with patch(
-        "homeassistant.components.bluetooth.async_discovered_service_info",
-        return_value=[info],
-    ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": SOURCE_RECONFIGURE, "entry_id": entry.entry_id},
-        )
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "reconfigure"
-
-    with (
-        patch(
-            "homeassistant.components.bluetooth.async_discovered_service_info",
-            return_value=[info],
-        ),
-        patch(
-            "custom_components.lumalou.config_flow.async_read_device_information",
-            new_callable=AsyncMock,
-            return_value=DeviceInformation(model_number="GLD09"),
-        ),
-        patch(
-            "custom_components.lumalou.config_flow.async_read_factory_device_fingerprint",
-            new_callable=AsyncMock,
-            return_value=FINGERPRINT,
-        ),
-    ):
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], user_input={CONF_ADDRESS: ADDRESS}
-        )
-
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "reconfigure_successful"
-    assert entry.unique_id == FINGERPRINT
-    assert entry.data[CONF_DEVICE_FINGERPRINT] == FINGERPRINT
-    assert entry.data[CONF_PROTOCOL_VERIFIED] is False
-
-
-async def test_legacy_entry_reconfigure_replaces_obsolete_identity_fields(
-    hass: HomeAssistant,
-) -> None:
-    """Reconfiguration drops old item and product fields after verification."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        unique_id=ADDRESS,
-        title="Friendly Lumalou",
-        data={
-            CONF_ADDRESS: ADDRESS,
-            "factory_item_code": "synthetic-legacy-item",
-            "product_code": SUPPORTED_PRODUCT_CODE,
-        },
-        options={CONF_AUTO_RESTORE: False},
-    )
-    entry.add_to_hass(hass)
-    info = service_info()
-    with patch(
-        "homeassistant.components.bluetooth.async_discovered_service_info",
-        return_value=[info],
-    ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": SOURCE_RECONFIGURE, "entry_id": entry.entry_id},
-        )
-    device = info.device
-
-    with (
-        patch(
-            "homeassistant.components.bluetooth.async_discovered_service_info",
-            return_value=[info],
-        ) as discover,
-        patch(
-            "custom_components.lumalou.config_flow.async_read_device_information",
-            new_callable=AsyncMock,
-            return_value=DeviceInformation(model_number="GLD09"),
-        ) as probe,
-        patch(
-            "custom_components.lumalou.config_flow.async_read_factory_device_fingerprint",
-            new_callable=AsyncMock,
-            return_value=FINGERPRINT,
-        ) as factory_probe,
-    ):
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], user_input={CONF_ADDRESS: ADDRESS}
-        )
-
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "reconfigure_successful"
-    assert entry.unique_id == FINGERPRINT
-    assert entry.data == {
-        CONF_ADDRESS: ADDRESS,
-        CONF_DEVICE_FINGERPRINT: FINGERPRINT,
-        CONF_PROTOCOL_VERIFIED: False,
-    }
-    discover.assert_called_once_with(hass, connectable=True)
-    probe.assert_awaited_once_with(device, "Lumalou test")
-    factory_probe.assert_awaited_once_with(device, "Lumalou test")
-
-
-async def test_legacy_entry_reconfigure_without_model_number(
-    hass: HomeAssistant,
-) -> None:
-    """An old entry can enroll at a new address without a model number."""
-    new_address = "AA:BB:CC:DD:EE:02"
-    info = service_info(address=new_address)
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        unique_id=ADDRESS,
-        title="Friendly Lumalou",
-        data={CONF_ADDRESS: ADDRESS},
-        options={CONF_AUTO_RESTORE: False},
-    )
-    entry.add_to_hass(hass)
-    with patch(
-        "homeassistant.components.bluetooth.async_discovered_service_info",
-        return_value=[info],
-    ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": SOURCE_RECONFIGURE, "entry_id": entry.entry_id},
-        )
-    with (
-        patch(
-            "homeassistant.components.bluetooth.async_discovered_service_info",
-            return_value=[info],
-        ),
-        patch(
-            "custom_components.lumalou.config_flow.async_read_device_information",
-            new_callable=AsyncMock,
-            return_value=DeviceInformation(),
-        ),
-        patch(
-            "custom_components.lumalou.config_flow.async_read_factory_device_fingerprint",
-            new_callable=AsyncMock,
-            return_value=OTHER_FINGERPRINT,
-        ),
-    ):
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], user_input={CONF_ADDRESS: new_address}
-        )
-
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "reconfigure_successful"
-    assert entry.unique_id == OTHER_FINGERPRINT
-    assert entry.data[CONF_ADDRESS] == new_address
-    assert entry.data[CONF_DEVICE_FINGERPRINT] == OTHER_FINGERPRINT
-    assert entry.data[CONF_PROTOCOL_VERIFIED] is False
-
-
 async def test_reconfigure_changed_address_preserves_bound_identity_and_options(
     hass: HomeAssistant,
 ) -> None:
@@ -993,9 +829,8 @@ async def test_reconfigure_changed_address_preserves_bound_identity_and_options(
     assert entry.options == original_options
 
 
-@pytest.mark.parametrize("fingerprint_in_data", [True, False])
 async def test_reconfigure_rejects_different_signed_device(
-    hass: HomeAssistant, fingerprint_in_data: bool
+    hass: HomeAssistant,
 ) -> None:
     """A new BLE address cannot silently replace the bound physical device."""
     new_address = "AA:BB:CC:DD:EE:02"
@@ -1005,7 +840,7 @@ async def test_reconfigure_rejects_different_signed_device(
         unique_id=FINGERPRINT,
         data={
             CONF_ADDRESS: ADDRESS,
-            **({CONF_DEVICE_FINGERPRINT: FINGERPRINT} if fingerprint_in_data else {}),
+            CONF_DEVICE_FINGERPRINT: FINGERPRINT,
         },
     )
     entry.add_to_hass(hass)
@@ -1035,10 +870,7 @@ async def test_reconfigure_rejects_different_signed_device(
 
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "wrong_device"}
-    assert entry.data == {
-        CONF_ADDRESS: ADDRESS,
-        **({CONF_DEVICE_FINGERPRINT: FINGERPRINT} if fingerprint_in_data else {}),
-    }
+    assert entry.data == {CONF_ADDRESS: ADDRESS, CONF_DEVICE_FINGERPRINT: FINGERPRINT}
     assert entry.unique_id == FINGERPRINT
 
 
@@ -1120,57 +952,6 @@ async def test_reconfigure_rejects_address_claimed_after_form_opened(
     assert result["reason"] == "already_configured"
     factory_probe.assert_not_awaited()
     assert entry.data[CONF_ADDRESS] == ADDRESS
-
-
-async def test_reconfigure_legacy_entry_rejects_another_enrolled_fingerprint(
-    hass: HomeAssistant,
-) -> None:
-    """An address-only entry cannot enroll a key held by another entry."""
-    new_address = "AA:BB:CC:DD:EE:02"
-    info = service_info(address=new_address)
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        unique_id=ADDRESS,
-        data={CONF_ADDRESS: ADDRESS},
-    )
-    entry.add_to_hass(hass)
-    MockConfigEntry(
-        domain=DOMAIN,
-        unique_id=FINGERPRINT,
-        data={
-            CONF_ADDRESS: "AA:BB:CC:DD:EE:03",
-            CONF_DEVICE_FINGERPRINT: FINGERPRINT,
-        },
-    ).add_to_hass(hass)
-
-    with (
-        patch(
-            "homeassistant.components.bluetooth.async_discovered_service_info",
-            return_value=[info],
-        ),
-        patch(
-            "custom_components.lumalou.config_flow.async_read_device_information",
-            new_callable=AsyncMock,
-            return_value=DeviceInformation(),
-        ),
-        patch(
-            "custom_components.lumalou.config_flow.async_read_factory_device_fingerprint",
-            new_callable=AsyncMock,
-            return_value=FINGERPRINT,
-        ),
-    ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": SOURCE_RECONFIGURE, "entry_id": entry.entry_id},
-        )
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], user_input={CONF_ADDRESS: new_address}
-        )
-
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "already_configured"
-    assert entry.data == {CONF_ADDRESS: ADDRESS}
-    assert entry.unique_id == ADDRESS
 
 
 async def test_auto_restore_is_opt_in(hass: HomeAssistant) -> None:
@@ -1843,22 +1624,6 @@ async def test_repeated_discovery_does_not_start_a_second_flow(
     factory_mock.assert_not_awaited()
 
 
-async def test_discovery_of_pre_enrollment_entry_address_aborts(
-    hass: HomeAssistant,
-) -> None:
-    """A pre-enrollment entry is matched by its address unique ID."""
-    MockConfigEntry(
-        domain=DOMAIN, unique_id=ADDRESS, data={CONF_ADDRESS: ADDRESS}
-    ).add_to_hass(hass)
-
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_BLUETOOTH}, data=service_info()
-    )
-
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "already_configured"
-
-
 async def test_confirm_aborts_without_probe_if_address_was_configured_meanwhile(
     hass: HomeAssistant,
 ) -> None:
@@ -1940,63 +1705,6 @@ async def test_manual_setup_probe_failure_returns_to_device_choice(
     assert not hass.config_entries.async_entries(DOMAIN)
 
 
-async def test_reconfigure_enrolls_pre_enrollment_entry_without_orphans(
-    hass: HomeAssistant,
-) -> None:
-    """Enrollment moves registry IDs to the fingerprint and clears the Repair."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        unique_id=ADDRESS,
-        data={CONF_ADDRESS: ADDRESS},
-        minor_version=2,
-    )
-    entry.add_to_hass(hass)
-    entity_registry = er.async_get(hass)
-    device_registry = dr.async_get(hass)
-    light = entity_registry.async_get_or_create(
-        "light", DOMAIN, f"{ADDRESS}_light", config_entry=entry
-    )
-    device = device_registry.async_get_or_create(
-        config_entry_id=entry.entry_id, identifiers={(DOMAIN, ADDRESS)}
-    )
-    issue_id = f"{entry.entry_id}_{ISSUE_ID_IDENTITY_ENROLLMENT}"
-    ir.async_create_issue(
-        hass,
-        DOMAIN,
-        issue_id,
-        is_fixable=False,
-        severity=ir.IssueSeverity.WARNING,
-        translation_key=ISSUE_ID_IDENTITY_ENROLLMENT,
-    )
-
-    device_probe, factory_probe = _probe_patches()
-    with (
-        patch(
-            "homeassistant.components.bluetooth.async_discovered_service_info",
-            return_value=[service_info()],
-        ),
-        device_probe,
-        factory_probe,
-        patch("custom_components.lumalou.async_setup_entry", return_value=True),
-    ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": SOURCE_RECONFIGURE, "entry_id": entry.entry_id}
-        )
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], user_input={CONF_ADDRESS: ADDRESS}
-        )
-        await hass.async_block_till_done()
-
-    assert result["reason"] == "reconfigure_successful"
-    assert entry.unique_id == FINGERPRINT
-    migrated = entity_registry.async_get(light.entity_id)
-    assert migrated is not None
-    assert migrated.unique_id == f"{FINGERPRINT}_light"
-    assert migrated.id == light.id
-    assert device_registry.async_get(device.id).identifiers == {(DOMAIN, FINGERPRINT)}
-    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
-
-
 async def test_reconfigure_address_change_keeps_registry_identifiers(
     hass: HomeAssistant,
 ) -> None:
@@ -2006,7 +1714,6 @@ async def test_reconfigure_address_change_keeps_registry_identifiers(
         domain=DOMAIN,
         unique_id=FINGERPRINT,
         data={CONF_ADDRESS: ADDRESS, CONF_DEVICE_FINGERPRINT: FINGERPRINT},
-        minor_version=2,
     )
     entry.add_to_hass(hass)
     entity_registry = er.async_get(hass)
@@ -2178,7 +1885,6 @@ async def test_reconfigure_probe_failure_keeps_the_form(hass: HomeAssistant) -> 
         domain=DOMAIN,
         unique_id=FINGERPRINT,
         data={CONF_ADDRESS: "AA:BB:CC:DD:EE:02", CONF_DEVICE_FINGERPRINT: FINGERPRINT},
-        minor_version=2,
     )
     entry.add_to_hass(hass)
     with patch(

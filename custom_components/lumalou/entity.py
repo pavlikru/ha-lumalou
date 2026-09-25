@@ -5,42 +5,17 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
 from homeassistant.helpers.entity import Entity
 
 from .const import DOMAIN
 
 
-async def async_migrate_identifiers(
-    hass: HomeAssistant, entry: ConfigEntry, old_id: str, new_id: str
-) -> None:
-    """Move this entry's registry identifiers so entities keep their history."""
-    if old_id == new_id:
-        return
-    prefix = f"{old_id}_"
-
-    def _migrate(entity: er.RegistryEntry) -> dict[str, Any] | None:
-        if not entity.unique_id.startswith(prefix):
-            return None
-        return {"new_unique_id": f"{new_id}_{entity.unique_id.removeprefix(prefix)}"}
-
-    await er.async_migrate_entries(hass, entry.entry_id, _migrate)
-    device_registry = dr.async_get(hass)
-    device = device_registry.async_get_device(identifiers={(DOMAIN, old_id)})
-    if device is not None and entry.entry_id in device.config_entries:
-        device_registry.async_update_device(
-            device.id, new_identifiers={(DOMAIN, new_id)}
-        )
-
-
 class LumalouEntity(Entity):
     """Base class that reads only the coordinator snapshot.
 
-    Identifiers derive from the entry unique ID: the signed-device fingerprint
-    for enrolled entries. The BLE address is only a device connection.
+    Identifiers derive from the entry unique ID, the signed-device
+    fingerprint. The BLE address is only a device connection.
     """
 
     _attr_has_entity_name = True

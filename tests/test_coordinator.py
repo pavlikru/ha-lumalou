@@ -451,57 +451,6 @@ async def test_public_offline_profile_edit_fails_after_unload(rig):
     rig.client_factory.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "operation",
-    [
-        lambda coordinator: coordinator.async_set_light(True),
-        lambda coordinator: coordinator.async_set_light(False),
-        lambda coordinator: coordinator.async_set_volume(3),
-        lambda coordinator: coordinator.async_set_light_duration(1),
-        lambda coordinator: coordinator.async_set_playlist_duration(1),
-        lambda coordinator: coordinator.async_play(2),
-        lambda coordinator: coordinator.async_stop_audio(),
-        lambda coordinator: coordinator.async_sync_clock(),
-        lambda coordinator: coordinator.async_restore_profile(0, confirmed=True),
-    ],
-)
-async def test_legacy_entry_blocks_every_device_mutation_before_side_effects(
-    rig, operation
-):
-    """An address-only entry cannot start a protocol session."""
-    coordinator = rig.coordinator
-    coordinator.device_fingerprint = None
-
-    with pytest.raises(
-        HomeAssistantError, match="No Lumalou device identity was enrolled"
-    ):
-        await operation(coordinator)
-
-    rig.store.async_save.assert_not_awaited()
-    rig.client_factory.assert_not_called()
-    assert coordinator.profile_record == ProfileRecord()
-
-    with pytest.raises(HomeAssistantError, match="Lumalou refresh failed"):
-        await coordinator.async_request_refresh()
-    rig.client_factory.assert_not_called()
-
-
-async def test_legacy_entry_never_schedules_protocol_recovery(rig):
-    """Presence and advertisements must not open unknown-model sessions."""
-    coordinator = rig.coordinator
-    coordinator.device_fingerprint = None
-    rig.address_present.return_value = True
-
-    coordinator.async_start()
-    assert coordinator.present
-    assert coordinator._recovery_task is None
-    coordinator._async_handle_advertisement(None, None)
-    assert coordinator._recovery_task is None
-    rig.client_factory.assert_not_called()
-
-    coordinator.async_stop_callbacks()
-
-
 async def test_complete_profile_read_uses_fresh_typed_blocks_without_saving(rig):
     """Full read consumes unique fresh responses and only returns a preview."""
     coordinator = rig.coordinator
@@ -719,21 +668,13 @@ async def test_restore_planning_rejects_incomplete_profile_before_read(rig):
     rig.store.async_save.assert_not_awaited()
 
 
-@pytest.mark.parametrize("gate", ["maintenance", "identity"])
-async def test_restore_planning_gates_before_device_read(rig, gate):
+async def test_restore_planning_gates_before_device_read(rig):
     """No restore preview may open BLE with unavailable state or identity."""
     coordinator = rig.coordinator
     await coordinator.async_setup()
-    if gate == "maintenance":
-        coordinator._profile_record = replace(
-            coordinator.profile_record, maintenance=True
-        )
-        expected_error = "maintenance mode"
-    else:
-        coordinator.device_fingerprint = None
-        expected_error = "device identity was enrolled"
+    coordinator._profile_record = replace(coordinator.profile_record, maintenance=True)
 
-    with pytest.raises(HomeAssistantError, match=expected_error):
+    with pytest.raises(HomeAssistantError, match="maintenance mode"):
         await coordinator.async_plan_profile_restore(expected_revision=0)
 
     rig.client_factory.assert_not_called()
@@ -761,26 +702,6 @@ async def test_restore_planning_rechecks_maintenance_after_read(rig):
     saves_before_plan = rig.store.async_save.await_count
 
     with pytest.raises(HomeAssistantError, match="maintenance mode"):
-        await coordinator.async_plan_profile_restore(expected_revision=1)
-
-    assert rig.store.async_save.await_count == saves_before_plan
-
-
-async def test_restore_planning_rechecks_identity_after_read(rig):
-    """A preview is discarded if its read loses a precondition mid-flight."""
-    coordinator = rig.coordinator
-    snapshot = await verified_profile(rig)
-
-    async def read_then_invalidate_gate():
-        coordinator.device_fingerprint = None
-        return snapshot, 1
-
-    coordinator.async_read_profile_snapshot = AsyncMock(
-        side_effect=read_then_invalidate_gate
-    )
-    saves_before_plan = rig.store.async_save.await_count
-
-    with pytest.raises(HomeAssistantError):
         await coordinator.async_plan_profile_restore(expected_revision=1)
 
     assert rig.store.async_save.await_count == saves_before_plan
@@ -889,32 +810,6 @@ async def test_restore_writes_minimal_diff_in_order_and_verifies_fresh(rig):
     assert statuses == ["applying", "saved"]
     assert coordinator.last_restore_result == result
     assert coordinator.available
-
-
-async def test_legacy_routine_byte_keeps_live_edits_but_blocks_restore(rig):
-    """A byte above 15 saved by an older editor loads, but never reaches BLE."""
-    coordinator = rig.coordinator
-    snapshot = await verified_profile(rig)
-    legacy = deepcopy(snapshot)
-    legacy["routine_settings"]["music"] = 200
-    stored = coordinator.profile_record.to_dict() | {"desired_profile": legacy}
-    coordinator._profile_record = ProfileRecord.from_dict(stored)
-
-    await coordinator.async_set_volume(3)
-    record = coordinator.profile_record
-    assert record.desired_profile["volume"] == 3
-    assert record.desired_profile["routine_settings"]["music"] == 200
-    with pytest.raises(ProfileValidationError):
-        await coordinator.async_edit_profile(
-            {"routine_settings": legacy["routine_settings"]},
-            expected_revision=record.revision,
-        )
-    start = len(rig.journal)
-
-    with pytest.raises(ProfileValidationError):
-        await coordinator.async_restore_profile(record.revision, confirmed=True)
-
-    assert not sends(rig, start)
 
 
 async def test_restore_of_matching_device_only_verifies(rig):
@@ -1258,7 +1153,6 @@ async def test_session_lost_marks_unavailable_and_schedules_recovery(rig):
 
 async def test_advertisement_records_passive_firmware_version(rig):
     coordinator = rig.coordinator
-    coordinator.device_fingerprint = None
 
     coordinator._async_handle_advertisement(
         SimpleNamespace(manufacturer_data={0x03B6: b"MB\x01\x000.3.7\x00"}), None
@@ -1273,50 +1167,6 @@ async def test_advertisement_records_passive_firmware_version(rig):
 
 
 # ---- Live controls and session lifecycle ----
-
-
-async def test_tampered_product_code_cannot_bypass_low_level_write_gate(rig):
-    """Private command dispatch remains guarded against future missed callers."""
-    coordinator = rig.coordinator
-    coordinator.device_fingerprint = None
-
-    with pytest.raises(
-        HomeAssistantError, match="No Lumalou device identity was enrolled"
-    ):
-        await coordinator._send_commands([bytes([0x37, 3])])
-
-    rig.client_factory.assert_not_called()
-
-
-async def test_queued_device_mutation_checks_product_code_under_lock(rig):
-    """Authorization is evaluated when a queued operation actually starts."""
-    coordinator = rig.coordinator
-    async with coordinator._lock:
-        operation = asyncio.create_task(coordinator.async_set_volume(3))
-        await asyncio.sleep(0)
-        assert not operation.done()
-        coordinator.device_fingerprint = None
-
-    with pytest.raises(
-        HomeAssistantError, match="No Lumalou device identity was enrolled"
-    ):
-        await operation
-
-    rig.store.async_save.assert_not_awaited()
-    rig.client_factory.assert_not_called()
-
-
-async def test_entry_without_bound_factory_identity_cannot_write(rig):
-    """A model string alone cannot authorize a device mutation."""
-    coordinator = rig.coordinator
-    coordinator.device_fingerprint = None
-
-    with pytest.raises(
-        HomeAssistantError, match="No Lumalou device identity was enrolled"
-    ):
-        await coordinator.async_set_volume(3)
-
-    rig.client_factory.assert_not_called()
 
 
 async def test_missing_saved_profile_locks_controls(rig):
@@ -1719,7 +1569,9 @@ async def test_entries_do_not_share_saved_intent(rig):
         async_save=AsyncMock(),
     )
     other_entry = SimpleNamespace(
-        data={"address": "synthetic-other"}, title="Other", entry_id="other"
+        data={"address": "synthetic-other", CONF_DEVICE_FINGERPRINT: "b" * 64},
+        title="Other",
+        entry_id="other",
     )
     other = LumalouCoordinator(rig.coordinator.hass, other_entry, other_store)
     await other.async_setup()
@@ -1768,8 +1620,8 @@ async def test_recovery_never_syncs_from_untrusted_host_time(rig):
 async def test_import_export_confirmation_conflicts_and_no_restore(rig):
     coordinator = rig.coordinator
     payload = {
-        "schema_version": 1,
-        "scope": "supported_subset",
+        "schema_version": 2,
+        "scope": "persistent_profile",
         "profile": {"playlist": [12, 2, 2], "volume": 1},
     }
     with pytest.raises(ProfileValidationError):
@@ -1818,8 +1670,8 @@ async def test_export_revision_and_profile_are_one_serialized_snapshot(rig):
     assert await export == {
         "current_revision": 1,
         "profile": {
-            "schema_version": 1,
-            "scope": "supported_subset",
+            "schema_version": 2,
+            "scope": "persistent_profile",
             "profile": {"volume": 6},
         },
     }
@@ -1832,8 +1684,8 @@ async def test_export_revision_and_profile_are_one_serialized_snapshot(rig):
         {},
         {"schema_version": 2, "scope": "supported_subset", "profile": {}},
         {"schema_version": True, "scope": "supported_subset", "profile": {}},
-        {"schema_version": 1, "scope": "full", "profile": {}},
-        {"schema_version": 1, "scope": "supported_subset", "profile": {"raw": 1}},
+        {"schema_version": 1, "scope": "supported_subset", "profile": {}},
+        {"schema_version": 2, "scope": "persistent_profile", "profile": {"raw": 1}},
     ],
 )
 async def test_import_rejects_unsupported_schemas_without_writes(rig, payload):
