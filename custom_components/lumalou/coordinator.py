@@ -73,6 +73,7 @@ from .restore import (
     day_routine_payload,
     device_weekday,
     is_factory_clock,
+    is_factory_default,
     is_whole_hour_offset,
     profile_from_readback,
     set_current_date_payload,
@@ -687,22 +688,27 @@ class LumalouCoordinator:
         """Return whether the device clock shows a power loss.
 
         A power loss restarts the clock at 05:00 on Sunday. So the clock must
-        be far off, not by whole hours (DST or a time zone change), and run
-        on Sunday from 05:00 for no longer than since the last frame Home
-        Assistant received from the device (unknown after a restart: capped).
+        be far off and run on Sunday from 05:00 for no longer than since the
+        last frame Home Assistant received from the device (unknown after a
+        restart: capped). An offset of whole hours (DST or a time zone
+        change) counts only when the device also has all factory defaults.
         """
         if _trusted_now() is None:
             return False
         offset = clock_offset_seconds(snapshot.clock, snapshot.read_at)
-        if offset <= RESET_CLOCK_OFFSET or is_whole_hour_offset(
-            offset, WHOLE_HOUR_TOLERANCE
-        ):
+        if offset <= RESET_CLOCK_OFFSET:
             return False
         window = RESET_WINDOW_MAX
         if last_frame_at is not None:
             unseen = asyncio.get_running_loop().time() - last_frame_at
             window = min(window, round(unseen) + RESET_CLOCK_OFFSET)
-        return is_factory_clock(snapshot.clock, window)
+        if not is_factory_clock(snapshot.clock, window):
+            return False
+        # A whole-hour offset is DST unless every setting is factory default
+        # (a power loss that happened to come back near a full hour).
+        return not is_whole_hour_offset(
+            offset, WHOLE_HOUR_TOLERANCE
+        ) or is_factory_default(snapshot.profile)
 
     def _detect_restore_needed(
         self, record: ProfileRecord, observed: dict[str, Any], *, reset: bool

@@ -127,7 +127,9 @@ controls stay locked until a device read is confirmed again.
 - The **reset marker** is the power-loss clock: a power loss restarts the
   device clock at 05:00:00 on Sunday. On reconnect the clock must be more
   than 10 minutes off, not off by whole hours (±2 minutes: DST or a time
-  zone change, which only sets the clock), on Sunday, and between 05:00 and
+  zone change, which only sets the clock, unless the whole device read equals
+  the power-loss defaults, `restore.is_factory_default`), on Sunday, and
+  between 05:00 and
   05:00 plus the time since the last frame Home Assistant received from the
   device plus 10 minutes (12 hours when unknown, for example after a
   restart). With it, every block is

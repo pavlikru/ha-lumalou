@@ -53,7 +53,8 @@ Based on a hardware check of every Bluetooth command on firmware 0.3.7.
   Sunday (as after a power loss: more than 10 minutes off, not by whole hours,
   and running no longer than since Home Assistant last heard from the device)
   and the settings different is a reset. A DST change or a long Home
-  Assistant downtime only sets the clock. Home Assistant sets the clock and
+  Assistant downtime only sets the clock; a whole-hour offset counts as a
+  reset only when every device setting is at its factory default. Home Assistant sets the clock and
   restores the saved profile automatically (at most two attempts), or raises
   the Repair when automatic restore is off. Settings changed without a reset
   still raise the Repair and are never overwritten automatically.
