@@ -1,17 +1,16 @@
-"""Serialized HA adaptation with HA-owned, read-only Bluetooth recovery."""
+"""Serialized HA adaptation: strict BLE sessions, profile restore and recovery."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager
 from copy import deepcopy
-from dataclasses import replace
-from typing import Any, cast
+from dataclasses import dataclass, replace
+from datetime import datetime
+from typing import Any
 
-from bleak import BleakClient
-from bleak.backends.device import BLEDevice
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -19,15 +18,18 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
 from lumalou import commands  # type: ignore[attr-defined]
-from lumalou.client import LumalouClient
+from lumalou.advertisement import MANUFACTURER_ID, parse_advertisement
+from lumalou.client import FreshSessionRequiredError
+from lumalou.responses import CurrentDate
 
 from .const import (
-    ALLOWED_OPCODES,
+    AUTO_RESTORE_MAX_ATTEMPTS,
+    CLOCK_SYNC_TOLERANCE,
+    CONF_AUTO_RESTORE,
     CONF_DEVICE_FINGERPRINT,
-    CONF_PRODUCT_CODE,
     CONF_PROTOCOL_VERIFIED,
     CONNECT_TIMEOUT,
-    FORBIDDEN_OPCODES,
+    DEFAULT_AUTO_RESTORE,
     GLOBAL_STATE_FIELDS,
     RECOVERY_COOLDOWN,
     RECOVERY_MAX_COOLDOWN,
@@ -42,103 +44,76 @@ from .models import (
     export_profile_payload,
     import_profile_payload,
     plan_profile_reconciliation,
+    profile_is_complete,
     require_complete_profile,
     validate_integer,
     validate_profile,
 )
-from .storage import ProfileStorageError, ProfileStore
-from .transport import RestrictedLumalouTransport
-from .upstream_api import (
-    MissingUpstreamCapabilities,
-    require_factory_identity_api,
-    require_full_profile_read_api,
+from .restore import (
+    ProfileRestoreResult,
+    RestoreNeeded,
+    build_restore_steps,
+    changed_blocks,
+    clock_offset_seconds,
+    profile_from_readback,
+    set_current_date_payload,
 )
+from .storage import ProfileStorageError, ProfileStore
+from .transport import SafeLumalouClient
 
 _LOGGER = logging.getLogger(__name__)
+_MAX_REVISION = 2**63 - 1
+_STATE_RANGES = {
+    "currentSong": (0, 18),
+    "currentVolume": (0, 9),
+    "lightBrightness": (0, 9),
+    "lightColor": (0, 9),
+    "playlistDuration": (0, 6),
+    "lightDuration": (0, 5),
+    "currentStage": (0, 3),
+    "clockFormat": (0, 1),
+}
 
 
-class SafeLumalouClient(LumalouClient):
-    """Explicit BLEDevice adaptation; no scanners or global monkeypatches.
+class ProfileRestoreError(HomeAssistantError):
+    """A restore did not reach a verified state; ``result`` says how far it got."""
 
-    The pinned client forwards its address argument unchanged to BleakClient.
-    Bleak accepts BLEDevice; this local adaptation is tested at that boundary.
-    Its private transport assignment is wrapped before connect/handshake I/O.
-    Recheck this boundary before upgrading the pinned upstream dependency.
-    The required signed-identity and strict-read APIs are not in the released
-    dependency yet and are checked explicitly before BLE I/O.
-    """
+    def __init__(self, message: str, result: ProfileRestoreResult) -> None:
+        super().__init__(message)
+        self.result = result
 
-    def __init__(
-        self,
-        device: BLEDevice,
-        on_state: Callable[[dict], None],
-        expected_device_fingerprint: str | None = None,
-    ) -> None:
-        self._expected_device_fingerprint = expected_device_fingerprint
-        if expected_device_fingerprint is None:
-            super().__init__(cast(str, device), on_state=on_state)
-        else:
-            try:
-                require_factory_identity_api()
-                super().__init__(
-                    cast(str, device),
-                    on_state=on_state,
-                    expected_device_fingerprint=expected_device_fingerprint,
-                )
-            except MissingUpstreamCapabilities as error:
-                raise HomeAssistantError(
-                    "The installed Lumalou library cannot authenticate and "
-                    "bind this device identity"
-                ) from error
-            except TypeError as error:
-                raise HomeAssistantError(
-                    "The installed Lumalou library cannot bind the verified "
-                    "device identity"
-                ) from error
 
-    async def connect(
-        self,
-        timeout: float = CONNECT_TIMEOUT,  # noqa: ASYNC109
-    ) -> SafeLumalouClient:
-        """Require a pinned identity and capable upstream API before BLE I/O."""
-        if self._expected_device_fingerprint is None:
-            raise HomeAssistantError(
-                "A verified Lumalou device identity is required before connecting"
-            )
-        try:
-            require_factory_identity_api()
-        except MissingUpstreamCapabilities as error:
-            raise HomeAssistantError(
-                "The installed Lumalou library cannot authenticate and "
-                "bind this device identity"
-            ) from error
-        return await super().connect(timeout=timeout)
+@dataclass(frozen=True, slots=True)
+class DeviceSnapshot:
+    """One strict fresh-session read of every persistent block plus the clock."""
 
-    @property
-    def _client(self) -> RestrictedLumalouTransport | None:
-        """Expose only the restricted transport to upstream protocol methods."""
-        return self._restricted_transport
+    profile: dict[str, Any]
+    state: dict[str, int]
+    clock: CurrentDate
+    read_at: datetime
 
-    @_client.setter
-    def _client(self, client: BleakClient | None) -> None:
-        """Guard every transport assignment, including initial/repeated connects."""
-        self._restricted_transport = (
-            RestrictedLumalouTransport(client) if client is not None else None
-        )
 
-    async def send(self, app_data: bytes) -> None:
-        """Reject every unapproved application operation before any I/O."""
-        if (
-            not app_data
-            or app_data[0] in FORBIDDEN_OPCODES
-            or app_data[0] not in ALLOWED_OPCODES
-        ):
-            raise HomeAssistantError("Unsupported Lumalou operation")
-        await super().send(app_data)
+def _new_revision(old: ProfileRecord, desired: dict[str, Any]) -> ProfileRecord:
+    """Build the next pending revision, keeping the previous one for undo."""
+    return replace(
+        old,
+        revision=old.revision + 1,
+        desired_profile=desired,
+        previous={"revision": old.revision, "profile": old.desired_profile},
+        pending=True,
+        sync_status="pending",
+        last_error=None,
+    )
+
+
+def _trusted_now() -> datetime | None:
+    """Return HA local time, or None when the host clock is obviously unset."""
+    now = dt_util.now()
+    return now if now.year >= 2026 else None
 
 
 class LumalouCoordinator:
-    """Own device I/O and saved intent, never claim complete synchronization."""
+    """Own device I/O and saved intent; claim sync only after fresh readback."""
 
     def __init__(
         self, hass: HomeAssistant, entry: ConfigEntry, store: ProfileStore | None = None
@@ -146,7 +121,6 @@ class LumalouCoordinator:
         self.hass = hass
         self.entry = entry
         self.address = entry.data["address"]
-        self.product_code = entry.data.get(CONF_PRODUCT_CODE)
         self.device_fingerprint = entry.data.get(CONF_DEVICE_FINGERPRINT)
         self.protocol_verified = entry.data.get(CONF_PROTOCOL_VERIFIED) is True
         self.device_name = entry.title or "Lumalou"
@@ -154,6 +128,14 @@ class LumalouCoordinator:
         self.data: dict[str, int] | None = None
         self.present = False
         self.available = False
+        # Runtime-only restore/recovery state for entities, Repairs and
+        # diagnostics. Never persisted and never contains schedule values.
+        self.last_restore_result: ProfileRestoreResult | None = None
+        self.last_clock_offset: int | None = None
+        self.last_clock_sync: datetime | None = None
+        self._restore_needed: RestoreNeeded | None = None
+        # Last strict read offered for confirmation; only it can be committed.
+        self._previewed_profile: dict[str, Any] | None = None
         self._profile_record = ProfileRecord()
         self._store = store or ProfileStore(hass, entry.entry_id)
         self._client: SafeLumalouClient | None = None
@@ -172,7 +154,7 @@ class LumalouCoordinator:
         self._stopped = False
         self._storage_healthy = True
         # A public offline edit must not turn an uninitialized coordinator into
-        # a new empty profile.  `async_setup` is the only point at which the
+        # a new empty profile. `async_setup` is the only point at which the
         # existing durable revision is known.
         self._profile_loaded = False
 
@@ -191,6 +173,24 @@ class LumalouCoordinator:
         """Return a detached observation, never the desired profile."""
         return deepcopy(self.data)
 
+    @property
+    def auto_restore_enabled(self) -> bool:
+        """Return the user's opt-in for automatic restore (default off)."""
+        return self.entry.options.get(CONF_AUTO_RESTORE, DEFAULT_AUTO_RESTORE) is True
+
+    @property
+    def restore_needed(self) -> RestoreNeeded | None:
+        """Return the current verified-profile mismatch, if still relevant.
+
+        Set by background recovery when a fresh complete read no longer
+        matches the verified current revision (power-loss/reset heuristic).
+        A newer saved revision makes it obsolete automatically.
+        """
+        need = self._restore_needed
+        if need is None or need.revision != self._profile_record.revision:
+            return None
+        return need
+
     @callback
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
         """Register an entity listener without owning a background recovery loop."""
@@ -203,7 +203,12 @@ class LumalouCoordinator:
             listener()
 
     @asynccontextmanager
-    async def _operation(self):
+    async def _locked(self, *, bluetooth_session: bool) -> AsyncIterator[None]:
+        """Serialize one complete operation and track it for shutdown.
+
+        Cancelling a Bluetooth operation tears its session down. Durable-only
+        edits pass ``bluetooth_session=False`` and have no BLE side effects.
+        """
         task = asyncio.current_task()
         if self._stopped:
             raise HomeAssistantError("Lumalou integration is unloaded")
@@ -216,40 +221,25 @@ class LumalouCoordinator:
                 try:
                     yield
                 except asyncio.CancelledError:
-                    await self._disconnect()
+                    if bluetooth_session:
+                        await self._disconnect()
                     raise
         finally:
             if task is not None:
                 self._tasks.discard(task)
 
+    def _operation(self):
+        return self._locked(bluetooth_session=True)
+
+    def _profile_edit_operation(self):
+        return self._locked(bluetooth_session=False)
+
     @asynccontextmanager
-    async def _device_write_operation(self):
-        """Serialize a mutation and require explicit supported-label consent."""
+    async def _device_write_operation(self) -> AsyncIterator[None]:
+        """Serialize a mutation and require a verified, enrolled device."""
         async with self._operation():
             self._assert_device_writes_allowed()
             yield
-
-    @asynccontextmanager
-    async def _profile_edit_operation(self):
-        """Serialize a durable-only edit without any BLE lifecycle work.
-
-        This intentionally does not reuse `_operation`: cancelling a device
-        operation safely tears down its connection, while an offline editor
-        must have no Bluetooth side effects at all.
-        """
-        task = asyncio.current_task()
-        if self._stopped:
-            raise HomeAssistantError("Lumalou integration is unloaded")
-        if task is not None:
-            self._tasks.add(task)
-        try:
-            async with self._lock:
-                if self._stopped:
-                    raise HomeAssistantError("Lumalou integration is unloaded")
-                yield
-        finally:
-            if task is not None:
-                self._tasks.discard(task)
 
     def _assert_enrolled_device(self) -> None:
         """Block sessions until setup has bound one verified signed device key."""
@@ -264,6 +254,10 @@ class LumalouCoordinator:
                 "Read and verify the complete Lumalou profile before control"
             )
 
+    def _assert_profile_usable(self) -> None:
+        if not self._storage_healthy or not self._profile_loaded:
+            raise HomeAssistantError("Saved profile requires recovery first")
+
     async def async_setup(self) -> None:
         """Load private intent without connecting or changing the device."""
         try:
@@ -276,6 +270,8 @@ class LumalouCoordinator:
         else:
             self._profile_loaded = True
         self._notify()
+
+    # ---- Home Assistant Bluetooth callbacks and background recovery ----
 
     @callback
     def async_start(self) -> None:
@@ -324,13 +320,23 @@ class LumalouCoordinator:
     @callback
     def _async_handle_advertisement(
         self,
-        _service_info: bluetooth.BluetoothServiceInfoBleak,
+        service_info: bluetooth.BluetoothServiceInfoBleak,
         _change: bluetooth.BluetoothChange,
     ) -> None:
-        """Record presence and coalesce read-only recovery from advertisements."""
+        """Record presence and firmware, then coalesce recovery."""
         if self._stopped:
             return
         self.present = True
+        try:
+            advertisement = parse_advertisement(
+                service_info.manufacturer_data[MANUFACTURER_ID]
+            )
+        except KeyError, TypeError, ValueError, AttributeError:
+            pass
+        else:
+            # Passive and unauthenticated: a display value, never a gate.
+            if advertisement.firmware_version:
+                self.sw_version = advertisement.firmware_version
         self._notify()
         self._schedule_recovery()
 
@@ -352,13 +358,29 @@ class LumalouCoordinator:
             )
 
     @callback
+    def _async_handle_session_lost(self, generation: int) -> None:
+        """React to a remote link loss of the live session (e.g. power loss).
+
+        The upstream client has already invalidated and cleans up its own
+        transport. A short power cycle may never make HA mark the device
+        unavailable, so schedule recovery once it advertises again.
+        """
+        if self._stopped or generation != self._generation or not self.available:
+            return
+        self.available = False
+        self.data = None
+        self._callback_state = None
+        self._notify()
+        self._schedule_recovery()
+
+    @callback
     def _schedule_recovery(self) -> None:
-        """Schedule one rate-limited read-only refresh."""
+        """Schedule one rate-limited recovery pass."""
         if (
             self._stopped
             or not self.present
             or not self.device_fingerprint
-            or self.profile_record.maintenance
+            or self._profile_record.maintenance
             or self.available
             or self._recovery_task is not None
         ):
@@ -393,22 +415,22 @@ class LumalouCoordinator:
         return task
 
     async def _async_background_refresh(self) -> None:
-        """Retry read-only recovery with one bounded exponential-backoff loop."""
+        """Retry recovery with one bounded exponential-backoff loop."""
         while True:
             delay = self._next_recovery_at - asyncio.get_running_loop().time()
             if delay > 0:
                 await asyncio.sleep(delay)
-            if self._stopped or not self.present or self.profile_record.maintenance:
+            if self._stopped or not self.present or self._profile_record.maintenance:
                 return
             try:
-                await self.async_request_refresh()
+                await self._async_recover()
             except HomeAssistantError:
                 self._recovery_failures += 1
                 exponent = min(self._recovery_failures - 1, 10)
                 cooldown = min(RECOVERY_COOLDOWN * 2**exponent, RECOVERY_MAX_COOLDOWN)
                 self._next_recovery_at = asyncio.get_running_loop().time() + cooldown
                 _LOGGER.debug(
-                    "Background Lumalou refresh failed; retrying in %s seconds",
+                    "Background Lumalou recovery failed; retrying in %s seconds",
                     cooldown,
                     exc_info=True,
                 )
@@ -419,10 +441,76 @@ class LumalouCoordinator:
             )
             return
 
+    async def _async_recover(self) -> None:
+        """Reconnect after the device reappears.
+
+        Unverified entries only read GLOBAL_STATE. Verified entries take one
+        strict full read, correct a deviating device clock from HA local time,
+        compare the verified saved revision and, only if the user opted in,
+        restore it automatically (bounded attempts per detected event).
+        """
+        if not self.protocol_verified:
+            await self.async_request_refresh()
+            return
+        async with self._device_write_operation():
+            try:
+                client, snapshot = await self._async_fresh_snapshot()
+                clock_synced = await self._async_sync_clock_if_needed(client, snapshot)
+            except Exception as err:
+                await self._disconnect()
+                raise HomeAssistantError("Lumalou recovery failed") from err
+            record = self._profile_record
+            need = self._detect_restore_needed(record, snapshot.profile)
+            if need is None or not self.auto_restore_enabled:
+                return
+            if need.auto_restore_attempts >= AUTO_RESTORE_MAX_ATTEMPTS:
+                if not need.auto_restore_exhausted:
+                    self._restore_needed = replace(need, auto_restore_exhausted=True)
+                    self._notify()
+                return
+            self._restore_needed = replace(
+                need, auto_restore_attempts=need.auto_restore_attempts + 1
+            )
+            _LOGGER.info("Lumalou profile differs from device; restoring it")
+            await self._async_restore(
+                record, client, snapshot, automatic=True, clock_synced=clock_synced
+            )
+
+    def _detect_restore_needed(
+        self, record: ProfileRecord, observed: dict[str, Any]
+    ) -> RestoreNeeded | None:
+        """Flag a verified revision that the device no longer matches.
+
+        Only a current revision verified on this same device key qualifies;
+        pending/unverified intent is never treated as a power-loss signal.
+        """
+        need: RestoreNeeded | None = None
+        if (
+            self._storage_healthy
+            and self._profile_loaded
+            and record.is_verified
+            and record.verified_fingerprint == self.device_fingerprint
+            and profile_is_complete(record.desired_profile)
+        ):
+            blocks = changed_blocks(record.desired_profile, observed)
+            if blocks:
+                previous = self.restore_needed
+                need = (
+                    RestoreNeeded(record.revision, blocks, dt_util.utcnow())
+                    if previous is None
+                    else replace(previous, changed_blocks=blocks)
+                )
+        if need != self._restore_needed:
+            self._restore_needed = need
+            self._notify()
+        return need
+
     async def _async_close_detached(self, client: SafeLumalouClient) -> None:
         """Close a detached session after any active serialized operation."""
         async with self._lock:
             await self._close_client(client)
+
+    # ---- Durable intent ----
 
     async def _save(self, record: ProfileRecord) -> None:
         if not self._storage_healthy:
@@ -443,83 +531,47 @@ class LumalouCoordinator:
     ) -> None:
         old = self.profile_record
         if expected_revision is not None:
-            validate_integer(expected_revision, 0, 2**63 - 1, "expected revision")
+            validate_integer(expected_revision, 0, _MAX_REVISION, "expected revision")
         if expected_revision is not None and expected_revision != old.revision:
             raise RevisionConflictError("The saved profile changed; reopen the editor")
         desired = validate_profile({**old.desired_profile, **changes})
-        await self._save(
-            replace(
-                old,
-                revision=old.revision + 1,
-                desired_profile=desired,
-                previous={"revision": old.revision, "profile": old.desired_profile},
-                pending=True,
-                sync_status="pending",
-                last_error=None,
-            )
-        )
+        await self._save(_new_revision(old, desired))
 
     async def async_edit_profile(
         self, changes: dict[str, Any], expected_revision: int
     ) -> ProfileRecord:
         """Atomically merge schema-v2 intent changes without using Bluetooth.
 
-        `changes` is a partial logical profile, not a protocol payload.  The
+        `changes` is a partial logical profile, not a protocol payload. The
         supplied revision is mandatory so independent editors cannot silently
-        overwrite each other.  This works for legacy/read-only entries because
-        it only updates private saved intent; applying it remains separately
-        gated by the confirmed product code and hardware support.
+        overwrite each other. Applying it is a separate explicit restore.
         """
         validated_changes = validate_profile(changes)
-        validate_integer(expected_revision, 0, 2**63 - 1, "expected revision")
+        validate_integer(expected_revision, 0, _MAX_REVISION, "expected revision")
         async with self._profile_edit_operation():
             if not self._storage_healthy or not self._profile_loaded:
                 raise HomeAssistantError(
                     "Saved profile requires recovery before editing"
                 )
-            old = self.profile_record
-            if expected_revision != old.revision:
-                raise RevisionConflictError(
-                    "The saved profile changed; reopen the editor"
-                )
-            # Merge only supplied logical blocks.  In particular, this never
-            # removes unknown/saved blocks and never fabricates hardware values.
-            desired = validate_profile({**old.desired_profile, **validated_changes})
-            await self._save(
-                replace(
-                    old,
-                    revision=old.revision + 1,
-                    desired_profile=desired,
-                    previous={"revision": old.revision, "profile": old.desired_profile},
-                    pending=True,
-                    sync_status="pending",
-                    last_error=None,
-                )
-            )
+            # Merges only supplied logical blocks: never removes saved blocks
+            # and never fabricates hardware values.
+            await self._save_edit(validated_changes, expected_revision)
             return self.profile_record
+
+    # ---- BLE session ----
 
     def _receive(self, generation: int, state: dict) -> None:
         if self._stopped or generation != self._generation:
             return
-        # The release has already discarded framing evidence. This is only a
-        # decoded observation, never an importable/verified profile snapshot.
         if not isinstance(state, dict) or set(state) != GLOBAL_STATE_FIELDS:
             return
         if any(
             type(value) is not int or not 0 <= value <= 255 for value in state.values()
         ):
             return
-        ranges = {
-            "currentSong": (0, 18),
-            "currentVolume": (0, 9),
-            "lightBrightness": (0, 9),
-            "lightColor": (0, 9),
-            "playlistDuration": (0, 6),
-            "lightDuration": (0, 5),
-            "currentStage": (0, 3),
-            "clockFormat": (0, 1),
-        }
-        if any(not low <= state[key] <= high for key, (low, high) in ranges.items()):
+        if any(
+            not low <= state[key] <= high for key, (low, high) in _STATE_RANGES.items()
+        ):
             return
         self._callback_state = dict(state)
         self._received += 1
@@ -529,7 +581,7 @@ class LumalouCoordinator:
 
     async def _connect(self) -> SafeLumalouClient:
         self._assert_enrolled_device()
-        if self.profile_record.maintenance:
+        if self._profile_record.maintenance:
             raise HomeAssistantError("Lumalou is in maintenance mode")
         if self._callbacks_started and not self.present:
             raise HomeAssistantError("Lumalou is not advertising")
@@ -543,14 +595,17 @@ class LumalouCoordinator:
             raise HomeAssistantError("No connectable Lumalou device is available")
         generation = self._generation
         client = SafeLumalouClient(
+            self.hass,
             device,
-            lambda state: self._receive(generation, state),
             expected_device_fingerprint=self.device_fingerprint,
+            on_state=lambda state: self._receive(generation, state),
+            disconnected_callback=lambda _client: self._async_handle_session_lost(
+                generation
+            ),
         )
         self._client = client
         try:
-            async with asyncio.timeout(CONNECT_TIMEOUT):
-                await client.connect()
+            await client.connect(timeout=CONNECT_TIMEOUT)
         except BaseException:
             await self._disconnect()
             raise
@@ -580,11 +635,9 @@ class LumalouCoordinator:
         if client := self._invalidate():
             await self._close_client(client)
 
-    async def _refresh(self) -> None:
-        client = await self._connect()
+    async def _request_fresh_state(self, client: SafeLumalouClient) -> None:
         generation, received = self._generation, self._received
-        async with asyncio.timeout(RESPONSE_TIMEOUT + 1):
-            result = await client.request_state(timeout=RESPONSE_TIMEOUT)
+        result = await client.request_state(timeout=RESPONSE_TIMEOUT)
         if (
             generation != self._generation
             or self._received <= received
@@ -596,6 +649,15 @@ class LumalouCoordinator:
         self.available = True
         self._notify()
 
+    async def _refresh(self) -> None:
+        """Read GLOBAL_STATE; a strict session allows one read, so reconnect."""
+        client = await self._connect()
+        try:
+            await self._request_fresh_state(client)
+        except FreshSessionRequiredError:
+            await self._disconnect()
+            await self._request_fresh_state(await self._connect())
+
     async def async_request_refresh(self) -> None:
         """Reject cache fallback; invalidation isolates the next request session."""
         async with self._operation():
@@ -605,18 +667,79 @@ class LumalouCoordinator:
                 await self._disconnect()
                 raise HomeAssistantError("Lumalou refresh failed") from err
 
+    async def _read_snapshot(self, client: SafeLumalouClient) -> DeviceSnapshot:
+        """Read every persistent block once in the current strict session."""
+
+        async def read(name: str) -> Any:
+            return (await client.request_named(name, timeout=RESPONSE_TIMEOUT)).decode()
+
+        state = dict(await client.request_state(timeout=RESPONSE_TIMEOUT))
+        device_clock = await read("current_date")
+        read_at = dt_util.now()
+        playlist = await read("music_playlist")
+        clock = await read("clock_settings")
+        ready = await read("r2r_times")
+        sleepy = await read("sleepy_times")
+        alarms = await read("r2r_alarms")
+        routines = {
+            day: (
+                await client.request_day_routine(day, timeout=RESPONSE_TIMEOUT)
+            ).decode()
+            for day in DAYS
+        }
+        current_state = client.state
+        if current_state is not None and dict(current_state) != state:
+            raise HomeAssistantError("GLOBAL_STATE changed while reading the profile")
+        if not isinstance(device_clock, CurrentDate):
+            raise HomeAssistantError("Current date response is not typed")
+        profile = profile_from_readback(
+            state,
+            playlist=playlist,
+            clock=clock,
+            ready_to_rise=ready,
+            sleepy_times=sleepy,
+            alarms=alarms,
+            routines=routines,
+        )
+        return DeviceSnapshot(profile, state, device_clock, read_at)
+
+    async def _async_fresh_snapshot(
+        self,
+    ) -> tuple[SafeLumalouClient, DeviceSnapshot]:
+        """Open a new strict session and read the complete profile in it."""
+        await self._disconnect()
+        client = await self._connect()
+        return client, await self._read_snapshot(client)
+
+    async def _async_sync_clock_if_needed(
+        self, client: SafeLumalouClient, snapshot: DeviceSnapshot
+    ) -> bool:
+        """Correct the device clock from HA local time beyond a small tolerance."""
+        if _trusted_now() is None:
+            _LOGGER.warning("Home Assistant clock is not trustworthy; not syncing")
+            return False
+        self.last_clock_offset = clock_offset_seconds(snapshot.clock, snapshot.read_at)
+        if self.last_clock_offset <= CLOCK_SYNC_TOLERANCE:
+            return False
+        now = dt_util.now()
+        await client.send(set_current_date_payload(now), timeout=RESPONSE_TIMEOUT)
+        self.last_clock_sync = now
+        self.last_clock_offset = 0
+        return True
+
+    # ---- Live controls ----
+
     async def _send_commands(self, payloads: list[bytes]) -> None:
         self._assert_device_writes_allowed()
         client = await self._connect()
         for payload in payloads:
-            async with asyncio.timeout(RESPONSE_TIMEOUT):
-                await client.send(payload)
+            await client.send(payload, timeout=RESPONSE_TIMEOUT)
         await self._refresh()
 
     async def _apply_edit(self, payloads: list[bytes]) -> None:
-        # Saved intent stays pending even on successful writes: full-profile
-        # verification is impossible with the released upstream client.
-        if self.profile_record.maintenance:
+        # A live setter plus a GLOBAL_STATE callback is not a full-profile
+        # verification; the edited revision stays pending until a restore.
+        if self._profile_record.maintenance:
             return
         try:
             await self._send_commands(payloads)
@@ -649,9 +772,8 @@ class LumalouCoordinator:
             raise ProfileValidationError("Invalid light state")
         changes = {}
         if brightness is not None:
-            # Schema v2 can preserve an observed/source-supported zero, but the
-            # HA control path does not write it until its on/off side effect is
-            # accepted on hardware.
+            # Schema v2 can preserve an observed zero, but the live control
+            # path does not write it until its side effect is accepted.
             validate_integer(brightness, 1, 9, "brightness")
             changes["brightness"] = brightness
         if color is not None:
@@ -669,13 +791,9 @@ class LumalouCoordinator:
             if brightness is not None:
                 payloads.append(commands.set_led_brightness(brightness))
             if not payloads:
-                # The user explicitly requested light on. Do not affect audio
-                # via SET_GLOBAL_ON. A saved zero can be preserved from a
-                # source-backed profile, but its hardware side effect is not
-                # accepted for the HA write path, so never replay it here.
-                level = self.profile_record.desired_profile.get("brightness", 1)
-                if level == 0:
-                    level = 1
+                # Explicit light on: never SET_GLOBAL_ON (it also affects audio)
+                # and never replay a saved zero brightness here.
+                level = self._profile_record.desired_profile.get("brightness", 1) or 1
                 payloads.append(commands.set_led_brightness(level))
             if changes:
                 await self._apply_edit(payloads)
@@ -713,31 +831,26 @@ class LumalouCoordinator:
     async def async_sync_clock(self) -> None:
         """Explicit action only; never send a stored or naive host timestamp."""
         async with self._device_write_operation():
-            now = dt_util.now()
-            if now.year < 2026:
+            now = _trusted_now()
+            if now is None:
                 raise HomeAssistantError("Home Assistant clock is not trustworthy")
-            await self._transient(
-                [
-                    commands.set_current_date(
-                        now.hour, now.minute, now.second, (now.weekday() + 1) % 7
-                    )
-                ]
-            )
+            await self._transient([set_current_date_payload(now)])
+            self.last_clock_sync = now
 
     async def async_set_maintenance(self, enabled: bool) -> None:
         if type(enabled) is not bool:
             raise ProfileValidationError("Invalid maintenance state")
         async with self._operation():
             await self._save(replace(self.profile_record, maintenance=enabled))
+            self._recovery_failures = 0
+            self._next_recovery_at = 0.0
             if enabled:
                 self._cancel_recovery()
-                self._recovery_failures = 0
-                self._next_recovery_at = 0.0
                 await self._disconnect()
             else:
-                self._recovery_failures = 0
-                self._next_recovery_at = 0.0
                 self._schedule_recovery()
+
+    # ---- Import / export / enrollment ----
 
     async def async_export_profile(self) -> dict[str, Any]:
         """Atomically export intent and its CAS revision without identifiers."""
@@ -763,22 +876,12 @@ class LumalouCoordinator:
         if not confirmed:
             raise ProfileValidationError("Confirm a supported subset profile import")
         desired = import_profile_payload(payload)
-        validate_integer(expected_revision, 0, 2**63 - 1, "expected revision")
+        validate_integer(expected_revision, 0, _MAX_REVISION, "expected revision")
         async with self._operation():
             old = self.profile_record
             if expected_revision != old.revision:
                 raise RevisionConflictError("The saved profile changed")
-            await self._save(
-                replace(
-                    old,
-                    revision=old.revision + 1,
-                    desired_profile=desired,
-                    previous={"revision": old.revision, "profile": old.desired_profile},
-                    pending=True,
-                    sync_status="pending",
-                    last_error=None,
-                )
-            )
+            await self._save(_new_revision(old, desired))
 
     async def async_accept_device_profile(
         self,
@@ -787,30 +890,45 @@ class LumalouCoordinator:
         *,
         confirmed: bool = False,
     ) -> None:
-        """Save a user-confirmed full device read as the verified desired profile."""
+        """Commit: save the previewed device read as the verified revision.
+
+        `profile` must equal the last `async_read_profile_snapshot` result of
+        this coordinator, so only a real strict device read can be committed.
+        This user-confirmed save is what marks the protocol verified and
+        unlocks device control.
+        """
         if not confirmed:
             raise ProfileValidationError("Confirm the full device profile snapshot")
         desired = require_complete_profile(profile)
-        validate_integer(expected_revision, 0, 2**63 - 1, "expected revision")
+        validate_integer(expected_revision, 0, _MAX_REVISION, "expected revision")
         async with self._profile_edit_operation():
             if not self._storage_healthy:
                 raise HomeAssistantError("Saved profile requires recovery first")
+            self._assert_enrolled_device()
+            if self._previewed_profile is None or desired != self._previewed_profile:
+                raise HomeAssistantError("Read the device profile again to confirm it")
             old = self.profile_record
             if expected_revision != old.revision:
                 raise RevisionConflictError("The saved profile changed")
             verified_revision = old.revision + 1
             await self._save(
                 replace(
-                    old,
-                    revision=verified_revision,
-                    desired_profile=desired,
-                    previous={"revision": old.revision, "profile": old.desired_profile},
+                    _new_revision(old, desired),
                     verified_revision=verified_revision,
+                    verified_fingerprint=self.device_fingerprint,
                     pending=False,
                     sync_status="saved",
-                    last_error=None,
                 )
             )
+            self._previewed_profile = None
+            if not self.protocol_verified:
+                self.hass.config_entries.async_update_entry(
+                    self.entry,
+                    data={**self.entry.data, CONF_PROTOCOL_VERIFIED: True},
+                )
+                self.protocol_verified = True
+                self._notify()
+            self._schedule_recovery()
 
     async def async_recover_profile(
         self, payload: dict[str, Any], *, confirmed: bool = False
@@ -833,234 +951,55 @@ class LumalouCoordinator:
             except asyncio.CancelledError:
                 # ProfileStore propagates caller cancellation only after the
                 # backup, commit, and independent readback have completed.
-                self._profile_record = deepcopy(recovered)
-                self._storage_healthy = True
-                self._profile_loaded = True
-                self._notify()
+                self._publish_recovered(recovered)
                 raise
-            self._profile_record = deepcopy(recovered)
-            self._storage_healthy = True
-            self._profile_loaded = True
-            self._notify()
+            self._publish_recovered(recovered)
+
+    @callback
+    def _publish_recovered(self, record: ProfileRecord) -> None:
+        self._profile_record = deepcopy(record)
+        self._storage_healthy = True
+        self._profile_loaded = True
+        self._notify()
 
     async def async_read_profile_snapshot(self) -> tuple[dict[str, Any], int]:
-        """Read all persistent blocks in one strict fresh session, without saving.
+        """Read + preview: all persistent blocks in one strict fresh session.
 
-        The caller previews and confirms the returned complete snapshot before
-        replacing desired intent. Missing, malformed, inconsistent, or stale
-        responses abort the whole read and leave the private Store unchanged.
+        Nothing is saved and control stays locked. The caller previews the
+        returned complete snapshot and commits it with
+        `async_accept_device_profile`, which only accepts this exact read.
+        Missing, malformed, inconsistent, or stale responses abort the whole
+        read and leave the private Store unchanged.
         """
         async with self._operation():
             self._assert_enrolled_device()
             if not self._storage_healthy:
                 raise HomeAssistantError("Saved profile requires recovery first")
-            try:
-                require_full_profile_read_api()
-            except MissingUpstreamCapabilities as err:
-                raise HomeAssistantError(
-                    "The installed Lumalou library cannot read the complete profile"
-                ) from err
             record = self.profile_record
             try:
-                # Start an isolated request generation. Strict upstream clients
-                # prohibit re-requesting a response type in the same session.
-                await self._disconnect()
-                client = await self._connect()
-                state = getattr(client, "state", None)
-                if state is None:
-                    state = await client.request_state(timeout=RESPONSE_TIMEOUT)
-                if not isinstance(state, dict):
-                    raise HomeAssistantError("No GLOBAL_STATE snapshot was received")
-                state = dict(state)
-
-                async def read_typed(name: str) -> Any:
-                    request_named = getattr(client, "request_named", None)
-                    if not callable(request_named):
-                        raise HomeAssistantError(
-                            "The installed Lumalou library has no strict read API"
-                        )
-                    envelope = await request_named(name, timeout=RESPONSE_TIMEOUT)
-                    decode = getattr(envelope, "decode", None)
-                    if not callable(decode):
-                        raise HomeAssistantError("Lumalou response is not typed")
-                    return decode()
-
-                playlist = await read_typed("music_playlist")
-                clock = await read_typed("clock_settings")
-                ready = await read_typed("r2r_times")
-                sleepy = await read_typed("sleepy_times")
-                alarms = await read_typed("r2r_alarms")
-                request_day_routine = getattr(client, "request_day_routine", None)
-                if not callable(request_day_routine):
-                    raise HomeAssistantError(
-                        "The installed Lumalou library has no daily-routine read API"
-                    )
-                day_order = (
-                    "sunday",
-                    "monday",
-                    "tuesday",
-                    "wednesday",
-                    "thursday",
-                    "friday",
-                    "saturday",
-                )
-                routines: dict[str, Any] = {}
-                for day in day_order:
-                    envelope = await request_day_routine(day, timeout=RESPONSE_TIMEOUT)
-                    decode = getattr(envelope, "decode", None)
-                    if not callable(decode):
-                        raise HomeAssistantError("Daily routine response is not typed")
-                    routines[day] = decode()
-
-                current_state = getattr(client, "state", None)
-                if current_state is not None and dict(current_state) != state:
-                    raise HomeAssistantError(
-                        "GLOBAL_STATE changed while reading the profile"
-                    )
-                if not hasattr(playlist, "slots") or len(playlist.slots) != 12:
-                    raise HomeAssistantError("Playlist response is not typed")
-                songs: list[int] = []
-                padding_started = False
-                for song in playlist.slots:
-                    if type(song) is not int or not 0 <= song <= 12:
-                        raise HomeAssistantError("Playlist contains an unknown song ID")
-                    if song == 0:
-                        padding_started = True
-                    elif padding_started:
-                        raise HomeAssistantError(
-                            "Playlist contains unsupported interior empty slots"
-                        )
-                    else:
-                        songs.append(song)
-
-                if not all(
-                    hasattr(clock, field)
-                    for field in ("display_on", "brightness", "format")
-                ):
-                    raise HomeAssistantError("Clock settings response is not typed")
-                expected_clock = (
-                    self._profile_boolean(state["clockDisplay"], "clock display"),
-                    state["clockBrightness"],
-                    state["clockFormat"],
-                )
-                if (clock.display_on, clock.brightness, clock.format) != expected_clock:
-                    raise HomeAssistantError(
-                        "Clock settings disagree with GLOBAL_STATE"
-                    )
-
-                def encode_time(value: Any) -> dict[str, int] | None:
-                    if value is None:
-                        return None
-                    if not hasattr(value, "hour") or not hasattr(value, "minute"):
-                        raise HomeAssistantError("Time response is not typed")
-                    return {"hour": value.hour, "minute": value.minute}
-
-                def encode_week(value: Any) -> dict[str, Any]:
-                    if not hasattr(value, "days") or len(value.days) != len(DAYS):
-                        raise HomeAssistantError("Weekly response is not typed")
-                    return {
-                        day: encode_time(value.days[index])
-                        for index, day in enumerate(DAYS)
-                    }
-
-                def encode_routine(value: Any) -> dict[str, Any]:
-                    if not hasattr(value, "slots") or len(value.slots) != 12:
-                        raise HomeAssistantError("Daily routine response is not typed")
-                    slots: list[dict[str, int] | None] = []
-                    for slot in value.slots:
-                        if slot is None:
-                            slots.append(None)
-                        elif hasattr(slot, "step") and hasattr(slot, "task"):
-                            slots.append({"step": slot.step, "task": slot.task})
-                        else:
-                            raise HomeAssistantError("Daily routine slot is not typed")
-                    return {"time": encode_time(value.time), "slots": slots}
-
-                raw_profile = {
-                    "brightness": state["lightBrightness"],
-                    "color": state["lightColor"],
-                    "light_duration": state["lightDuration"],
-                    "volume": state["currentVolume"],
-                    "playlist_duration": state["playlistDuration"],
-                    "playlist": songs,
-                    "clock_settings": {
-                        "display": clock.display_on,
-                        "brightness": clock.brightness,
-                        "format": clock.format,
-                    },
-                    "routine_settings": {
-                        "enabled": self._profile_boolean(
-                            state["routineModeStatus"], "routine mode"
-                        ),
-                        "music": state["routineMusicStatus"],
-                        "volume": state["routineVolume"],
-                        "task_reward_sfx": state["taskRewardSfx"],
-                        "routine_reward_sfx": state["routineRewardSfx"],
-                    },
-                    "ready_to_rise": {
-                        "enabled": self._profile_boolean(
-                            state["ready2RiseStatus"], "ready-to-rise"
-                        ),
-                        "times": encode_week(ready),
-                    },
-                    "sleepy_times": encode_week(sleepy),
-                    "alarm": {
-                        "days": {
-                            day: int(alarms.days[index])
-                            for index, day in enumerate(DAYS)
-                        },
-                        "sound": alarms.sound,
-                    },
-                    "routines": {day: encode_routine(routines[day]) for day in DAYS},
-                }
-                snapshot = require_complete_profile(raw_profile)
-                await self._disconnect()
-            except asyncio.CancelledError:
-                await self._disconnect()
-                raise
+                _client, snapshot = await self._async_fresh_snapshot()
             except Exception as err:
-                await self._disconnect()
                 raise HomeAssistantError(
                     "Could not read a complete, consistent Lumalou profile"
                 ) from err
-            if not self.protocol_verified:
-                self.hass.config_entries.async_update_entry(
-                    self.entry,
-                    data={**self.entry.data, CONF_PROTOCOL_VERIFIED: True},
-                )
-                self.protocol_verified = True
-                self._notify()
+            finally:
+                await self._disconnect()
+            self._previewed_profile = deepcopy(snapshot.profile)
             self._schedule_recovery()
-            return snapshot, record.revision
+            return snapshot.profile, record.revision
 
-    @staticmethod
-    def _profile_boolean(value: Any, name: str) -> bool:
-        """Decode only explicit boolean wire values; reject other nibbles."""
-        if type(value) is not int or value not in (0, 1):
-            raise HomeAssistantError(f"Unsupported {name} value")
-        return bool(value)
-
-    async def async_restore_profile(self) -> None:
-        """Do not present unproven setter behaviour as safe restoration."""
-        raise HomeAssistantError(
-            "Restore requires upstream full-profile readback and hardware validation"
-        )
+    # ---- Profile restore ----
 
     async def async_plan_profile_restore(
         self, expected_revision: int
     ) -> ProfileReconciliationPlan:
         """Freshly compare a saved full profile without issuing any BLE writes.
 
-        This preview is not a restore authorization: it chooses no command
-        order, does not apply setters, and does not advance verified_revision.
-        An eventual executor must re-read and recheck the captured revision
-        immediately before any accepted write sequence. The read session can
-        update transient BLE availability/observed state, but it never saves or
-        mutates the ProfileRecord.
+        This preview does not apply setters or advance verified_revision. The
+        executor (`async_restore_profile`) re-reads the device itself.
         """
-        validate_integer(expected_revision, 0, 2**63 - 1, "expected revision")
-        if not self._profile_loaded or not self._storage_healthy:
-            raise HomeAssistantError("Saved profile requires recovery first")
+        validate_integer(expected_revision, 0, _MAX_REVISION, "expected revision")
+        self._assert_profile_usable()
         self._assert_enrolled_device()
         record = self.profile_record
         if record.maintenance:
@@ -1074,17 +1013,145 @@ class LumalouCoordinator:
             raise RevisionConflictError("The saved profile changed during readback")
 
         async with self._profile_edit_operation():
+            self._assert_profile_usable()
             record = self.profile_record
-            if not self._storage_healthy or not self._profile_loaded:
-                raise HomeAssistantError("Saved profile requires recovery first")
             if record.maintenance:
                 raise HomeAssistantError("Lumalou is in maintenance mode")
             self._assert_enrolled_device()
             return plan_profile_reconciliation(
-                record,
-                observed,
-                expected_revision=expected_revision,
+                record, observed, expected_revision=expected_revision
             )
+
+    async def async_restore_profile(
+        self, expected_revision: int, *, confirmed: bool = False
+    ) -> ProfileRestoreResult:
+        """Apply the saved complete profile to the device (explicit user action).
+
+        Sequence, all under the coordinator lock so no edit can interleave:
+        revision CAS -> new strict session and full readback -> clock sync if
+        it deviates -> only differing blocks in the documented order of
+        `restore.build_restore_steps` -> new session and full readback ->
+        verified only if every block matches. Returns the verified result;
+        any failure raises `ProfileRestoreError` whose `result` lists the
+        applied steps and mismatching blocks. Nothing is retried here.
+
+        Requires protocol_verified, the enrolled device key, maintenance off,
+        healthy storage and a structurally complete saved revision. The
+        revision may be a pending edit (this is how offline schedule edits
+        reach the device) but never one verified on a different device key.
+        Automatic restore is stricter: see `_async_recover`.
+        """
+        if not confirmed:
+            raise ProfileValidationError("Confirm the profile restore")
+        validate_integer(expected_revision, 0, _MAX_REVISION, "expected revision")
+        async with self._device_write_operation():
+            self._assert_profile_usable()
+            record = self._profile_record
+            if record.maintenance:
+                raise HomeAssistantError("Lumalou is in maintenance mode")
+            if record.revision != expected_revision:
+                raise RevisionConflictError("The saved profile changed")
+            if record.verified_fingerprint not in (None, self.device_fingerprint):
+                raise HomeAssistantError(
+                    "The saved profile was verified on a different device"
+                )
+            require_complete_profile(record.desired_profile)
+            try:
+                client, snapshot = await self._async_fresh_snapshot()
+                clock_synced = await self._async_sync_clock_if_needed(client, snapshot)
+            except Exception as err:
+                await self._disconnect()
+                raise HomeAssistantError(
+                    "Could not read a complete, consistent Lumalou profile"
+                ) from err
+            return await self._async_restore(
+                record, client, snapshot, automatic=False, clock_synced=clock_synced
+            )
+
+    async def _async_restore(
+        self,
+        record: ProfileRecord,
+        client: SafeLumalouClient,
+        snapshot: DeviceSnapshot,
+        *,
+        automatic: bool,
+        clock_synced: bool,
+    ) -> ProfileRestoreResult:
+        """Write the minimal diff and prove it with a fresh complete readback."""
+        desired = record.desired_profile
+        steps = build_restore_steps(desired, snapshot.profile)
+        planned = tuple(step.name for step in steps)
+        applied: list[str] = []
+
+        def result(**changes: Any) -> ProfileRestoreResult:
+            return ProfileRestoreResult(
+                revision=record.revision,
+                automatic=automatic,
+                planned_steps=planned,
+                applied_steps=tuple(applied),
+                clock_synced=clock_synced,
+                finished_at=dt_util.utcnow(),
+                **{"verified": False, **changes},
+            )
+
+        mismatched: tuple[str, ...] = ()
+        if steps:
+            await self._save(
+                replace(self._profile_record, sync_status="applying", last_error=None)
+            )
+            try:
+                for step in steps:
+                    await client.send(step.payload, timeout=RESPONSE_TIMEOUT)
+                    applied.append(step.name)
+                _client, verification = await self._async_fresh_snapshot()
+            except Exception as err:
+                await self._disconnect()
+                error = (
+                    "restore_verify" if len(applied) == len(steps) else "restore_write"
+                )
+                raise await self._async_restore_failed(result(error=error)) from err
+            mismatched = changed_blocks(desired, verification.profile)
+        if mismatched:
+            raise await self._async_restore_failed(
+                result(error="restore_mismatch", mismatched_blocks=mismatched)
+            )
+        await self._save(
+            replace(
+                self._profile_record,
+                verified_revision=record.revision,
+                verified_fingerprint=self.device_fingerprint,
+                pending=False,
+                sync_status="saved",
+                last_error=None,
+            )
+        )
+        self._restore_needed = None
+        self.last_restore_result = result(verified=True)
+        self._notify()
+        return self.last_restore_result
+
+    async def _async_restore_failed(
+        self, outcome: ProfileRestoreResult
+    ) -> ProfileRestoreError:
+        """Record a failed restore durably and build the error to raise."""
+        self.last_restore_result = outcome
+        need = self.restore_needed
+        if (
+            outcome.automatic
+            and need is not None
+            and need.auto_restore_attempts >= AUTO_RESTORE_MAX_ATTEMPTS
+        ):
+            self._restore_needed = replace(need, auto_restore_exhausted=True)
+        await self._save(
+            replace(self._profile_record, sync_status="error", last_error=outcome.error)
+        )
+        _LOGGER.warning(
+            "Lumalou profile restore failed (%s); applied %s of %s steps",
+            outcome.error,
+            len(outcome.applied_steps),
+            len(outcome.planned_steps),
+        )
+        return ProfileRestoreError("Lumalou profile restore was not verified", outcome)
 
     async def async_shutdown(self) -> None:
         """Cancel entry operations and release BLE without deleting saved intent."""
