@@ -441,9 +441,9 @@ entry with `lumalou.import_profile` and write it with
   the step is unknown until the next change, and a routine that ended while
   disconnected fires no event. A routine that ends without reaching its last
   step (also "complete all" on the device) counts as cancelled.
-- With `lumalou-gld09` 0.2.1, **Previous task** drops the Bluetooth session
-  (the device answers with a frame that library rejects) and Home Assistant
-  reconnects; 0.3.0 ignores that frame.
+- The routine start and control commands were checked on hardware with a
+  library-level probe; the Home Assistant-level routine steps of the
+  [acceptance checklist](docs/hardware-validation.md) are still open.
 - Only sources `sleep_playlist` and `pink_noise` were checked on hardware; the
   other built-in sounds come from the protocol description.
 

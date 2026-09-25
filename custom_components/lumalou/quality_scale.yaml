@@ -23,7 +23,7 @@ rules:
   config-flow: done
   dependency-transparency:
     status: done
-    comment: Exact pin lumalou-gld09==0.2.1 from PyPI; public MIT source at github.com/pavlikru/lumalou with a v0.2.1 tag.
+    comment: Exact pin lumalou-gld09==0.3.0 from PyPI; public MIT source at github.com/pavlikru/lumalou.
   docs-actions: done
   docs-conditions:
     status: exempt
