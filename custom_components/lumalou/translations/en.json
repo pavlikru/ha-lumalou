@@ -477,6 +477,9 @@
     "routine_mode_off": {
       "message": "Lumalou starts a routine only while Routines is on. Turn on the Routines switch (keep it on) and try again. Nothing was changed."
     },
+    "routine_blocks_control": {
+      "message": "A routine is running on Lumalou, and it ignores light and sound commands until the routine ends. Finish or cancel the routine first."
+    },
     "setting_not_confirmed": {
       "message": "Lumalou did not apply the setting (sent twice). Check the connection and try again."
     }

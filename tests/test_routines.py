@@ -426,6 +426,35 @@ async def test_start_is_refused_before_any_write_while_routine_mode_is_off(rig):
     assert sends(rig, start)[-2:] == [START, COMPLETE]
 
 
+async def test_light_and_sound_are_refused_while_a_routine_runs(rig):
+    """Hardware: in routine mode the device ignores light and audio commands."""
+    coordinator = rig.coordinator
+    await live(rig)
+    push_mode(rig, 7)
+    start = len(rig.journal)
+
+    for command in (
+        coordinator.async_turn_on_light(),
+        coordinator.async_turn_on_light(brightness=5, color=9),
+        coordinator.async_turn_off_light(),
+        coordinator.async_play(0),
+        coordinator.async_stop_audio(),
+    ):
+        with pytest.raises(ServiceValidationError) as err:
+            await command
+        assert err.value.translation_key == "routine_blocks_control"
+    assert not sends(rig, start)
+
+    # Routine controls still work; after the routine the commands work again.
+    await coordinator.async_routine_control(4)
+    assert rig.state["operationMode"] == 0
+    await coordinator.async_turn_on_light()
+    await coordinator.async_play(0)
+    await coordinator.async_stop_audio()
+    await coordinator.async_turn_off_light()
+    assert len(sends(rig, start)) == 5
+
+
 @pytest.mark.parametrize("tasks", [[], [3, 3], [12]])
 async def test_start_routine_rejects_invalid_tasks_before_ble(rig, tasks):
     await verified_profile(rig)
