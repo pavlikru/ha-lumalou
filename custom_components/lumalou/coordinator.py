@@ -467,7 +467,9 @@ class LumalouCoordinator:
         async with self._device_write_operation():
             try:
                 client, snapshot = await self._async_fresh_snapshot()
-                clock_synced = await self._async_sync_clock_if_needed(client, snapshot)
+                clock_synced = await self._async_sync_clock_if_needed(
+                    client, snapshot.clock, snapshot.read_at
+                )
             except Exception as err:
                 await self._disconnect()
                 raise HomeAssistantError("Lumalou recovery failed") from err
@@ -717,13 +719,13 @@ class LumalouCoordinator:
         return client, await self._read_snapshot(client)
 
     async def _async_sync_clock_if_needed(
-        self, client: SafeLumalouClient, snapshot: DeviceSnapshot
+        self, client: SafeLumalouClient, clock: CurrentDate, read_at: datetime
     ) -> bool:
         """Correct the device clock from HA local time beyond a small tolerance."""
         if _trusted_now() is None:
             _LOGGER.warning("Home Assistant clock is not trustworthy; not syncing")
             return False
-        self.last_clock_offset = clock_offset_seconds(snapshot.clock, snapshot.read_at)
+        self.last_clock_offset = clock_offset_seconds(clock, read_at)
         if self.last_clock_offset <= CLOCK_SYNC_TOLERANCE:
             return False
         now = dt_util.now()
@@ -731,6 +733,40 @@ class LumalouCoordinator:
         self.last_clock_sync = now
         self.last_clock_offset = 0
         return True
+
+    @callback
+    def async_schedule_clock_check(self, *_args: Any) -> None:
+        """Check the clock of a live session (daily, and on time zone change).
+
+        Reconnects only correct the clock when a session is (re)opened; this
+        catches DST changes and drift while one session stays open.
+        """
+        if self.available and self.protocol_verified and not self._stopped:
+            self._create_background_task(
+                self._async_check_clock(), "lumalou clock check"
+            )
+
+    async def _async_check_clock(self) -> None:
+        """Read the device clock in a fresh session and correct it if needed."""
+        async with self._device_write_operation():
+            if not self.available:
+                return
+            try:
+                # A strict session answers each query once, so start anew.
+                await self._disconnect()
+                client = await self._connect()
+                device_clock = (
+                    await client.request_named("current_date", timeout=RESPONSE_TIMEOUT)
+                ).decode()
+                if not isinstance(device_clock, CurrentDate):
+                    raise HomeAssistantError("Current date response is not typed")
+                await self._async_sync_clock_if_needed(
+                    client, device_clock, dt_util.now()
+                )
+                await self._request_fresh_state(client)
+            except Exception:
+                await self._disconnect()
+                _LOGGER.debug("Lumalou clock check failed", exc_info=True)
 
     # ---- Live controls ----
 
@@ -933,7 +969,9 @@ class LumalouCoordinator:
             require_complete_profile(record.desired_profile)
             try:
                 client, snapshot = await self._async_fresh_snapshot()
-                clock_synced = await self._async_sync_clock_if_needed(client, snapshot)
+                clock_synced = await self._async_sync_clock_if_needed(
+                    client, snapshot.clock, snapshot.read_at
+                )
             except Exception as err:
                 await self._disconnect()
                 raise _error("profile_read_failed") from err

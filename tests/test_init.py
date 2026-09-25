@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from homeassistant.const import EVENT_CORE_CONFIG_UPDATE
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers import issue_registry as ir
@@ -23,6 +25,13 @@ from custom_components.lumalou.const import (
 )
 
 FINGERPRINT = "a" * 64
+
+
+@pytest.fixture(autouse=True)
+def no_daily_timer() -> Generator[None]:
+    """Setup is called directly here, so no unload cancels the daily timer."""
+    with patch("custom_components.lumalou.async_track_time_change"):
+        yield
 
 
 def _restore_issue_id(entry: MockConfigEntry) -> str:
@@ -62,6 +71,55 @@ async def test_offline_setup_starts_callbacks_and_forwards_platforms(
     coordinator.async_start.assert_called_once_with()
     assert entry.runtime_data.coordinator is coordinator
     forward.assert_awaited_once_with(entry, PLATFORMS)
+
+
+async def test_clock_check_runs_daily_and_on_time_zone_change(
+    hass: HomeAssistant,
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"address": "synthetic-device", CONF_DEVICE_FINGERPRINT: FINGERPRINT},
+    )
+    entry.add_to_hass(hass)
+    coordinator = Mock(
+        async_setup=AsyncMock(), async_start=Mock(), async_shutdown=AsyncMock()
+    )
+    daily_unsubscribe = Mock()
+
+    with (
+        patch(
+            "custom_components.lumalou.coordinator.LumalouCoordinator",
+            return_value=coordinator,
+        ),
+        patch.object(
+            hass.config_entries, "async_forward_entry_setups", new=AsyncMock()
+        ),
+        patch(
+            "custom_components.lumalou.async_track_time_change",
+            return_value=daily_unsubscribe,
+        ) as track,
+    ):
+        assert await async_setup_entry(hass, entry)
+
+    track.assert_called_once_with(
+        hass, coordinator.async_schedule_clock_check, hour=3, minute=5, second=0
+    )
+    hass.bus.async_fire(EVENT_CORE_CONFIG_UPDATE, {"latitude": 1})
+    await hass.async_block_till_done()
+    coordinator.async_schedule_clock_check.assert_not_called()
+    hass.bus.async_fire(EVENT_CORE_CONFIG_UPDATE, {"time_zone": "Etc/GMT-9"})
+    await hass.async_block_till_done()
+    coordinator.async_schedule_clock_check.assert_called_once()
+
+    entry.runtime_data = Mock(coordinator=coordinator)
+    with patch.object(
+        hass.config_entries, "async_unload_platforms", new=AsyncMock(return_value=True)
+    ):
+        await entry._async_process_on_unload(hass)
+    daily_unsubscribe.assert_called_once_with()
+    hass.bus.async_fire(EVENT_CORE_CONFIG_UPDATE, {"time_zone": "UTC"})
+    await hass.async_block_till_done()
+    coordinator.async_schedule_clock_check.assert_called_once()
 
 
 async def test_entry_without_device_identity_fails_setup(

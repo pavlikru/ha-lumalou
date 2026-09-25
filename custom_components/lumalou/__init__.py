@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EVENT_CORE_CONFIG_UPDATE
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
@@ -58,6 +61,12 @@ def async_sync_restore_issue(
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
+@callback
+def _time_zone_changed(data: Mapping[str, Any]) -> bool:
+    """Match core configuration updates that change the time zone."""
+    return "time_zone" in data
+
+
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up integration-wide actions."""
     async_setup_services(hass)
@@ -88,6 +97,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: LumalouConfigEntry) -> b
             async_sync_restore_issue(hass, entry.entry_id, need)
 
     entry.async_on_unload(coordinator.async_add_listener(_async_sync_restore_issue))
+    # Reconnects correct the clock; these catch DST and drift in long sessions.
+    entry.async_on_unload(
+        async_track_time_change(
+            hass, coordinator.async_schedule_clock_check, hour=3, minute=5, second=0
+        )
+    )
+    entry.async_on_unload(
+        hass.bus.async_listen(
+            EVENT_CORE_CONFIG_UPDATE,
+            coordinator.async_schedule_clock_check,
+            event_filter=_time_zone_changed,
+        )
+    )
 
     try:
         coordinator.async_start()
