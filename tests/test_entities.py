@@ -114,6 +114,7 @@ class FakeCoordinator:
         self.async_start_routine = AsyncMock()
         self.async_routine_control = AsyncMock()
         self.routine_phase = "off"
+        self.playing_source = None
         self.current_task = "none"
         self.routine_listeners = []
 
@@ -609,3 +610,27 @@ async def test_routine_event_entity_fires_coordinator_events(hass: HomeAssistant
     for remove in event._on_remove or []:
         remove()
     assert coordinator.routine_listeners == []
+
+
+def test_media_source_for_playlists_and_the_soother():
+    """Songs 1..12 belong to either playlist; the stage or HA's choice tells."""
+    entry, coordinator = make_entry(
+        {"musicStatus": 1, "currentSong": 1, "currentStage": 1, "lightStatus": 1}
+    )
+    media = LumalouMediaPlayer(entry)
+    light = LumalouLight(entry)
+    # The soother (also from the remote): sleep playlist, colours cycling.
+    assert media.source == "sleep_playlist"
+    assert light.effect is None
+
+    coordinator.data = {"musicStatus": 1, "currentSong": 4, "currentStage": 0}
+    assert media.source is None  # a playlist, but not which one
+    coordinator.playing_source = int(Audio.CUSTOM_PLAYLIST)
+    assert media.source == "custom_playlist"
+    coordinator.playing_source = int(Audio.OCEAN)  # replaced on the device
+    assert media.source is None
+
+    coordinator.data = {"musicStatus": 0, "currentSong": 4, "currentStage": 1}
+    assert media.source is None
+    coordinator.data = {"lightStatus": 1, "lightColor": 5, "currentStage": 0}
+    assert light.effect == "blue"
