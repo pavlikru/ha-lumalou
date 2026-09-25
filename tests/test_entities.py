@@ -13,7 +13,7 @@ from homeassistant.components.media_player import (
     MediaPlayerEntityFeature,
     MediaPlayerState,
 )
-from homeassistant.const import ATTR_ENTITY_ID, SERVICE_TURN_ON
+from homeassistant.const import ATTR_ENTITY_ID, SERVICE_TURN_ON, EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH
 from homeassistant.setup import async_setup_component
@@ -128,6 +128,19 @@ def make_entry(
         profile_record=profile_record,
     )
     return SimpleNamespace(runtime_data=runtime), coordinator
+
+
+def test_homekit_support_controls_are_not_primary_entities():
+    """Default HomeKit export keeps user controls, not maintenance utilities."""
+    entry, _ = make_entry({})
+
+    assert LumalouLight(entry).entity_category is None
+    assert LumalouMediaPlayer(entry).entity_category is None
+    assert LumalouMaintenanceSwitch(entry).entity_category is EntityCategory.CONFIG
+    assert LumalouSyncClockButton(entry).entity_category is EntityCategory.CONFIG
+    assert LumalouRefreshButton(entry).entity_category is EntityCategory.DIAGNOSTIC
+    assert LumalouLightDurationSelect(entry).entity_category is EntityCategory.CONFIG
+    assert LumalouPlaylistDurationSelect(entry).entity_category is EntityCategory.CONFIG
 
 
 @pytest.mark.asyncio
