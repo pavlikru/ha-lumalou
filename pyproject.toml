@@ -11,9 +11,16 @@ dependencies = []
 [dependency-groups]
 dev = [
   "homeassistant==2026.9.2",
+  "HAP-python==5.0.0",
+  "base36==0.1.1",
+  "ha-ffmpeg==3.2.2",
+  "fnv-hash-fast==2.0.3",
+  "homekit-audio-proxy==1.2.1",
   "lumalou==0.1.0",
   "mypy==1.18.2",
   "pre-commit==4.3.0",
+  "PyTurboJPEG==1.8.3",
+  "PyQRCode==1.2.1",
   "pytest==9.0.3",
   "pytest-cov==7.1.0",
   "pytest-homeassistant-custom-component==0.13.365",
