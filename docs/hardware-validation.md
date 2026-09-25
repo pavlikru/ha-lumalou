@@ -121,6 +121,10 @@ routines 00:00 with empty slots; playlist 1–12; light timer 4, playlist timer
 0, LED brightness 5, color 0; light and sound off. The integration therefore
 treats this power-loss clock (Sunday, running from 05:00) on reconnect plus a
 differing profile as a reset and restores the saved profile (see the README).
+In the 0.1.0b6 Home Assistant run a replug reset the settings (12-hour clock,
+routines, routine settings) but the clock was only slightly off and was not
+recognised; since 0.1.0b7 factory settings alone are a reset, and the raw
+clock and every criterion are logged at info level.
 
 ## Home Assistant acceptance checklist
 
