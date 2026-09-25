@@ -6,6 +6,33 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-25
+
+Fixes from setting up routine automations on hardware (firmware 0.3.7).
+Requires Home Assistant 2026.9.0 or newer and `lumalou-gld09` 0.3.0.
+
+### Fixed
+
+- **Start routine** and `lumalou.start_routine` failed with "Lumalou did not
+  start the routine" while **Routines** was off: the device ignores a start
+  in that case. The start is now refused before anything is written, with an
+  error asking to switch **Routines** on (it is never switched on
+  silently).
+- Light and sound commands (light on or off, the media player's source, on
+  and off) reported success during a routine although the device ignores
+  them. They are now refused with an error asking to finish or cancel the
+  routine first.
+
+### Documentation
+
+- New README section "Scheduling routines with automations": several
+  routines a day with time triggers, `lumalou.start_routine` with the
+  trigger id as the task, a weekday condition, cancelling a running routine
+  first, **Routines** kept on and empty day routines.
+- The light and playlist timers are global device settings (they also apply
+  to light and sound started with the remote); wake-up and sleep examples.
+- Hardware findings recorded in `docs/hardware-validation.md`.
+
 ## [0.1.0] - 2026-09-25
 
 First stable release, validated on real hardware: a Lumalou with firmware
@@ -351,7 +378,8 @@ Hardware validation: summary of passed phases (anonymized).
 Requires Home Assistant 2026.9.0 or newer and lumalou-gld09==0.2.0.
 -->
 
-[Unreleased]: https://github.com/pavlikru/ha-lumalou/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/pavlikru/ha-lumalou/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.1
 [0.1.0]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0
 [0.1.0b8]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b8
 [0.1.0b7]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b7
