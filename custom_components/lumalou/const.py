@@ -1,5 +1,6 @@
 """Lumalou integration constants and explicit command policy."""
 
+from bleak_retry_connector import BLEAK_SAFETY_TIMEOUT, MAX_CONNECT_ATTEMPTS
 from homeassistant.const import Platform
 
 DOMAIN = "lumalou"
@@ -17,7 +18,16 @@ PLATFORMS = (
     Platform.SWITCH,
 )
 PROFILE_SCHEMA_VERSION = 2
-CONNECT_TIMEOUT = 20
+# Bound for GATT work on an established link: the FACTORY read, the session
+# handshake after the link is up, and a disconnect.
+GATT_TIMEOUT = 20
+# ``establish_connection`` bounds every attempt with ``BLEAK_SAFETY_TIMEOUT``
+# and retries up to ``MAX_CONNECT_ATTEMPTS`` times; it must govern the
+# connect. ``LumalouClient.connect(timeout=...)`` applies one deadline to the
+# link *and* the handshake, so it covers the full retry budget plus the
+# handshake and the retry backoffs. A shorter guard cancels the first attempt
+# before bleak-retry-connector can time out and retry.
+CONNECT_TIMEOUT = MAX_CONNECT_ATTEMPTS * BLEAK_SAFETY_TIMEOUT + 3 * GATT_TIMEOUT
 RESPONSE_TIMEOUT = 4
 RECOVERY_COOLDOWN = 30
 RECOVERY_MAX_COOLDOWN = 15 * 60
