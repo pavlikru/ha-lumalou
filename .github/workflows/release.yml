@@ -1,5 +1,8 @@
 name: Release
 
+# Push a `vX.Y.Z` tag on a commit that is already on `main`. HACS installs the
+# tagged source tree (hacs.json has no zip_release), so no archive is built.
+
 on:
   push:
     tags:
@@ -9,88 +12,76 @@ permissions:
   contents: read
 
 jobs:
-  validate:
-    uses: ./.github/workflows/validate.yml
-    permissions:
-      contents: read
-
-  build:
-    needs: validate
+  check:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
-      - name: Validate tag against manifest
+      - name: Require the tag to be on main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+      - name: Require the tag to match the manifest version
         shell: bash
         env:
           TAG_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          manifest_version="$(
-            jq -r '.version // empty' custom_components/lumalou/manifest.json
-          )"
-          tag_version="${TAG_NAME#v}"
-
-          if [[ -z "$manifest_version" ||
-            "$manifest_version" == "0.0.0" ||
-            "$tag_version" != "$manifest_version" ]]; then
-            echo "Tag ${TAG_NAME@Q} must match a released manifest version" \
-              "(got ${manifest_version@Q})." >&2
+          manifest_version="$(jq -r '.version // empty' custom_components/lumalou/manifest.json)"
+          if [[ -z "$manifest_version" || "$manifest_version" == "0.0.0" ||
+            "${TAG_NAME#v}" != "$manifest_version" ]]; then
+            echo "Tag ${TAG_NAME} does not match manifest version '${manifest_version}'." >&2
             exit 1
           fi
 
-      - name: Build HACS archive
-        run: python scripts/build_hacs_zip.py "$RUNNER_TEMP/lumalou.zip"
-
-      - name: Verify HACS archive layout
+      - name: Require a CHANGELOG entry
         shell: bash
+        env:
+          TAG_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          archive="$RUNNER_TEMP/lumalou.zip"
-          listing="$(unzip -Z1 "$archive")"
-
-          for required in manifest.json __init__.py brand/icon.png; do
-            if ! grep -Fxq "$required" <<<"$listing"; then
-              echo "Missing $required at the archive root." >&2
-              exit 1
-            fi
-          done
-
-          if grep -q '^custom_components/' <<<"$listing"; then
-            echo "Archive must not contain a custom_components/ prefix." >&2
+          grep -Fq "## [${TAG_NAME#v}]" CHANGELOG.md || {
+            echo "CHANGELOG.md has no '## [${TAG_NAME#v}]' section." >&2
             exit 1
-          fi
+          }
 
-          if grep -Eq '(^|/)__pycache__/|\.(pyc|pyo)$' <<<"$listing"; then
-            echo "Archive contains cache or bytecode files." >&2
-            exit 1
-          fi
-
-      - name: Upload release archive
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: lumalou-release
-          path: ${{ runner.temp }}/lumalou.zip
-          if-no-files-found: error
+  validate:
+    needs: check
+    uses: ./.github/workflows/validate.yml
+    permissions:
+      contents: read
 
   release:
-    needs: [validate, build]
+    needs: validate
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Download release archive
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          name: lumalou-release
-          path: ${{ runner.temp }}
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Create GitHub Release
+      - name: Create GitHub release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
-        run: >-
-          gh release create "$TAG_NAME" "$RUNNER_TEMP/lumalou.zip"
-          --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease
-          --generate-notes
+        run: |
+          set -euo pipefail
+          version="${TAG_NAME#v}"
+          awk -v heading="## [${version}]" '
+            index($0, heading) == 1 { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+
+          # PEP 440 pre-releases (0.2.0b1, 0.2.0rc1) are published as
+          # GitHub pre-releases; HACS shows them only with "Show beta" enabled.
+          prerelease=()
+          if [[ "$version" =~ [a-z] ]]; then
+            prerelease=(--prerelease)
+          fi
+
+          gh release create "$TAG_NAME" --verify-tag --title "$TAG_NAME" \
+            --notes-file "$RUNNER_TEMP/notes.md" "${prerelease[@]}"
