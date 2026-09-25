@@ -153,6 +153,7 @@ _ERRORS = {
     "routine_running": "A Lumalou routine is already running",
     "routine_not_running": "No Lumalou routine is running",
     "routine_not_started": "Lumalou did not start the routine",
+    "routine_mode_off": "Routine mode is off; Lumalou ignores a routine start",
     "setting_not_confirmed": "Lumalou did not confirm the setting",
     "profile_saved_not_applied": (
         "The change was saved but could not be written to Lumalou"
@@ -168,6 +169,7 @@ _USER_STATE_ERRORS = frozenset(
         "clock_untrusted",
         "routine_running",
         "routine_not_running",
+        "routine_mode_off",
     }
 )
 
@@ -1657,14 +1659,20 @@ class LumalouCoordinator:
         on the next connection. "Today" is the device clock's weekday when it
         is known. If the device does not enter routine mode, a one-off
         routine is written back and ``routine_not_started`` is raised.
+
+        The device ignores the start while routine mode (the Routines
+        switch) is off (hardware), so that is refused before any write.
         """
         if tasks is not None:
             if not tasks:
                 raise ProfileValidationError("A routine needs at least one task")
             routine_from_tasks(None, tasks)
         async with self._live_write_operation():
-            if self._live_state()["operationMode"] == ROUTINE_OPERATION_MODE:
+            state = self._live_state()
+            if state["operationMode"] == ROUTINE_OPERATION_MODE:
                 raise _error("routine_running")
+            if not state[ROUTINE_SETTING_FIELDS["enabled"]]:
+                raise _error("routine_mode_off")
             temporary: tuple[str, dict[str, Any]] | None = None
             saved_routine: dict[str, Any] = {}
             if tasks is not None:

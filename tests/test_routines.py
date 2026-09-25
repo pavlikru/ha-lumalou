@@ -81,7 +81,13 @@ async def drain(rig) -> None:
     await asyncio.gather(*rig.background_tasks, return_exceptions=True)
 
 
+def routines_on(rig) -> None:
+    """Switch routine mode (the Routines switch) on; a start needs it."""
+    rig.state["routineModeStatus"] = 1
+
+
 async def verified_with_routine(rig) -> None:
+    routines_on(rig)
     rig.fake.routines["sunday"] = DailyRoutine(
         ClockTime(20, 0), (RoutineTask(1, 3), *([None] * 11))
     )
@@ -152,6 +158,7 @@ async def test_routine_control_only_while_a_routine_runs(rig):
 async def test_start_routine_starts_then_makes_the_first_task_current(rig):
     """Like a scheduled start: preview, then task 1 with its music."""
     coordinator = rig.coordinator
+    routines_on(rig)
     await verified_profile(rig)
     start = len(rig.journal)
 
@@ -390,6 +397,35 @@ async def test_start_writes_back_an_earlier_one_off_routine_first(rig):
     assert not coordinator.temporary_routine_active
 
 
+async def test_start_is_refused_before_any_write_while_routine_mode_is_off(rig):
+    """Hardware: 0x7B is ignored with routine mode off; fail fast, write nothing."""
+    coordinator = rig.coordinator
+    rig.fake.routines["sunday"] = DailyRoutine(
+        ClockTime(20, 0), (RoutineTask(1, 3), *([None] * 11))
+    )
+    await verified_profile(rig)
+    assert rig.state["routineModeStatus"] == 0
+    await coordinator._set_temporary_routine_day("saturday")
+    saves = rig.store.async_save.await_count
+    start = len(rig.journal)
+
+    for tasks in (None, [8, 7]):
+        with pytest.raises(ServiceValidationError) as err:
+            await coordinator.async_start_routine(tasks)
+        assert err.value.translation_key == "routine_mode_off"
+
+    assert not sends(rig, start)
+    assert rig.store.async_save.await_count == saves
+    assert coordinator.profile_record.temporary_routine_day == "saturday"
+    assert rig.fake.routines["sunday"].slots[0] == RoutineTask(1, 3)
+
+    # With routine mode on, the same start works.
+    await coordinator.async_set_routine_settings(enabled=True)
+    start = len(rig.journal)
+    await coordinator.async_start_routine([8, 7])
+    assert sends(rig, start)[-2:] == [START, COMPLETE]
+
+
 @pytest.mark.parametrize("tasks", [[], [3, 3], [12]])
 async def test_start_routine_rejects_invalid_tasks_before_ble(rig, tasks):
     await verified_profile(rig)
@@ -401,6 +437,7 @@ async def test_start_routine_rejects_invalid_tasks_before_ble(rig, tasks):
 
 async def test_one_off_routine_needs_trusted_time_and_a_profile(rig):
     coordinator = rig.coordinator
+    routines_on(rig)
     await verified_profile(rig)
     with (
         patch(

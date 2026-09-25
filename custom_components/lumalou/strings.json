@@ -474,6 +474,9 @@
     "routine_not_started": {
       "message": "Lumalou did not start the routine. Nothing was changed; try again."
     },
+    "routine_mode_off": {
+      "message": "Lumalou starts a routine only while Routines is on. Turn on the Routines switch (keep it on) and try again. Nothing was changed."
+    },
     "setting_not_confirmed": {
       "message": "Lumalou did not apply the setting (sent twice). Check the connection and try again."
     }

@@ -120,7 +120,9 @@ class FakeDevice:
         elif opcode == 0x3E:
             self.state.update(lightStatus=0, activityState=0)
         elif opcode == 0x7B:  # routine start: routine mode, silent preview
-            self.state["operationMode"] = 7
+            # Ignored while routine mode (0x58) is off (hardware).
+            if self.state["routineModeStatus"]:
+                self.state["operationMode"] = 7
         elif opcode == 0x6B and args[0] in (3, 4):  # complete all / cancel
             self.state["operationMode"] = 0
         elif opcode == 0x3F:  # source 0 is the soother: music and light
