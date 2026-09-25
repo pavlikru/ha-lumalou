@@ -455,9 +455,11 @@ class LumalouCoordinator:
         """Reconnect after the device reappears.
 
         Unverified entries only read GLOBAL_STATE. Verified entries take one
-        strict full read, correct a deviating device clock from HA local time,
-        compare the verified saved revision and, only if the user opted in,
-        restore it automatically (bounded attempts per detected event).
+        strict full read and correct a deviating device clock from HA local
+        time. A pending revision the device already matches becomes verified,
+        which re-arms power-loss detection. A verified revision the device no
+        longer matches is flagged and, only if the user opted in, restored
+        automatically (bounded attempts per detected event).
         """
         if not self.protocol_verified:
             await self.async_request_refresh()
@@ -470,6 +472,13 @@ class LumalouCoordinator:
                 await self._disconnect()
                 raise HomeAssistantError("Lumalou recovery failed") from err
             record = self._profile_record
+            if (
+                not record.is_verified
+                and record.verified_fingerprint in (None, self.device_fingerprint)
+                and record.desired_profile == snapshot.profile
+            ):
+                await self._save(self._as_verified(record))
+                record = self._profile_record
             need = self._detect_restore_needed(record, snapshot.profile)
             if need is None or not self.auto_restore_enabled:
                 return
@@ -865,16 +874,7 @@ class LumalouCoordinator:
             old = self.profile_record
             if expected_revision != old.revision:
                 raise RevisionConflictError("The saved profile changed")
-            verified_revision = old.revision + 1
-            await self._save(
-                replace(
-                    _new_revision(old, desired),
-                    verified_revision=verified_revision,
-                    verified_fingerprint=self.device_fingerprint,
-                    pending=False,
-                    sync_status="saved",
-                )
-            )
+            await self._save(self._as_verified(_new_revision(old, desired)))
             self._previewed_profile = None
             self._set_protocol_verified(True)
             self._schedule_recovery()
@@ -990,20 +990,22 @@ class LumalouCoordinator:
             raise await self._async_restore_failed(
                 result(error="restore_mismatch", mismatched_blocks=mismatched)
             )
-        await self._save(
-            replace(
-                self._profile_record,
-                verified_revision=record.revision,
-                verified_fingerprint=self.device_fingerprint,
-                pending=False,
-                sync_status="saved",
-                last_error=None,
-            )
-        )
+        await self._save(self._as_verified(self._profile_record))
         self._restore_needed = None
         self.last_restore_result = result(verified=True)
         self._notify()
         return self.last_restore_result
+
+    def _as_verified(self, record: ProfileRecord) -> ProfileRecord:
+        """Mark a revision that a fresh full read on this device key matched."""
+        return replace(
+            record,
+            verified_revision=record.revision,
+            verified_fingerprint=self.device_fingerprint,
+            pending=False,
+            sync_status="saved",
+            last_error=None,
+        )
 
     async def _async_restore_failed(
         self, outcome: ProfileRestoreResult

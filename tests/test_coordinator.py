@@ -1012,6 +1012,46 @@ async def test_auto_restore_requires_verified_revision_of_same_device(rig, reaso
     assert (coordinator.restore_needed is not None) is (reason == "no_option")
 
 
+async def test_recovery_verifies_a_pending_revision_the_device_matches(rig):
+    """E.g. the user applied an edit in the official app: detection re-arms."""
+    coordinator = rig.coordinator
+    snapshot = await verified_profile(rig)
+    await coordinator.async_edit_profile({"playlist": [4, 5]}, expected_revision=1)
+    assert not coordinator.profile_record.is_verified
+    rig.fake.playlist = MusicPlaylist.from_songs([4, 5])
+    start = len(rig.journal)
+
+    await coordinator._async_recover()
+
+    record = coordinator.profile_record
+    assert record.revision == 2
+    assert record.is_verified
+    assert record.verified_fingerprint == FINGERPRINT
+    assert not record.pending
+    assert record.sync_status == "saved"
+    assert not sends(rig, start)
+
+    # A later reset of that revision is detected again.
+    rig.fake.playlist = MusicPlaylist.from_songs(snapshot["playlist"])
+    await coordinator._async_recover()
+    assert coordinator.restore_needed is not None
+    assert coordinator.restore_needed.changed_blocks == ("playlist",)
+
+
+async def test_recovery_keeps_a_differing_pending_revision_pending(rig):
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    await coordinator.async_edit_profile({"playlist": [4, 5]}, expected_revision=1)
+    saves = rig.store.async_save.await_count
+
+    await coordinator._async_recover()
+
+    assert coordinator.profile_record.pending
+    assert not coordinator.profile_record.is_verified
+    assert coordinator.restore_needed is None
+    assert rig.store.async_save.await_count == saves
+
+
 async def test_restore_needed_is_obsolete_after_a_new_revision(rig):
     coordinator = rig.coordinator
     await verified_profile(rig)
