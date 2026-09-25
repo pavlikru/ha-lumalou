@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import Generator
 from copy import deepcopy
@@ -13,6 +14,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
+from bleak_retry_connector import BleakNotFoundError
 from home_assistant_bluetooth import BluetoothServiceInfoBleak
 from homeassistant.config_entries import (
     SOURCE_BLUETOOTH,
@@ -482,10 +484,20 @@ async def test_signed_fingerprint_is_not_displayed_in_confirmation(
     assert FINGERPRINT not in json.dumps(result.get("description_placeholders", {}))
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("synthetic connect failure"),
+        BleakNotFoundError("synthetic device not found"),
+        HomeAssistantError("No connectable Lumalou device is available"),
+        TimeoutError(),
+    ],
+)
 async def test_identity_connection_error_is_retryable(
-    hass: HomeAssistant,
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture, error: Exception
 ) -> None:
-    """A failed identity connection does not create or unlock an entry."""
+    """A failed identity connection is logged and creates no entry."""
+    caplog.set_level(logging.DEBUG, logger="custom_components.lumalou.config_flow")
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": SOURCE_BLUETOOTH},
@@ -495,7 +507,7 @@ async def test_identity_connection_error_is_retryable(
     with patch(
         "custom_components.lumalou.config_flow.async_read_device_fingerprint",
         new_callable=AsyncMock,
-        side_effect=RuntimeError("synthetic connect failure"),
+        side_effect=error,
     ):
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], user_input={}
@@ -504,10 +516,21 @@ async def test_identity_connection_error_is_retryable(
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "cannot_connect"}
     assert not hass.config_entries.async_entries(DOMAIN)
+    [record] = [
+        record
+        for record in caplog.records
+        if record.name == "custom_components.lumalou.config_flow"
+    ]
+    assert record.levelno == logging.DEBUG
+    assert record.getMessage() == f"Could not connect to {ADDRESS}"
+    assert record.exc_info is not None and record.exc_info[1] is error
 
 
-async def test_unverifiable_identity_creates_no_entry(hass: HomeAssistant) -> None:
+async def test_unverifiable_identity_creates_no_entry(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
     """A token the library cannot authenticate never creates an entry."""
+    caplog.set_level(logging.DEBUG, logger="custom_components.lumalou.config_flow")
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": SOURCE_BLUETOOTH},
@@ -526,6 +549,7 @@ async def test_unverifiable_identity_creates_no_entry(hass: HomeAssistant) -> No
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "identity_unconfirmed"}
     assert not hass.config_entries.async_entries(DOMAIN)
+    assert "Could not authenticate the identity" in caplog.text
 
 
 @pytest.mark.parametrize(
