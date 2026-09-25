@@ -241,3 +241,26 @@ async def test_session_that_goes_quiet_at_a_routine_start_is_reconnected(
     device.push_routine_status()
     assert fired == [("task_completed", {"task": "brush_teeth"})]
     assert coordinator.current_task == "toilet"
+
+
+async def test_pushed_global_state_is_applied_and_not_logged_as_unused(
+    power_loss, caplog
+):
+    """0.1.0b8 log: pushed GLOBAL_STATE showed up as "Unused Lumalou push 0x02".
+
+    The library hands a state push to both callbacks; only the state callback
+    uses it. The routine-mode state from the hardware log is applied.
+    """
+    coordinator, device = power_loss.coordinator, power_loss.device
+    device.set_clock(19, 21, 59, 5)
+    device.state.update(clockFormat=1, routineModeStatus=1, routineVolume=2)
+    device.routines["friday"] = power_loss.friday_routine
+    await coordinator._async_recover()
+
+    device.state.update(operationMode=7, lightStatus=0, musicStatus=0)
+    with caplog.at_level("DEBUG", logger="custom_components.lumalou"):
+        device.push_state()
+
+    assert coordinator.data["operationMode"] == 7
+    assert coordinator.routine_phase is None  # no task status seen yet
+    assert "Unused Lumalou push 0x02" not in caplog.text
