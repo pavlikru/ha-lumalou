@@ -35,7 +35,7 @@ def test_manifest_uses_released_upstream_library() -> None:
     """Require an exact version of the upstream protocol library."""
     requirements = load_manifest()["requirements"]
 
-    assert requirements == ["lumalou-gld09==0.2.0"]
+    assert requirements == ["lumalou-gld09==0.2.1"]
 
 
 def test_hacs_metadata_uses_current_supported_fields() -> None:
