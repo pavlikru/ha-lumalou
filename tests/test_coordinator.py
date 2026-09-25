@@ -2345,3 +2345,18 @@ async def test_unavailability_and_return_are_logged_once(rig, caplog):
     messages = [record.getMessage() for record in caplog.records]
     assert messages.count("Test Lumalou is unavailable") == 1
     assert messages.count("Test Lumalou is available again") == 1
+
+
+async def test_device_write_invalidates_a_pending_preview(rig):
+    """A stale preview cannot be saved after the device was written meanwhile."""
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    snapshot, revision = await coordinator.async_read_profile_snapshot()
+
+    await coordinator.async_set_volume(7)
+
+    with pytest.raises(HomeAssistantError, match="Read the device profile again"):
+        await coordinator.async_accept_device_profile(
+            snapshot, coordinator.profile_record.revision, confirmed=True
+        )
+    assert revision == 1

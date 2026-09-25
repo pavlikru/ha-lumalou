@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS, Platform
 from homeassistant.core import HomeAssistant, callback
@@ -20,11 +22,42 @@ from .const import (
 )
 from .entity import async_migrate_identifiers
 from .models import LumalouRuntimeData
-from .repairs import async_sync_restore_issue
 from .services import async_setup_services
 from .storage import ProfileStore
 
+if TYPE_CHECKING:
+    from .restore import RestoreNeeded
+
 type LumalouConfigEntry = ConfigEntry[LumalouRuntimeData]
+
+
+@callback
+def async_sync_restore_issue(
+    hass: HomeAssistant, entry_id: str, need: RestoreNeeded | None
+) -> None:
+    """Show the restore issue exactly while the coordinator reports a mismatch."""
+    issue_id = f"{entry_id}_{ISSUE_ID_PROFILE_RESTORE_NEEDED}"
+    if need is None:
+        ir.async_delete_issue(hass, DOMAIN, issue_id)
+        return
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        issue_id,
+        data={"entry_id": entry_id},
+        is_fixable=True,
+        severity=(
+            ir.IssueSeverity.ERROR
+            if need.auto_restore_exhausted
+            else ir.IssueSeverity.WARNING
+        ),
+        translation_key=ISSUE_ID_PROFILE_RESTORE_NEEDED,
+        translation_placeholders={
+            "block_count": str(len(need.changed_blocks)),
+            "attempts": str(need.auto_restore_attempts),
+        },
+    )
+
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 

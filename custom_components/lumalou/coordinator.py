@@ -766,6 +766,8 @@ class LumalouCoordinator:
 
     async def _send_commands(self, payloads: list[bytes]) -> None:
         self._assert_device_writes_allowed()
+        # A preview taken before this write no longer describes the device.
+        self._previewed_profile = None
         client = await self._connect()
         for payload in payloads:
             await client.send(payload, timeout=RESPONSE_TIMEOUT)
@@ -1152,6 +1154,8 @@ class LumalouCoordinator:
 
         mismatched: tuple[str, ...] = ()
         if steps:
+            # A preview taken before these writes no longer describes the device.
+            self._previewed_profile = None
             await self._save(
                 replace(self._profile_record, sync_status="applying", last_error=None)
             )
