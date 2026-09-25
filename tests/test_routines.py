@@ -203,17 +203,26 @@ async def test_routine_progress_events_and_sensor_values(rig):
     assert (coordinator.routine_phase, coordinator.current_task) == ("off", "none")
 
 
-async def test_routine_left_before_its_last_step_is_cancelled(rig):
+async def test_routine_left_before_its_last_step_expired_or_was_cancelled(rig):
+    """Cancelled only when Home Assistant cancelled it; else it expired.
+
+    Hardware: an untouched scheduled routine stayed at the preview for about
+    two hours, then the device ended it.
+    """
     coordinator = rig.coordinator
     fired = events(coordinator)
     await live(rig)
     push_mode(rig, 7)
     # Unknown until the device pushes a status.
     assert (coordinator.routine_phase, coordinator.current_task) == (None, None)
-    push_status(rig, status(1, t1=1))
+    push_status(rig, status(0))
     push_mode(rig, 0)
+    assert fired == [("routine_expired", {})]
 
-    assert fired == [("routine_cancelled", {})]
+    push_mode(rig, 7)
+    push_status(rig, status(1, t1=1))
+    await coordinator.async_routine_control(4)  # the device leaves routine mode
+    assert fired[-1] == ("routine_cancelled", {})
 
 
 async def test_routine_progress_is_not_compared_across_sessions(rig):

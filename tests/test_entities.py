@@ -596,6 +596,7 @@ async def test_routine_event_entity_fires_coordinator_events(hass: HomeAssistant
         "task_completed",
         "routine_completed",
         "routine_cancelled",
+        "routine_expired",
     ]
 
     await event.async_added_to_hass()
