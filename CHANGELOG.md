@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A power loss was not restored automatically: a Repair appeared instead. A
+  reset seen by a fresh read now stays pending until it is resolved, so a
+  reconnect pass that sets the clock and then fails no longer hides it; every
+  fresh read (also a profile read or edit) checks for it before any clock
+  write. A whole-hour clock offset no longer blocks the reset when Home
+  Assistant heard the device within the last hour. The factory-default check
+  compares the values recorded after a power loss, including light
+  brightness 5, and no longer the routine and Ready-to-Rise on/off flags.
+- A setting written right after a profile write (for example **Routines** on)
+  could be acknowledged but not applied, silently. A setting the pushed state
+  does not confirm is written once more and otherwise fails with an error; a
+  command waits up to 15 seconds for a session that is being reopened.
+- A routine the device ends by itself (for example an untouched scheduled
+  routine after about two hours) fires `routine_expired` instead of
+  `routine_cancelled`; `routine_cancelled` means Home Assistant cancelled it.
+  Routine status pushes are logged at debug level.
+
 ## [0.1.0b5] - 2026-09-25
 
 Fixes from the first Home Assistant run on hardware (Raspberry Pi 4).
