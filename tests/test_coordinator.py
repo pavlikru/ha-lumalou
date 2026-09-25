@@ -1523,6 +1523,64 @@ async def test_clock_rejects_obviously_invalid_host_time(rig):
     rig.discovery.assert_not_called()
 
 
+async def test_daily_clock_check_corrects_drift_in_a_live_session(rig):
+    coordinator = rig.coordinator
+    await coordinator.async_request_refresh()
+    rig.fake.clock = CurrentDate(0, 0, 0, 0)  # e.g. after a DST change
+
+    coordinator.async_schedule_clock_check(NOW)
+    await asyncio.gather(*rig.background_tasks)
+
+    assert sends(rig) == [bytes([0x30, 0x12, 0, 0, 0])]
+    assert coordinator.last_clock_sync == NOW
+    assert coordinator.available
+    assert len(rig.clients) == 2  # a strict session answers each query once
+    rig.store.async_save.assert_not_awaited()
+
+
+async def test_daily_clock_check_leaves_a_correct_clock_alone(rig):
+    coordinator = rig.coordinator
+    await coordinator.async_request_refresh()
+
+    coordinator.async_schedule_clock_check(NOW)
+    await asyncio.gather(*rig.background_tasks)
+
+    assert not sends(rig)
+    assert coordinator.last_clock_offset == 0
+    assert coordinator.available
+
+
+async def test_daily_clock_check_skips_offline_or_locked_devices(rig):
+    coordinator = rig.coordinator
+    coordinator.async_schedule_clock_check(NOW)
+    await coordinator.async_request_refresh()
+    coordinator.protocol_verified = False
+    coordinator.async_schedule_clock_check(NOW)
+
+    assert not rig.background_tasks
+    assert len(rig.clients) == 1
+
+
+async def test_failed_daily_clock_check_only_drops_the_session(rig):
+    coordinator = rig.coordinator
+    await coordinator.async_request_refresh()
+    original = rig.client_factory.side_effect
+
+    def failing_read(*args, **kwargs):
+        client = original(*args, **kwargs)
+        client.request_named.side_effect = OSError("synthetic")
+        return client
+
+    rig.client_factory.side_effect = failing_read
+
+    coordinator.async_schedule_clock_check(NOW)
+    await asyncio.gather(*rig.background_tasks)
+
+    assert not sends(rig)
+    assert not coordinator.available
+    assert coordinator._client is None
+
+
 async def test_recovery_never_syncs_from_untrusted_host_time(rig):
     coordinator = rig.coordinator
     await verified_profile(rig)

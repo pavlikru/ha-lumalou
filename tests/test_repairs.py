@@ -174,6 +174,7 @@ async def test_restore_issue_follows_coordinator_state(hass: HomeAssistant) -> N
             "async_unload_platforms",
             new=AsyncMock(return_value=True),
         ),
+        patch("custom_components.lumalou.async_track_time_change"),
     ):
         assert await async_setup_entry(hass, entry)
         assert registry.async_get_issue(DOMAIN, issue_id) is None
