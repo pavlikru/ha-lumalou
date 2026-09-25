@@ -8,7 +8,7 @@ unknown or was never saved. An absent key is not replaced by a default.
 The persistent keys are:
 
 - `brightness` (0–9), `color` (0–9), and `light_duration` (0–5);
-- `volume` (0–9), ordered `playlist` (zero to twelve song IDs 1–18), and
+- `volume` (0–9), ordered `playlist` (zero to twelve song IDs 1–12), and
   `playlist_duration` (0–6);
 - `clock_settings`: display boolean, brightness 0–9, format 0 (12-hour) or 1
   (24-hour);
@@ -36,6 +36,14 @@ hardware acceptance. Partial profiles remain valid saved intent but are never
 structurally complete. V1 migration
 preserves its subset, revision, previous revision, verified revision, pending
 state, sync status, error, and maintenance flag without synthesizing fields.
+
+`plan_profile_reconciliation()` compares a complete desired profile with a
+complete observed snapshot bound to the current revision. Its sorted changed
+block list is for preview and deterministic tests only; it is not a BLE write
+order and does not execute setters or advance verification metadata. The
+coordinator's `async_plan_profile_restore()` obtains a fresh strict readback,
+checks the entry identity, maintenance state, and revision both before and after
+readback, then returns only this diff. It still does not authorize setters.
 
 Not persistent: current clock time/date, light/audio on/off, current source or
 song, timer remainder, nap state/alarm, executing alarm, current routine step,

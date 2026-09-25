@@ -20,6 +20,8 @@ Proposed title: `feat: add strict response sessions and schedule codecs`
 - add strict passive manufacturer-advertisement metadata parsing from an
   independent GLD09 implementation, while preserving the undocumented format
   byte as opaque metadata;
+- verify the signed FACTORY token on every client handshake and optionally pin
+  the session to the exact authenticated item code before SESSION/TX writes;
 - correct opcode `0x68` from a setter name to the source-backed request name;
 - add shared literal read vectors and synthetic schedule vectors.
 
@@ -29,6 +31,9 @@ This intentionally changes unsafe `0.1.0` behavior. A timeout no longer returns
 cached state, malformed `GLOBAL_STATE` is rejected instead of padded, and an
 opcode already requested or observed in a session requires a clean reconnect.
 No retry loop, restore workflow, DFU/OTA access, or setter behavior is added.
+The default client authenticates the token signature but does not prove active
+peer private-key possession before `connect()` returns; callers should not
+describe it as a complete active-MITM defense.
 
 Playlist, clock-settings and the additional scalar replies remain raw envelopes because
 the pinned source bundle proves their identities but not standalone payload
@@ -42,9 +47,9 @@ layouts. The pull request does not claim hardware-certified backup or restore.
 - Local commits: `bb59b87`, `cdc6f4b`, `4b9ae91`, `430e465`, `46b9ca6`,
   `648eb86` on
   `feat/strict-readback-schedules`.
-- The current 403-test suite passes locally; the preceding 360-test state passed
-  on Python 3.10, 3.11 and 3.12.
-- JavaScript typecheck, 20 tests and production/declaration build pass.
+- The current 686-test Python suite passes on Python 3.10, 3.11 and 3.12.
+- JavaScript typecheck, 24 tests and production/declaration build passed on the
+  previous PR head; this final change is Python-only.
 - Code generation is deterministic and `git diff --check` passes.
 
 ## Review focus

@@ -1,6 +1,6 @@
 # Lumalou protocol audit
 
-Audit date: 2026-09-17 (America/Argentina/Buenos_Aires).
+Audit date: 2026-09-24 (America/Argentina/Buenos_Aires).
 
 Status: source audit, isolated synthetic checks, and the limited read-only
 browser observations recorded below. The integration did not contact a Lumalou
@@ -19,6 +19,7 @@ library. Its documented model is GLD09; GWM53 compatibility is unverified.
 | Annotated `py-v0.1.0` tag object | `9c275fac2daaf6f3c4abff4303553e8c4fb5dcca` |
 | Release tag's commit | `b79ee9bee39aaf919b942c8388710d2856732f5a`, committed 2026-07-23 |
 | Published dependency | `lumalou==0.1.0`, uploaded 2026-07-23; Python >=3.10 |
+| Manufacturer product record | Mattel/Fisher-Price support lists Lumalou product `GLD09`, released 2021; no signed-item/numeric-name crosswalk shown |
 | Wheel SHA-256 | `b869ea08c7c832d8bda6d0f5e2be7274b807270d5d68382959b2ed98a700012a` |
 | Source archive SHA-256, from PyPI metadata | `8248458d3e2400836e4bf2e6fa0dde3dd6b8b89a6d79c157438557db3528474a` |
 | Customer HA / firmware / Bluetooth backend | Unknown; no compatibility claim |
@@ -30,6 +31,37 @@ or vector changes. No upstream commits after the specification's 2026-09-16
 date were present at inspection. The package declares `bleak>=0.22` and
 `cryptography>=41`; an exact top-level pin does not pin those transitive versions.
 Sources: [release commit][release], [main commit][main], [PyPI release metadata][pypi].
+
+### Exact product identity
+
+Mattel's official [GLD09 product record][mattel-gld09] confirms the product
+name and model `GLD09`. It does not publish a mapping from a signed FACTORY
+identity or numeric advertised device name to that retail SKU. The official
+record therefore confirms the SKU exists, not that this target's authenticated
+token identifies that SKU.
+
+The HA config flow first tried standard Device Information Model Number on the
+target on 2026-09-24. It was not readable, so no entry was created. The released
+`lumalou==0.1.0` only slices the factory token's public key and salt; it does
+not verify the manufacturing signature or expose its signed item-number field.
+The personal upstream fork branch `feat/strict-readback-schedules` at
+`1437dcc` has a pure parser that verifies the 192-byte token's ECDSA
+P-256/SHA-256 signature. Its offsets and public verification key are attributed
+to the independent MIT project in the upstream package notice. The parser has
+synthetic tests only. On 2026-09-24 a standalone diagnostic on the development
+host used it to verify the target FACTORY token. The token, signed identity
+fields, and address were not saved. No Mattel-published mapping from this
+identity to retail SKU `GLD09`/GWM52 or cross-device compatibility proof was
+found. The parser is not in the released package and must not be used by HA
+until released and pinned.
+
+The parser authenticates a Mattel manufacturing token; it does not by itself
+identify a retail product or prove protocol compatibility. Enrollment should
+ask the user to confirm the candidate, require a strict complete fresh profile
+read, and bind future sessions to a private fingerprint of the verified
+device key. A successful read on one unit does not establish model-wide
+support. Never expose signed identity fields in the UI, logs, diagnostics, or
+public reports.
 
 The independent controller records a live-verified manufacturer payload as
 `MB | format version | connection flags | firmware ASCII`: bit 7 means already
@@ -204,7 +236,9 @@ full profile, and replaying it can restart or alter active behaviour.
 
 Known representation constraints from source:
 
-- Fixed colours are 0–9; audio sources 0–7; song IDs 0–18, with 0 `NO_SONG`.
+- Fixed colours are 0–9; audio sources 0–7; the GLOBAL_STATE `currentSong` UI
+  enum is 0–18, with 0 `NO_SONG`. The target playlist supports song IDs 1–12;
+  do not conflate the current-song enum with playlist slots.
   These are not RGB, streaming or seek capabilities.
 - Light duration enum: 15/30/60/90 minutes, continuous, 1 minute. Playlist:
   15/30/60/90/120 minutes, continuous, 1 minute. Preserve enum mappings, not their
@@ -364,29 +398,37 @@ Upstream `conftest.py` imports its checkout's `src`; the separate module-byte
 comparison above establishes equivalence to the audited release. The synthetic
 probes were audit experiments, not committed HA regression coverage.
 
-### Local upstream remediation candidate
+### Upstream fork candidate and target read evidence
 
-An unpublished worktree based on audited upstream commit `9fa5ecf` now contains
-strict MPID/SSI/FE validation, session-bound response envelopes, exact-opcode
-queries without cache fallback, cancellation-safe disconnect cleanup, and typed
-codecs for weekly times, alarms, task status, and all seven daily routines. It
-accepts only the source-backed `01 50` RX route and treats every previously
-observed response opcode as ambiguous until a clean reconnect. Exhaustive route
-tests cover all 65,536 two-byte prefixes, including unsolicited responses before
-and during a request.
+The published personal fork branch `pavlikru/lumalou:feat/strict-readback-schedules`
+at `1437dcc` contains strict MPID/SSI/FE validation, session-bound response
+envelopes, exact-opcode queries without cache fallback, cancellation-safe
+disconnect cleanup, all source-backed read requests, typed schedule/routine
+codecs, playlist/clock-settings response decoders, and a signed FACTORY item
+parser. Commit `1437dcc` also verifies the FACTORY signature in every client
+handshake and optionally binds the client to one exact signed item code before
+notifications, key derivation, SESSION, or TX writes. It accepts only source-
+backed application responses and exact target-observed transport ACKs. Requests
+consume a response type once per session; a new query needs a fresh reconnect.
 
-The candidate passes **389 Python tests** in the current local run; the earlier
-360-test state also passed the Python 3.10, 3.11 and 3.12 matrix. The generated
-JavaScript contract passes type checking, **20 tests**, and a
-production/declaration build. All 28 source-backed read-only query opcodes are
-exposed with literal request/response vectors. Strict playlist, clock and routine
-music/reward SET models reject truncation/coercion; JavaScript has parity for the
-schedule codecs. A strict four-byte `CURRENT_DATE` decoder follows the recorded
-read-only midnight transition but remains transient and target-specific. This is
-development evidence only: no commit was pushed, no pull request or release
-exists, playlist and clock-settings response layouts remain raw, and no setter
-has hardware acceptance.
-The HA manifest therefore remains pinned to released `lumalou==0.1.0`.
+Current candidate verification: **686 Python tests** on Python 3.10, 3.11 and
+3.12; **24 JavaScript tests**, TypeScript typecheck and JS build pass. Target read-only
+validation on 2026-09-24 passed strict-client handshake, GLOBAL_STATE, 12-byte
+playlist, 2-byte clock settings, two weekly time blocks, weekly alarms and seven
+14-byte routines. No real token or schedule capture is in the repository; the
+token was read in memory, verified and discarded. No settings write has been
+made through this candidate. Upstream PR #2 is open but not merged; no PyPI
+release exists. HA still pins released `lumalou==0.1.0`, which lacks both the
+signed parser and expected-item constructor API, so model-free onboarding and
+session-bound control fail closed before BLE connection.
+
+The target's standard Model Number characteristic is absent. A separate
+read-only factory probe verified the Mattel signature. No SKU mapping is
+published for the signed identity, and the current HA flow does not yet
+implement confirmed enrollment with strict complete-profile compatibility.
+Model Number remains only a conflict check. Before deployment, the HA flow
+must confirm the user-selected candidate and privately bind its sessions to a
+fingerprint of the verified signed key, without exposing identity material.
 
 ### Automatable once the upstream contract is released
 
@@ -399,13 +441,13 @@ Golden vectors alone do not establish any of these guarantees.
 
 ### Requires explicit hardware acceptance
 
-Exact label and firmware; supported HA/backend versions; actual advertising
-matcher and connectability after power-on without Pairing; GATT discovery and
-all block formats; numeric limits/disable semantics; setter side effects;
-safe write order/idempotency/pacing; seven-day readback completeness; internal
-schedule execution with HA stopped; reconnect preserving an active routine;
-at least ten agreed Lumalou power cycles; partial-link-failure recovery;
-72-hour soak and actual restore latency. None has been performed in this audit.
+Exact label and firmware; manufacturer-backed retail-SKU mapping; supported
+HA/backend installation with the candidate library; numeric limits and
+disable semantics; setter side effects; safe write ordering/idempotency/pacing;
+seven-day persistence; schedule execution with HA stopped; reconnect during an
+active routine; at least ten agreed Lumalou-only power cycles; interrupted-link
+recovery; 72-hour soak; and measured restore latency. No device settings writes
+or power-cycle tests have been performed.
 
 Do not infer reboot from BLE disconnect, absence of advertisements during an
 active connection, or clock drift. Customer model/firmware/HA/backend must be
@@ -434,6 +476,7 @@ does not validate Raspberry Pi Bluetooth reachability or this integration.
 [main]: https://github.com/stramanu/lumalou/commit/9fa5ecfc7f6e82ec02e13d01f00fca7be6852567
 [release]: https://github.com/stramanu/lumalou/commit/b79ee9bee39aaf919b942c8388710d2856732f5a
 [pypi]: https://pypi.org/pypi/lumalou/0.1.0/json
+[mattel-gld09]: https://service.mattel.com/us/productDetail.aspx?prodno=GLD09&siteid=27
 [client]: https://github.com/stramanu/lumalou/blob/9fa5ecfc7f6e82ec02e13d01f00fca7be6852567/packages/python/src/lumalou/client.py
 [commands]: https://github.com/stramanu/lumalou/blob/9fa5ecfc7f6e82ec02e13d01f00fca7be6852567/packages/python/src/lumalou/commands.py
 [responses]: https://github.com/stramanu/lumalou/blob/9fa5ecfc7f6e82ec02e13d01f00fca7be6852567/packages/python/src/lumalou/responses.py
