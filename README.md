@@ -125,7 +125,7 @@ unlocked controls stay.
 | Option | Meaning |
 | --- | --- |
 | Read the device profile | Read the complete profile from the Lumalou and, after confirmation, save it as the verified profile. Until this has been done once, only this and Behavior options are offered. |
-| Playlist, Clock settings, Routine settings, Weekly schedule, Daily routines | Editors for the saved profile, prefilled from it. Saving creates a pending revision in Home Assistant only; `lumalou.restore_profile` writes it to the device. |
+| Playlist, Clock settings, Routine settings, Weekly schedule, Daily routines | Editors for the saved profile, prefilled from it. Confirming writes the change to the Lumalou right away and checks it with a fresh read (the same path as a restore; volume and brightness are taken from the device, not reverted). If the Lumalou cannot be reached (out of range, another app connected, **Maintenance** on), the change is still saved and you are told so; when Home Assistant reconnects, the Repair offers to write it (after a power loss it is restored automatically). |
 | Behavior options → Restore the saved profile automatically | On by default. See [Profile restore and power loss](#profile-restore-and-power-loss). |
 
 ## Entities
@@ -202,9 +202,11 @@ fresh read with the saved **verified** profile:
   everyday use.
 
 In the Repair choose **Restore saved profile** or **Keep device settings** (the
-current device settings become the new saved profile). Edits made in the
-options flow stay pending until they are restored, or until a reconnect finds
-that the device already matches them.
+current device settings become the new saved profile). The Repair also
+appears for a change saved in Home Assistant that could not be written yet
+(an editor or `lumalou.set_routine` while the Lumalou was unreachable), and a
+reset restores that change automatically. A reconnect that finds the device
+already matching such a change just marks it verified.
 
 A restore (automatic, from the Repair, or `lumalou.restore_profile`) opens a
 fresh session, reads everything, corrects the clock, writes only what differs
@@ -258,9 +260,9 @@ presses the remote's check-mark button when a task is done: a reward sound,
 then the next task with its music. After the last task the routine completes
 and the device returns to normal.
 
-**Set a routine** with the `lumalou.set_routine` action (written to the device
-right away and verified with a fresh read), or in **Configure → Daily
-routines** (saved in Home Assistant; write it with `lumalou.restore_profile`).
+**Set a routine** in **Configure → Daily routines** or with the
+`lumalou.set_routine` action. Both write it to the device right away and
+verify it with a fresh read.
 An empty task list means no routine on those days. Example: Monday to Friday
 at 20:00, brush teeth, then toilet, then a story:
 

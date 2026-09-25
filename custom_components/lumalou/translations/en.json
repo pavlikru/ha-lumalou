@@ -49,7 +49,7 @@
     "step": {
       "init": {
         "title": "Edit Lumalou",
-        "description": "Edit the saved profile that Home Assistant keeps for this Lumalou. Saving an editor creates a pending revision and does not change the device; the `lumalou.restore_profile` action writes it to Lumalou and verifies it. Reading the device profile again replaces the saved profile.",
+        "description": "Edit the profile that Home Assistant keeps for this Lumalou. Confirming an editor writes the change to Lumalou right away and checks it with a fresh read. Reading the device profile again replaces the saved profile.",
         "menu_options": {
           "read_profile": "Read the device profile",
           "playlist": "Playlist",
@@ -87,7 +87,7 @@
       },
       "playlist": {
         "title": "Ordered playlist",
-        "description": "Use fixed rows to preserve order and duplicates. Clear every row for an empty playlist. Nothing is sent to the device.",
+        "description": "Use fixed rows to preserve order and duplicates. Clear every row for an empty playlist.",
         "data": {
           "song_1": "Song row 1",
           "song_2": "Song row 2",
@@ -105,7 +105,7 @@
       },
       "clock_settings": {
         "title": "Clock settings",
-        "description": "Edit the saved clock-settings block. Nothing is sent to the device.",
+        "description": "Edit the clock settings.",
         "data": {
           "clock_display": "Show clock",
           "clock_brightness": "Clock brightness",
@@ -114,7 +114,7 @@
       },
       "routine_settings": {
         "title": "Routine settings",
-        "description": "Edit the saved routine-settings block. Music and volume are raw values from 0 to 15, as Lumalou reports them, not named modes. Nothing is sent to the device.",
+        "description": "Edit the routine settings. Music and volume are raw values from 0 to 15, as Lumalou reports them, not named modes.",
         "data": {
           "routine_enabled": "Enable routine mode",
           "routine_music": "Routine music value",
@@ -191,7 +191,7 @@
       },
       "routine_tasks": {
         "title": "Edit daily routine",
-        "description": "Choose the start time and the tasks in order: row 1 is step 1, row 2 step 2, and so on. Empty rows are skipped; each task can be used once. Leave every row empty for no routine on this day. Nothing is sent to the device; use the `lumalou.set_routine` action to write a routine to Lumalou directly.",
+        "description": "Choose the start time and the tasks in order: row 1 is step 1, row 2 step 2, and so on. Empty rows are skipped; each task can be used once. Leave every row empty for no routine on this day.",
         "data": {
           "routine_time": "Start time",
           "task_1": "Step 1",
@@ -216,35 +216,35 @@
       },
       "schedule_confirm": {
         "title": "Confirm weekly schedule",
-        "description": "Revision {revision}: {ready_count} Ready-to-Rise times, {sleepy_count} Sleepy times, {alarm_count} enabled alarms, alarm sound {alarm_sound}. Saving changes only the private profile; it does not write to the device.",
+        "description": "Revision {revision}: {ready_count} Ready-to-Rise times, {sleepy_count} Sleepy times, {alarm_count} enabled alarms, alarm sound {alarm_sound}. Confirming writes it to Lumalou and checks it with a fresh read.",
         "data": {
           "confirm": "Save this schedule"
         }
       },
       "routine_confirm": {
         "title": "Confirm daily routine",
-        "description": "Revision {revision}: {day} at {time}: {tasks}. Copied to {copy_count} more days. Saving changes only the private profile; it does not write to the device.",
+        "description": "Revision {revision}: {day} at {time}: {tasks}. Copied to {copy_count} more days. Confirming writes it to Lumalou and checks it with a fresh read.",
         "data": {
           "confirm": "Save this routine"
         }
       },
       "playlist_confirm": {
         "title": "Confirm playlist",
-        "description": "Revision {revision}: {song_count} song rows: {songs}. Saving changes only the private profile; it does not write to the device.",
+        "description": "Revision {revision}: {song_count} song rows: {songs}. Confirming writes it to Lumalou and checks it with a fresh read.",
         "data": {
           "confirm": "Save this playlist"
         }
       },
       "clock_settings_confirm": {
         "title": "Confirm clock settings",
-        "description": "Revision {revision}: display {display}, brightness {brightness}, format {format}. Saving changes only the private profile; it does not write to the device.",
+        "description": "Revision {revision}: display {display}, brightness {brightness}, format {format}. Confirming writes it to Lumalou and checks it with a fresh read.",
         "data": {
           "confirm": "Save clock settings"
         }
       },
       "routine_settings_confirm": {
         "title": "Confirm routine settings",
-        "description": "Revision {revision}: enabled {enabled}, music {music}, volume {volume}, task reward sound {task_reward_sfx}, routine reward sound {routine_reward_sfx}. Saving changes only the private profile; it does not write to the device.",
+        "description": "Revision {revision}: enabled {enabled}, music {music}, volume {volume}, task reward sound {task_reward_sfx}, routine reward sound {routine_reward_sfx}. Confirming writes it to Lumalou and checks it with a fresh read.",
         "data": {
           "confirm": "Save routine settings"
         }
@@ -260,12 +260,14 @@
       "invalid_routine_settings": "Use whole music and volume values from 0 to 15 and supported reward sounds.",
       "confirmation_required": "Confirm before saving.",
       "revision_conflict": "The profile changed while this editor was open. Cancel and reopen it to use the latest revision.",
-      "profile_save_failed": "The profile could not be saved. Nothing was changed."
+      "profile_save_failed": "The profile could not be saved. Nothing was changed.",
+      "routine_running": "A routine is running on Lumalou. Confirm again after it ends; nothing was saved."
     },
     "abort": {
       "entry_not_loaded": "Load the Lumalou entry before reading or editing its profile.",
       "profile_read_failed": "Home Assistant could not obtain a complete, consistent fresh device profile. The saved profile was not changed.",
-      "profile_not_read": "Read the complete profile from the device first."
+      "profile_not_read": "Read the complete profile from the device first.",
+      "saved_not_applied": "Saved in Home Assistant, but not written to Lumalou: it could not be reached or checked (out of range, another app connected, or Maintenance on). The change stays pending: when Home Assistant reconnects, Repairs offers to write it (after a power loss it is restored automatically)."
     }
   },
   "selector": {
@@ -465,6 +467,9 @@
     },
     "invalid_routine": {
       "message": "Invalid routine: use each task at most once, and a start time when there are tasks."
+    },
+    "profile_saved_not_applied": {
+      "message": "The change was saved in Home Assistant but could not be written to Lumalou (not reachable, or Maintenance on). It stays pending; when Home Assistant reconnects, Repairs offers to write it."
     }
   },
   "issues": {
@@ -474,7 +479,7 @@
         "step": {
           "init": {
             "title": "Choose which Lumalou settings to keep",
-            "description": "A fresh read shows {block_count} profile blocks that differ from the saved verified profile, for example because a power loss reset the device or a setting was changed in the Fisher-Price app. Automatic restore attempts so far: {attempts}.",
+            "description": "A fresh read shows {block_count} profile blocks that differ from the saved profile, for example because a power loss reset the device, a setting was changed in the Fisher-Price app, or a change saved in Home Assistant could not be written yet. Automatic restore attempts so far: {attempts}.",
             "menu_options": {
               "restore": "Restore saved profile",
               "keep_device": "Keep device settings"

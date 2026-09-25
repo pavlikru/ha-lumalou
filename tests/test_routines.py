@@ -27,6 +27,7 @@ from custom_components.lumalou.coordinator import LumalouCoordinator
 from custom_components.lumalou.models import (
     ProfileRecord,
     ProfileValidationError,
+    RevisionConflictError,
     routine_from_tasks,
     routine_task_ids,
 )
@@ -478,17 +479,20 @@ async def test_set_routines_validation_before_ble(rig, days, time, tasks):
     assert rig.journal[start:] == []
 
 
-async def test_set_routines_refusals(rig):
+async def test_set_routines_refusals_and_unreachable_device(rig):
     coordinator = rig.coordinator
     await verified_profile(rig)
-    revision = coordinator.profile_record.revision
+    at_20 = {"hour": 20, "minute": 0}
 
+    # A running routine refuses the change; nothing is saved.
     rig.state["operationMode"] = 7
     with pytest.raises(ServiceValidationError) as err:
-        await coordinator.async_set_routines(["monday"], None, [])
+        await coordinator.async_set_routines(["monday"], at_20, [3])
     assert err.value.translation_key == "routine_running"
+    assert coordinator.profile_record.revision == 1
     rig.state["operationMode"] = 0
 
+    # Unreachable: saved as a pending revision, and the error says so.
     original = rig.client_factory.side_effect
 
     def failing(*args, **kwargs):
@@ -497,20 +501,48 @@ async def test_set_routines_refusals(rig):
         return client
 
     rig.client_factory.side_effect = failing
-    with pytest.raises(HomeAssistantError, match="Could not read a complete"):
-        await coordinator.async_set_routines(["monday"], None, [])
+    with pytest.raises(HomeAssistantError) as err:
+        await coordinator.async_set_routines(["monday"], at_20, [3])
+    assert err.value.translation_key == "profile_saved_not_applied"
+    record = coordinator.profile_record
+    assert (record.revision, record.pending) == (2, True)
+    assert record.desired_profile["routines"]["monday"]["slots"][0] == {
+        "step": 1,
+        "task": 3,
+    }
     rig.client_factory.side_effect = original
+
+    # Maintenance: saved too, never written.
+    await coordinator.async_set_maintenance(True)
+    start = len(rig.journal)
+    with pytest.raises(HomeAssistantError) as err:
+        await coordinator.async_set_routines(["tuesday"], at_20, [3])
+    assert err.value.translation_key == "profile_saved_not_applied"
+    assert coordinator.profile_record.revision == 3
+    assert not sends(rig, start)
+    await coordinator.async_set_maintenance(False)
+
+    # The same content again saves nothing new.
+    rig.client_factory.side_effect = failing
+    with pytest.raises(HomeAssistantError):
+        await coordinator.async_set_routines(["tuesday"], at_20, [3])
+    assert coordinator.profile_record.revision == 3
+    rig.client_factory.side_effect = original
+
+    with pytest.raises(RevisionConflictError):
+        await coordinator.async_apply_profile_edit({"playlist": [1]}, 1)
 
     coordinator._profile_record = ProfileRecord(
         **{**coordinator.profile_record.to_dict(), "verified_fingerprint": "b" * 64}
     )
     with pytest.raises(HomeAssistantError, match="different device"):
         await coordinator.async_set_routines(["monday"], None, [])
+    coordinator.protocol_verified = False
+    with pytest.raises(ServiceValidationError, match="Read and verify"):
+        await coordinator.async_apply_profile_edit({"playlist": [1]}, 3)
     coordinator._profile_record = ProfileRecord(revision=1)
     with pytest.raises(ServiceValidationError, match="Read and verify"):
         await coordinator.async_set_routines(["monday"], None, [])
-    assert coordinator.profile_record.revision == 1
-    assert revision == 1
 
 
 async def test_keeping_the_device_profile_forgets_a_one_off_routine(rig):
