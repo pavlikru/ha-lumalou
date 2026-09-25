@@ -74,6 +74,40 @@ replace the earlier design assumptions.
   exactly. Timer, volume and brightness writes do not switch light or sound
   on.
 
+**Routines** (validated with the owner watching)
+
+- A day routine (`set_day_routine`) is a time plus up to 12 slots
+  `step << 4 | task`; the app model is one task per step. Tasks 1–11: 1 get
+  dressed, 2 wash up, 3 brush teeth, 4 toilet, 5 backpack, 6 meal, 7 story,
+  8 tidy up, 9 heart, 10 swirl (seen on the face), 11 star (not yet seen).
+  Task status is keyed by task id, so a task can appear only once.
+- Routine mode `0x58 1` enables the automatic start: the device entered
+  routine mode (GLOBAL_STATE `operationMode` 7) about a minute before the
+  routine time, all routine icons blinking silently (step 0), and showed
+  step 1 at the time.
+- ROUTINE_TASK_STATUS (`0x94`) is pushed on every change: the current step and
+  one nibble per task id (0 pending, 1 current, 2 done). Step 0 is not
+  started; step N+1 is all done, after which the device resets the status and
+  returns to `operationMode` 0.
+- The remote's check-mark button completes the current task, the same as
+  `routine_control 0`: a reward sound, then the next icon and its music. With
+  music and both reward sounds on and routine volume 2: "wow", then music,
+  then the icon.
+- Manual start `0x7B` (no argument): `operationMode` 0 → 7 at step 0 (icons
+  blink, silent). The first `routine_control 0` makes task 1 current with
+  sound and music, so finishing N tasks takes a start plus N+1 check presses.
+- `routine_control` (`0x6B`) codes: 0 complete task/advance; 1 previous task;
+  2 restart (no visible change at step 1); 3 complete the whole sequence
+  (completion sound and animation, mode 0, statuses reset); 4 cancel (silent,
+  icons disappear, mode 0).
+- After codes 1, 2 and 3 the device sends a bare `01 50` frame on the
+  application route. `lumalou-gld09` 0.2.1 rejects it and ends the session;
+  0.3.0 ignores it.
+- A routine sets no light color or brightness; its visuals are the face
+  icons plus music and reward sounds.
+- Routine music, task reward sound and routine reward sound are 0/1; routine
+  volume is 0–9. All write and read back exactly.
+
 **Power loss**
 
 Unplugging the device for about 10 seconds resets it to factory settings:
@@ -90,8 +124,9 @@ Still to run on the target Home Assistant with this build. Record results
 privately (never Bluetooth addresses, fingerprints, exported profiles or
 family schedules) and publish only an anonymized summary. Use low light levels
 and low volume. The owner does all physical power cycling. Stop on any
-unexpected light, sound, nap or routine activation, a pairing request or a
-profile revision conflict.
+unexpected light, sound, nap or routine activation (a routine started by a
+checklist step is expected), a pairing request or a profile revision
+conflict.
 
 - [ ] **Install**: fresh backup; install through HACS; restart. After an
       update from 0.1.0b3, **Read the device profile** once (the saved
@@ -112,9 +147,36 @@ profile revision conflict.
       schedules, volume, brightness) without switching light or sound on, and
       raises no Repair. Repeat once with **automatic restore** off: the
       Repair appears and **Restore saved profile** verifies.
+- [ ] **Routine setup**: `lumalou.set_routine` for today, a time two minutes
+      ahead, tasks brush teeth → toilet; switch **Routines** on. The device
+      enters routine mode about a minute early (sensor **Routine** `ready`),
+      shows brush teeth at the time (`in_progress`, **Current task**
+      `brush_teeth`). A fresh profile read (or export) shows the routine and
+      routine mode on.
+- [ ] **Routine progress**: press the remote's check-mark button: the event
+      entity fires `task_completed` with `task: brush_teeth`; after the last
+      task `routine_completed` fires and the sensor returns to `off`. A
+      notification automation on `brush_teeth` runs.
+- [ ] **Manual start and controls**: **Start routine** shows task 1 with
+      music after about a second; **Previous task** and **Complete task**
+      behave like the app (no reconnect with `lumalou-gld09` 0.3.0);
+      **Cancel routine** ends it silently and fires `routine_cancelled`.
+- [ ] **One-off routine**: `lumalou.start_routine` with tasks tidy up →
+      story runs those tasks; after it ends, a fresh profile read shows
+      today's saved routine again and no Repair was raised. Repeat and
+      disconnect Home Assistant (Maintenance on) during the routine, finish
+      it, turn Maintenance off: the saved routine is written back on
+      reconnect, no Repair. Not yet checked on hardware: writing a day
+      routine right before `0x7B`, and a manual start on a day whose saved
+      routine has no time.
+- [ ] **Routine settings after power loss**: with Routines, routine music,
+      reward sounds and routine volume changed from Home Assistant, unplug the
+      device; the restore brings them back.
 - [ ] **HomeKit Bridge**: add `light.lumalou_light` (and optionally
       `media_player.lumalou_audio`) to the existing bridge without resetting
       it; Apple Home shows a lightbulb with brightness and a switch; other
-      accessories are unchanged; no configuration entities appear.
+      accessories are unchanged; no configuration entities and no routine
+      entities appear. Optionally expose the `Start routine` script (README)
+      and run it from Apple Home.
 
 Remove the "Beta" warning from the README only after every item passed.

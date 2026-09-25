@@ -22,14 +22,22 @@ playlist timer 5, volume 5 and LED brightness 5; light and sound off.
   routine reward sound nibbles 0–15. The setters carry a full byte, but the
   device reports music and volume as 4-bit values in its global state, so only
   0–15 can pass restore verification. Editors, imports and restore accept
-  only 0–15;
+  only 0–15. On hardware music and both reward sounds are on/off (0/1) and
+  the routine volume is 0–9; the entities write only those values. `enabled`
+  is routine mode (automatic start at each day's time, `0x58`);
 - `ready_to_rise`: enabled boolean plus seven Sunday-first times;
 - `sleepy_times`: seven Sunday-first times;
 - `alarm`: seven alarm enum values 0–10 plus sound nibble 0–15;
 - `routines`: exactly seven named days, each containing a time and exactly
   twelve ordered slots. A slot is null or a step 1–12/task 0–11 pair. Slot
   positions, holes, duplicate/non-monotonic step numbers, and task order are
-  preserved;
+  preserved as read. The routine editor and `lumalou.set_routine` write the
+  hardware-checked model: one task per step (`{step: 1, task: …}`,
+  `{step: 2, task: …}`, …, then nulls), task ids 1–11 each at most once
+  (1 get dressed, 2 wash up, 3 brush teeth, 4 toilet, 5 backpack, 6 meal,
+  7 story, 8 tidy up, 9 heart, 10 swirl, 11 star; task status is reported per
+  task id), and no time when there are no tasks. Editing a day drops unnamed
+  task 0 rows of that day;
 - `light_and_sound`: `volume` 0–9, `light_brightness` 0–9, `light_duration`
   0–5 and `playlist_duration` 0–6 (the device enums). They are read from
   GLOBAL_STATE (brightness is kept while the light is off) and written with
@@ -49,7 +57,11 @@ and remains distinct.
   never turns light or sound on;
 - current clock time (set from Home Assistant instead), timer remainder, nap
   state/alarm, executing alarm, current routine step and task status. These
-  are transient or lack a persistent setter/readback contract. The nap alarm
+  are transient or lack a persistent setter/readback contract;
+- a one-off routine started with `lumalou.start_routine` and tasks. It
+  replaces today's device routine only until it ends; the saved profile keeps
+  the day's routine, and only the weekday being replaced is kept (in the
+  config entry data) so the saved routine can be written back. The nap alarm
   queries time out on the device and are never sent.
 
 The `alarm` block is only the evidenced weekly alarm nibbles and sound nibble;

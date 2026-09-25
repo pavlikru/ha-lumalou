@@ -28,8 +28,8 @@ custom_components/lumalou/
 ├── storage.py         Per-entry profile on Home Assistant's Store helper
 ├── entity.py          Shared entity base and device info
 ├── light.py, media_player.py, select.py, switch.py, number.py,
-│   button.py, sensor.py, binary_sensor.py
-├── services.py        Entry-targeted profile actions
+│   button.py, sensor.py, binary_sensor.py, event.py
+├── services.py        Entry-targeted profile and routine actions
 ├── repairs.py         Fix flow for device settings that differ from the profile
 └── diagnostics.py     Allowlisted, redacted diagnostics
 ```
@@ -88,7 +88,8 @@ controls stay locked until a device read is confirmed again.
   confirms it, the saved profile is updated in place (same revision, verified
   status kept), so a power-loss restore brings back the last choice. Changes
   made with the device buttons are shown but not saved.
-- One-off commands (play, stop, light on/off) are never queued or replayed.
+- One-off commands (play, stop, light on/off, routine start and control) are
+  never queued or replayed.
 
 ## Connection lifecycle
 
@@ -128,6 +129,45 @@ controls stay locked until a device read is confirmed again.
 - Maintenance mode disconnects and blocks all device I/O until turned off.
 - Unload cancels running operations and closes Bluetooth; the Store is kept.
 
+## Routines
+
+- Day routines, routine mode (automatic start) and the routine sounds and
+  volume are profile blocks. The routine setting entities write through the
+  live session and update the saved profile in place once the pushed state
+  confirms them, like the clock entities. `lumalou.set_routine` edits the
+  routines of the saved profile (new revision; the light and sound levels are
+  taken from the device read so the action never reverts button changes) and
+  applies it with the restore executor, so the result is verified by a fresh
+  read. The options-flow editor only saves a pending revision.
+- A routine is one task per step (`step` 1..N), task ids 1..11, each task at
+  most once, because ROUTINE_TASK_STATUS reports progress per task id. No
+  tasks means no routine that day (no time).
+- Progress comes from pushes: GLOBAL_STATE `operationMode` 7 is routine mode,
+  ROUTINE_TASK_STATUS (`0x94`) carries the current step and one nibble per
+  task id (0 pending, 1 current, 2 done). Step 0 is the silent preview; step
+  N+1 (no current task, some done) is the completed routine, after which the
+  device resets the status and leaves routine mode. The status is runtime
+  only and reset with each session.
+- Events are derived from two consecutive statuses of one session while in
+  routine mode: a task nibble 1 -> 2 is `task_completed`; the first completed
+  status is `routine_completed`; leaving routine mode (7 -> other) without it
+  is `routine_cancelled`. Nothing is inferred across a reconnect.
+- Start (button or action) sends `0x7B`, waits one second and sends
+  `0x6B 0`, so task 1 becomes current with its music like a scheduled start.
+  Control buttons send `0x6B` 0 (complete, the remote's check-mark), 1
+  (previous) or 4 (cancel) and are refused unless routine mode is on.
+- One-off routine (`start_routine` with tasks): the tasks are written as
+  today's routine (today's saved time) in the live session, then started. The
+  saved profile is not changed. The weekday is kept in the config entry data
+  (`temporary_routine_day`, set before the write) so it survives a restart.
+  When the live session sees routine mode end, the saved day routine is
+  written back and the marker cleared. If the session is gone, the next
+  recovery writes it back once the device is out of routine mode; while the
+  one-off routine still runs, that day is compared as saved, so it never
+  raises a Repair or blocks a pending revision. A verified restore (including
+  `set_routine`) or keeping the device profile also clears the marker. Only
+  one day is tracked; a new one-off start first writes back an earlier one.
+
 ## Restore executor
 
 `async_restore_profile(expected_revision, confirmed=True)` runs under the
@@ -136,8 +176,8 @@ clock correction, the minimal setter writes from `restore.build_restore_steps`
 in a fixed order (clock settings, playlist, light and playlist timers, volume
 and LED brightness, routine sound and volume, weekly times, alarms and
 routines, then the Ready-to-Rise and routine on/off flags), then a new session
-with a complete read. Color, play/stop, soother, nap and routine start are
-never part of a restore; the timer, volume and brightness setters were
+with a complete read. Color, play/stop, soother, nap, routine start and
+routine control are never part of a restore; the timer, volume and brightness setters were
 verified on hardware not to switch light or sound on. Only a full
 match marks the revision verified; otherwise `ProfileRestoreError` reports
 the applied steps and the error (`restore_write`, `restore_verify` or
@@ -147,14 +187,19 @@ revision verified on a different device key.
 ## Command policy
 
 Only allowlisted application opcodes are sent: live controls (light, audio,
-volume, timers, clock, clock settings, state request), the profile setters
-used by restore, and read-only profile queries (never the nap alarm queries,
-which time out on the device). User-state refusals (controls locked,
+volume, timers, clock, clock settings, routine mode and sounds, routine start
+and control, state request), the profile setters used by restore, and
+read-only profile queries (never the nap alarm queries, which time out on the
+device). Routine start (`0x7B`, no argument) and routine control (`0x6B` with
+code 0..4) are accepted only as those exact payloads. They became live
+controls after the hardware validation: start only enters routine mode with a
+silent preview, the control codes behave as in the app (the remote's
+check-mark is code 0) and cancel returns silently to normal mode. User-state refusals (controls locked,
 maintenance, untrusted host clock) are `ServiceValidationError`; device
 failures are translated `HomeAssistantError`. Aggregate SET_GLOBAL_STATE (`0x01`), the soother
-SET_GLOBAL_ON (`0x03`), pairing-complete (`0x34`) and time-prescaler (`0x52`)
-are explicitly denied; nap, routine start and firmware commands are not in
-any allowlist. The transport wrapper exposes only
+SET_GLOBAL_ON (`0x03`), pairing-complete (`0x34`), nap start and nap alarm
+(`0x4D`, `0x4F`) and time-prescaler (`0x52`) are explicitly denied; firmware
+commands are not in any allowlist. The transport wrapper exposes only
 the factory read, RX subscription, SESSION write and TX write characteristics
 and connects through Home Assistant's `establish_connection`.
 
@@ -162,8 +207,10 @@ and connects through Home Assistant's `establish_connection`.
 
 Only standard entity platforms are used, so HomeKit Bridge can export the light
 (on/off, brightness) and the speaker (on/off switch; on is the soother)
-without Apple-specific code. Configuration and diagnostic entities carry an entity category and are
-excluded from HomeKit by default.
+without Apple-specific code. Configuration and diagnostic entities carry an
+entity category and are excluded from HomeKit by default; the routine
+buttons, sensors and event are in domains that a HomeKit Bridge does not
+include by default.
 
 ## Library fork
 

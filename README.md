@@ -28,6 +28,11 @@ of [`stramanu/lumalou`](https://github.com/stramanu/lumalou).
 - Clock: 12/24-hour format, display on/off and brightness as entities; the
   device clock is kept on Home Assistant time.
 - Light and playlist timers.
+- **Routines**: set each day's routine (start time and tasks such as "brush
+  teeth"), switch the automatic start on or off, start a routine from Home
+  Assistant (today's or other tasks just this once), complete tasks like the
+  remote's check-mark button, and react in automations when a task or the
+  whole routine is done. See [Routines](#routines).
 - Live state without polling: one Bluetooth session stays open and the device
   pushes every change, including changes made with its own buttons.
 - A private, revisioned **profile** per device with everything a power loss
@@ -50,8 +55,11 @@ of [`stramanu/lumalou`](https://github.com/stramanu/lumalou).
 
 - The integration never touches the Nordic DFU service and has no OTA,
   firmware-update or factory-reset command. Unknown opcodes, the aggregate
-  state and soother commands, the time-prescaler and pairing-complete commands,
-  and arbitrary GATT writes are blocked before any Bluetooth I/O.
+  state and soother commands, nap commands, the time-prescaler and
+  pairing-complete commands, and arbitrary GATT writes are blocked before any
+  Bluetooth I/O. Routine start and routine control are sent only as their
+  exact hardware-checked payloads, and only when you press a button or call
+  an action.
 - Controls stay blocked until you confirm the device during setup **and** a
   complete profile has been read from it once.
 - Each session is bound to the device you confirmed. Home Assistant verifies
@@ -138,6 +146,14 @@ runs in English; check the actual IDs in the entity settings.
 | Connection | Binary sensor (connectivity, diagnostic) | On while a Bluetooth session is live. |
 | Firmware | Sensor (diagnostic) | Advertised firmware version; available while the device advertises, even without a session. |
 | Profile sync status | Sensor (enum, diagnostic) | `empty`, `saved`, `pending`, `applying` or `error`. Revisions and the last error are in the diagnostics download. |
+| `button.lumalou_start_routine` | Button | Starts today's routine now (see [Routines](#routines)). |
+| `button.lumalou_complete_task`, `button.lumalou_previous_task`, `button.lumalou_cancel_routine` | Button | Only while a routine runs. Complete task is the remote's check-mark button. |
+| `sensor.lumalou_routine` | Sensor (enum) | `off`, `ready` (silent preview before the first task), `in_progress`, `completed`. |
+| `sensor.lumalou_current_task` | Sensor (enum) | `none` or the current task (`get_dressed`, `wash_up`, `brush_teeth`, `toilet`, `backpack`, `meal`, `story`, `tidy_up`, `heart`, `swirl`, `star`). |
+| `event.lumalou_routine` | Event | `task_completed` (attribute `task`), `routine_completed`, `routine_cancelled`. |
+| Routines | Switch (configuration) | Automatic start at each day's routine time. |
+| Routine music, Task reward sound, Routine reward sound | Switch (configuration) | Routine sounds. |
+| Routine volume | Number (configuration) | 0–9. |
 
 Controls and configuration entities are available only after the device
 profile was read and confirmed once.
@@ -210,6 +226,8 @@ and a switch on the device (see [Entities](#entities)).
 | `lumalou.export_profile` | Returns `{current_revision, profile}`. Keep it private. |
 | `lumalou.import_profile` | Saves a complete exported `profile` if `expected_revision` matches the current revision. Does not write to the device. |
 | `lumalou.restore_profile` | Writes the saved profile to the device and verifies it (see above). Optional `expected_revision` (default: the current revision) fails the action if the profile changed meanwhile. Can return `{revision, verified, applied_steps, clock_synced}`. |
+| `lumalou.set_routine` | Sets the routine of the given `days` (`time`, ordered `tasks`) in the saved profile and on the device, verified. See [Routines](#routines). |
+| `lumalou.start_routine` | Starts today's routine now; optional `tasks` run instead, this time only. See [Routines](#routines). |
 
 Example: a quiet night light at bedtime.
 
@@ -228,6 +246,77 @@ automation:
           effect: warm
 ```
 
+## Routines
+
+The Lumalou shows a routine as task icons on its face (get dressed, wash up,
+brush teeth, toilet, backpack, meal, story, tidy up, heart, swirl, star), with
+music and reward sounds. Each weekday has its own routine: a start time and up
+to 11 tasks in order, one task per step, each task at most once. With
+**Routines** on, the device enters routine mode about a minute before the time
+(all icons blink, silently) and shows the first task at the time. The child
+presses the remote's check-mark button when a task is done: a reward sound,
+then the next task with its music. After the last task the routine completes
+and the device returns to normal.
+
+**Set a routine** with the `lumalou.set_routine` action (written to the device
+right away and verified with a fresh read), or in **Configure → Daily
+routines** (saved in Home Assistant; write it with `lumalou.restore_profile`).
+An empty task list means no routine on those days. Example: Monday to Friday
+at 20:00, brush teeth, then toilet, then a story:
+
+```yaml
+action: lumalou.set_routine
+data:
+  config_entry_id: YOUR_ENTRY_ID
+  days: [monday, tuesday, wednesday, thursday, friday]
+  time: "20:00"
+  tasks: [brush_teeth, toilet, story]
+```
+
+Then switch **Routines** on (configuration entity). Routine music, the two
+reward sounds and the routine volume are configuration entities too. All of
+these are part of the saved profile and come back after a power loss.
+
+**Start a routine now** with the **Start routine** button or
+`lumalou.start_routine`. Like the scheduled start, the first task becomes
+current with its music right away. With `tasks`, those tasks run instead of
+today's routine, this time only: Home Assistant writes them as today's routine
+(keeping today's time), starts it, and writes today's saved routine back when
+the routine ends. If Home Assistant is disconnected at that moment (or
+restarts), it writes it back on the next connection; the one-off routine never
+raises a Repair or counts as a reset.
+
+```yaml
+action: lumalou.start_routine
+data:
+  config_entry_id: YOUR_ENTRY_ID
+  tasks: [tidy_up, story]
+```
+
+**Follow progress** with `sensor.lumalou_routine`, `sensor.lumalou_current_task`
+and `event.lumalou_routine`. The event fires `task_completed` with the `task`
+when the child completes a task, `routine_completed` after the last task, and
+`routine_cancelled` when a routine ends before its last task (the **Cancel
+routine** button, or on the device). Events are only seen while Home Assistant
+is connected. Example: a notification when the teeth are brushed:
+
+```yaml
+automation:
+  - alias: Teeth brushed
+    triggers:
+      - trigger: state
+        entity_id: event.lumalou_routine
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ trigger.to_state.attributes.event_type == 'task_completed'
+             and trigger.to_state.attributes.task == 'brush_teeth' }}
+    actions:
+      - action: notify.notify
+        data:
+          message: Teeth brushed!
+```
+
 ## Apple Home (HomeKit Bridge)
 
 Use Home Assistant's built-in [HomeKit Bridge][homekit]. What Apple Home shows:
@@ -241,8 +330,25 @@ Use Home Assistant's built-in [HomeKit Bridge][homekit]. What Apple Home shows:
   Only `tv` (and `projector`) or `receiver` media players become Television
   accessories; the integration does not pretend the Lumalou is one.
 - Configuration and diagnostic entities (maintenance, timers, clock settings,
-  buttons, status sensors) are not exported by default, even in include mode, unless
-  you list them explicitly. Keep them out.
+  routine settings including the Routines switch, status sensors) are not
+  exported by default, even in include mode, unless you list them explicitly.
+  Keep them out.
+- Routine buttons, sensors and the event are not in the default HomeKit Bridge
+  domains, so they are not exported either. To start a routine from Apple
+  Home, expose a script instead, for example:
+
+  ```yaml
+  script:
+    lumalou_start_routine:
+      alias: Start bedtime routine
+      sequence:
+        - action: button.press
+          target:
+            entity_id: button.lumalou_start_routine
+  ```
+
+  and add `script.lumalou_start_routine` to the bridge (include the entity, or
+  the `script` domain). Apple Home shows it as a switch that turns itself off.
 
 A bridge (the default mode) is fine; a separate accessory-mode instance is only
 required for TVs, cameras, locks and activity remotes.
@@ -327,8 +433,17 @@ entry with `lumalou.import_profile` and write it with
 - Reset detection relies on the clock that a power loss resets. Volume,
   brightness or timer changes made with the device buttons are not saved;
   a restore brings back the last values set in Home Assistant.
-- Routine music and routine volume are read back as 4-bit values, so they
-  are limited to 0–15.
+- Routine music, the reward sounds and the routine volume are read back as
+  4-bit values. The entities use on/off and 0–9 (checked on hardware); the
+  profile editor still accepts the raw 0–15 values.
+- Routine progress (sensors and events) comes from the device's pushes while
+  Home Assistant is connected. After a reconnect in the middle of a routine,
+  the step is unknown until the next change, and a routine that ended while
+  disconnected fires no event. A routine that ends without reaching its last
+  step (also "complete all" on the device) counts as cancelled.
+- With `lumalou-gld09` 0.2.1, **Previous task** drops the Bluetooth session
+  (the device answers with a frame that library rejects) and Home Assistant
+  reconnects; 0.3.0 ignores that frame.
 - Only sources `sleep_playlist` and `pink_noise` were checked on hardware; the
   other built-in sounds come from the protocol description.
 
