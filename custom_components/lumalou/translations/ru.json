@@ -570,12 +570,6 @@
     "binary_sensor": {
       "connection": {
         "name": "Подключение"
-      },
-      "profile_pending": {
-        "name": "Профиль ожидает синхронизации"
-      },
-      "profile_present": {
-        "name": "Профиль сохранён"
       }
     },
     "select": {
@@ -607,12 +601,6 @@
       "firmware": {
         "name": "Прошивка"
       },
-      "profile_revision": {
-        "name": "Ревизия профиля"
-      },
-      "profile_verified_revision": {
-        "name": "Подтверждённая ревизия профиля"
-      },
       "profile_sync_status": {
         "name": "Статус синхронизации профиля",
         "state": {
@@ -622,16 +610,6 @@
           "applying": "Применяется",
           "partial": "Применено частично",
           "error": "Ошибка"
-        }
-      },
-      "profile_last_error": {
-        "name": "Последняя ошибка профиля",
-        "state": {
-          "ble_apply": "Изменение не подтверждено",
-          "storage_load": "Сохранённый профиль не читается",
-          "restore_write": "Сбой записи при восстановлении",
-          "restore_verify": "Восстановление не проверено",
-          "restore_mismatch": "Устройство не сохранило профиль"
         }
       }
     },

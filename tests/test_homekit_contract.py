@@ -166,7 +166,7 @@ async def test_default_homekit_bridge_exports_only_light_and_audio_switch(
     lumalou_entities = er.async_entries_for_config_entry(
         entity_registry, loaded_lumalou.entry_id
     )
-    assert len(lumalou_entities) == 15
+    assert len(lumalou_entities) == 10
 
     exported: dict[str, str | None] = {}
     accessory_types = {name: Mock(return_value=name) for name in TYPES}

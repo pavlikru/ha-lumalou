@@ -16,7 +16,6 @@ from custom_components.lumalou.const import (
     ISSUE_ID_PROFILE_STORAGE,
 )
 from custom_components.lumalou.coordinator import _ERRORS
-from custom_components.lumalou.sensor import PROFILE_ERRORS
 
 COMPONENT = Path(__file__).parents[1] / "custom_components" / "lumalou"
 STRINGS = json.loads((COMPONENT / "strings.json").read_text(encoding="utf-8"))
@@ -122,9 +121,6 @@ def test_entity_names_and_states_are_translated() -> None:
         source = (COMPONENT / f"{platform}.py").read_text(encoding="utf-8")
         keys = _literals(r'_attr_translation_key = "(\w+)"', source)
         assert keys == set(entity[platform]), platform
-
-    last_error = entity["sensor"]["profile_last_error"]["state"]
-    assert set(last_error) == set(PROFILE_ERRORS)
 
     effects = entity["light"]["light"]["state_attributes"]["effect"]["state"]
     assert set(effects) == {color.name.lower() for color in Color}
