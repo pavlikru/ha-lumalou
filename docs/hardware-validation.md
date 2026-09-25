@@ -30,6 +30,10 @@ levels.
 ## Phase 0 – Preparation
 
 - [ ] Fresh Home Assistant backup exists.
+- [ ] Remove the old dev-build Lumalou entry before installing this build, then
+      add the device again after installing it (there are no migrations from
+      development builds). Update the HomeKit Bridge filter if entity IDs
+      changed.
 - [ ] Installed build and its exact library pin are recorded.
 - [ ] The Fisher-Price app and any Web Bluetooth client are disconnected.
 - [ ] The existing HomeKit Bridge configuration (mode, filter, entity list) is
@@ -55,7 +59,8 @@ this document. Record each as confirmed, refuted or not observed.
 - [ ] **A10**: the same read session answered the current-date request (no
       read error; diagnostics show `last_clock_offset`).
 - [ ] **A9**: the Firmware sensor matches the version shown by the official
-      app or the device documentation.
+      app or the device documentation (it is available as soon as the device
+      advertises).
 - [ ] Reload the entry and restart Home Assistant: still one entry and one
       device, entities come back, no settings changed on the device.
 - [ ] Download diagnostics and check that they contain no address, fingerprint
@@ -68,11 +73,14 @@ Check the device physically and the Home Assistant state after each step.
 - [ ] Light on at brightness 1; then brightness 3.
 - [ ] Two palette effects (for example `warm`, `blue`).
 - [ ] Light off.
-- [ ] **A3**: with the light off, changing brightness or color does not turn
-      the light (or sound) on unexpectedly; a fresh read reports the new
-      brightness and color while the light stays off. Brightness 0 is never
-      sent by a live control; note whether a restore of brightness 0 has a
-      visible effect.
+- [ ] **A3**: with the light off, a fresh read (Refresh) reports brightness 0.
+      Light on without a brightness (for example from Apple Home or the light
+      card toggle) comes back at the last level (3), not at 0 or 1.
+- [ ] **A3**: with the light off, changing the color does not turn the light
+      (or sound) on unexpectedly; note what a brightness change does while the
+      light is off.
+- [ ] With the light off, reload the entry: no *settings differ* Repair
+      appears (light state is not part of the profile).
 - [ ] Light duration select: change one step, then back.
 - [ ] Note any side effects (does a brightness change turn the light on, does
       a color change affect sound?).
@@ -81,7 +89,8 @@ Check the device physically and the Home Assistant state after each step.
 ## Phase 3 – Sound at low volume
 
 - [ ] Set volume to 1 **before** playing.
-- [ ] **A3**: setting the volume while sound is off does not start sound.
+- [ ] **A3**: setting the volume while sound is off does not start sound; a
+      volume change never raises a *settings differ* Repair.
 - [ ] Media player on (sleep playlist) for a few seconds, then off.
 - [ ] Select one built-in sound source, then off.
 - [ ] Volume up/down by one step.
@@ -95,6 +104,9 @@ Check the device physically and the Home Assistant state after each step.
       app (then disconnect the app), let Home Assistant reconnect: the clock
       is corrected in the same session, the weekday is right (device counts
       Sunday as 0), and an offset below 60 seconds is left alone.
+- [ ] **A6**: with a session open, trigger the daily clock check early (change
+      the Home Assistant time zone and back, or wait for 03:05): a device
+      clock more than 60 seconds off is corrected after a short reconnect.
 - [ ] **A8**: leave the device idle for an hour and count disconnects and
       reconnects in the debug log. Each reconnect performs one full profile
       read, at most one per 30 seconds; record whether that frequency is
@@ -107,8 +119,8 @@ Check the device physically and the Home Assistant state after each step.
 - [ ] In the options editors change one setting per block (playlist, clock
       settings, routine music and rewards, routine volume, Ready-to-Rise and
       Sleepy times, alarms, and at least one day routine), keeping sound and
-      light levels low. Profile pending turns on; nothing changes on the
-      device.
+      light levels low. **Profile sync status** shows `pending`; nothing
+      changes on the device.
 - [ ] Run `lumalou.restore_profile` with `return_response: true`. Record the
       applied steps.
 - [ ] **A1**: every setter persisted and the verification read returned
@@ -119,7 +131,7 @@ Check the device physically and the Home Assistant state after each step.
       each.
 - [ ] **A4**: enabling Ready-to-Rise and routine mode (written last) does not
       start a routine, alarm or sound immediately.
-- [ ] **A5**: a restore of every block (about 22 writes) succeeds with the
+- [ ] **A5**: a restore of every block (16 writes) succeeds with the
       library's 150 ms write spacing and a fresh verification session; note
       any dropped write or timeout.
 - [ ] **A11**: a second full read right after the writes returns the new
@@ -142,7 +154,8 @@ Check the device physically and the Home Assistant state after each step.
 - [ ] Enable **Automatic restore** and repeat: Home Assistant corrects the
       clock, re-applies only the settings that differ and confirms the whole
       profile with a fresh read.
-- [ ] No sound, light, nap or routine was started by the restore.
+- [ ] No sound, light, nap or routine was started by the restore; light
+      brightness and color, volume and timers were not written.
 - [ ] Repeat with a long outage (several minutes) and after a Home Assistant
       restart during the outage.
 - [ ] Disable automatic restore again unless the owner wants it, and restore
@@ -181,15 +194,17 @@ The code relies on these assumptions; none is proven on hardware yet.
 2. **A2** Routine music and routine volume read back as 4-bit values from
    the global state, so the integration limits both to 0–15; values 0–15
    written by restore read back unchanged.
-3. **A3** Brightness, color and volume setters, including brightness 0, cause
-   no unwanted light or sound activation; brightness and color read back
-   correctly while the light is off.
+3. **A3** The device reports brightness 0 while the light is off, and
+   brightness, color and volume setters cause no unwanted light or sound
+   activation. These values are live state: they are never part of the
+   profile, power-loss detection or a restore.
 4. **A4** Writing `ready_to_rise.enabled` and `routine_settings.enabled` last
    does not start a routine, alarm or sound.
 5. **A5** The library's 150 ms write spacing and a fresh verification session
-   are enough for bursts of up to about 22 writes.
+   are enough for bursts of up to 16 writes.
 6. **A6** Setting the clock in the middle of a session works, a 60-second
-   tolerance is appropriate, and the device weekday counts Sunday as 0.
+   tolerance is appropriate, the device weekday counts Sunday as 0, and a
+   daily check in a fresh session catches DST changes and drift.
 7. **A7** A power loss actually resets the clock and/or the profile, and the
    device advertises again after power-on without pairing mode.
 8. **A8** Idle disconnects are rare enough: each one triggers a full read,

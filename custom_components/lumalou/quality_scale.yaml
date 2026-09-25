@@ -37,7 +37,7 @@ rules:
   entity-event-setup: done
   entity-unique-id:
     status: done
-    comment: Unique IDs derive from the entry unique ID (verified device fingerprint); config entry 1.2 migrates older address-based IDs, and pre-enrollment entries migrate on Reconfigure.
+    comment: Unique IDs derive from the entry unique ID (verified device fingerprint), which does not change with the Bluetooth address.
   has-entity-name: done
   runtime-data: done
   test-before-configure:
@@ -45,7 +45,7 @@ rules:
     comment: The config flow connects and verifies the signed device identity before creating an entry.
   test-before-setup:
     status: exempt
-    comment: The BLE night light may be unpowered or out of range at startup. The entry loads offline, entities stay unavailable until Home Assistant Bluetooth sees the device, and unreadable profile storage raises a Repairs issue.
+    comment: The BLE night light may be unpowered or out of range at startup. The entry loads offline and entities stay unavailable until Home Assistant Bluetooth sees the device. An entry without a verified identity fails setup with a translated ConfigEntryError.
   unique-config-entry:
     status: done
     comment: Entries are unique by verified device fingerprint; flows also abort early for an already configured address before any connection.
@@ -53,7 +53,7 @@ rules:
   # Silver
   action-exceptions:
     status: done
-    comment: Invalid input raises ServiceValidationError (actions, media_player.select_source); device and restore failures raise translated HomeAssistantError.
+    comment: Invalid input and user-state refusals (controls locked, maintenance, untrusted host clock) raise ServiceValidationError; device and restore failures raise translated HomeAssistantError.
   config-entry-unloading: done
   docs-configuration-parameters: done
   docs-installation-parameters: done
@@ -69,15 +69,15 @@ rules:
     status: exempt
     comment: No credentials. A changed or replaced device is handled by the reconfigure flow.
   test-coverage:
-    status: todo
-    comment: Overall coverage is above 95%, but storage.py, identity.py, switch.py, light.py and entity.py are still below 95% each.
+    status: done
+    comment: Every module is at or above 95% line and branch coverage.
 
   # Gold
   devices: done
   diagnostics: done
   discovery-update-info:
     status: todo
-    comment: A known device at a new BLE address is updated only after the user confirms the discovery and its signed identity is verified, or through Reconfigure; there is no automatic update from the advertisement alone.
+    comment: A known device at a new BLE address is updated (address only, controls stay unlocked) after the user confirms the discovery and its signed identity is verified, or through Reconfigure; there is no automatic update from the advertisement alone.
   discovery: done
   docs-data-update: done
   docs-examples: done
@@ -92,10 +92,10 @@ rules:
   entity-category: done
   entity-device-class:
     status: done
-    comment: Connection is a connectivity binary sensor; sync status and last error are enum sensors.
+    comment: Connection is a connectivity binary sensor; profile sync status is an enum sensor.
   entity-disabled-by-default:
     status: todo
-    comment: Profile revision and error diagnostics are enabled by default.
+    comment: The firmware and profile sync status diagnostics are enabled by default.
   entity-translations: done
   exception-translations:
     status: done

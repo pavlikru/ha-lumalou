@@ -20,21 +20,24 @@ of [`stramanu/lumalou`](https://github.com/stramanu/lumalou).
 - Discovery through Home Assistant Bluetooth (local adapter or proxy); no
   separate scanner.
 - Night light: on/off, brightness (device levels 1–9) and the device's fixed
-  color palette as light effects.
+  color palette as light effects. A plain "on" (for example from Apple Home)
+  uses the last brightness seen, not the 0 the device reports while off.
 - Sound: play/stop, volume (0–9) and built-in sound source.
 - Light and playlist timers, clock synchronization, manual refresh.
-- A private, revisioned **profile** per device: light and sound defaults,
-  playlist, clock display, routine settings, wake and bedtime schedules, alarms
-  and all seven daily routines. It is read from the device, can be edited in
-  the options flow afterwards, and can be exported or imported as JSON through
-  actions.
+- A private, revisioned **profile** per device with its persistent
+  configuration: playlist, clock display, routine settings, wake and bedtime
+  schedules, alarms and all seven daily routines. It is read from the device,
+  can be edited in the options flow afterwards, and can be exported or
+  imported as JSON through actions. Light brightness and color, volume and the
+  light and playlist timers are current state, not profile settings.
 - **Profile restore**: writes only the settings that differ from the saved
   profile and proves the result with a fresh read. After a power loss or any
-  other change on the device, a Repair lets you restore the saved profile or
-  keep the device settings; **automatic restore** is an option, off by
-  default.
-- The device clock is set from Home Assistant whenever it drifts by more than
-  60 seconds.
+  other change of the profile settings on the device, a Repair lets you
+  restore the saved profile or keep the device settings; **automatic restore**
+  is an option, off by default. A restore never turns the light or sound on.
+- The device clock is set from Home Assistant when it is more than 60 seconds
+  off: on every reconnect, once a day at 03:05 and when the Home Assistant
+  time zone changes.
 - **Maintenance** switch that releases the Bluetooth connection so the official
   app or another client can connect.
 - Apple Home through Home Assistant's HomeKit Bridge (see below).
@@ -61,7 +64,7 @@ of [`stramanu/lumalou`](https://github.com/stramanu/lumalou).
 
 ## Requirements
 
-- Home Assistant 2026.9.2 or newer.
+- Home Assistant 2026.9.0 or newer.
 - A Bluetooth adapter or ESPHome Bluetooth proxy that can make active
   (connectable) connections, in range of the Lumalou. Proxies are expected to
   work through Home Assistant's Bluetooth stack but have not been tested yet.
@@ -74,8 +77,8 @@ of [`stramanu/lumalou`](https://github.com/stramanu/lumalou).
 
 1. In HACS, open **⋮ → Custom repositories**, add
    `https://github.com/pavlikru/ha-lumalou` with type **Integration**.
-2. Open **Lumalou** in HACS and select **Download**. To test development
-   builds, choose the `feat/lumalou-integration` branch as the version.
+2. Open **Lumalou** in HACS and select **Download**. To test a development
+   build, choose its branch as the version.
 3. Restart Home Assistant.
 
 ### Manual
@@ -89,15 +92,16 @@ directory and restart Home Assistant.
    services**. Select **Add** and confirm that this is your Lumalou, or use
    **Add integration → Lumalou** and choose it from the discovered devices
    (choosing it is the confirmation).
-2. Home Assistant connects once, checks the standard Device Information for a
-   conflicting model and verifies the signed device identity. Nothing on the
-   device is changed.
+2. Home Assistant connects once and reads and verifies the signed device
+   identity. Nothing on the device is changed.
 3. The profile options open next. Choose **Read the device profile**, check
    the summary and confirm. This first complete read becomes the saved
    profile, unlocks the controls and makes the profile editors available.
 
 If the Lumalou later appears with a different Bluetooth address, use
-**Reconfigure** on the entry. It accepts only the same signed device.
+**Reconfigure** on the entry (or confirm the new discovery). It accepts only
+the same signed device and changes only the address; the saved profile and
+unlocked controls stay.
 
 ### Options
 
@@ -106,7 +110,7 @@ If the Lumalou later appears with a different Bluetooth address, use
 | Option | Meaning |
 | --- | --- |
 | Read the device profile | Read the complete profile from the Lumalou and, after confirmation, save it as the verified profile. Until this has been done once, only this and Behavior options are offered. |
-| Light and audio values, Playlist, Clock settings, Routine settings, Weekly schedule, Daily routines | Editors for the saved profile, prefilled from it. Saving creates a pending revision in Home Assistant only; `lumalou.restore_profile` writes it to the device. |
+| Playlist, Clock settings, Routine settings, Weekly schedule, Daily routines | Editors for the saved profile, prefilled from it. Saving creates a pending revision in Home Assistant only; `lumalou.restore_profile` writes it to the device. |
 | Behavior options → Restore the saved profile automatically | Off by default. See [Profile restore and power loss](#profile-restore-and-power-loss). |
 
 ## Entities
@@ -116,15 +120,15 @@ runs in English; check the actual IDs in the entity settings.
 
 | Entity | Type | Notes |
 | --- | --- | --- |
-| `light.lumalou_light` | Light | On/off, brightness, palette colors as effects (`warm`, `red`, `yellow`, `orange`, `green`, `blue`, `purple`, `night_light`, `cool`, `rainbow`; translated in the UI). |
+| `light.lumalou_light` | Light | On/off, brightness, palette colors as effects (`warm`, `red`, `yellow`, `orange`, `green`, `blue`, `purple`, `night_light`, `cool`, `rainbow`; translated in the UI). On without a brightness uses the last level seen (5 until one is seen). |
 | `media_player.lumalou_audio` | Media player (speaker) | On starts the sleep playlist; off stops sound; volume; source selects a built-in sound (`sleep_playlist`, `custom_playlist`, `pink_noise`, `ocean`, `rain`, `brown_noise`, `nature`, `highway`). |
 | Light duration, Playlist duration | Select (configuration) | Device timers (options such as `min_15`, `continuous`). |
 | Maintenance | Switch (configuration) | Releases Bluetooth and pauses all device I/O from Home Assistant. |
 | Synchronize clock | Button (configuration) | Sets the device clock from Home Assistant's time zone. |
 | Refresh | Button (diagnostic) | Reads current state. |
 | Connection | Binary sensor (connectivity, diagnostic) | On while a Bluetooth session is live. |
-| Firmware, Profile revision, Profile verified revision, Profile sync status, Profile last error | Sensor (diagnostic) | Status only. |
-| Profile pending, Profile present | Binary sensor (diagnostic) | Status only. |
+| Firmware | Sensor (diagnostic) | Advertised firmware version; available while the device advertises, even without a session. |
+| Profile sync status | Sensor (enum, diagnostic) | `empty`, `saved`, `pending`, `applying` or `error`. Revisions and the last error are in the diagnostics download. |
 
 ### How data is updated
 
@@ -134,32 +138,39 @@ the integration reconnects at most once every 30 seconds, backing off up to
 15 minutes after failures. Before the first confirmed profile read it only
 reads the state. Afterwards every reconnect reads the complete profile in one
 session, sets the device clock if it is more than 60 seconds off, and compares
-the profile with the saved one. When Home Assistant reports the device gone,
-entities become unavailable; loss and return are logged once at info level.
+the profile with the saved one. While a session stays open, the clock is also
+checked once a day at 03:05 local time and when the Home Assistant time zone
+changes (DST, drift); this briefly reconnects. When Home Assistant reports the
+device gone, entities become unavailable; loss and return are logged once at
+info level.
 
 ### Profile restore and power loss
 
 The Lumalou has no documented power-loss marker. The integration therefore
-treats a reconnect whose fresh read no longer matches the saved **verified**
-profile as "settings changed on the device" (for example reset by a power
-loss). Live changes from Home Assistant keep the profile verified when the
-device reports the new value; edits made in the options flow stay pending
-until they are restored.
+treats a reconnect whose fresh read of the profile settings (playlist, clock
+display, routine settings, weekly times, alarms, daily routines) no longer
+matches the saved **verified** profile as "settings changed on the device"
+(for example reset by a power loss). Light brightness and color, volume, the
+timers and on/off or playing state are not compared: they change in everyday
+use, and the device reports brightness 0 whenever the light is off. They are
+never restored either, so after a power loss they stay as the device starts.
+Edits made in the options flow stay pending until they are restored, or until
+a reconnect finds that the device already matches them.
 
 - **Automatic restore off** (default): a Repair, *Lumalou settings differ from
   the saved profile*, appears. Choose **Restore saved profile** or **Keep
   device settings** (the current device settings become the new saved
   profile).
 - **Automatic restore on**: Home Assistant writes the saved profile back right
-  away. Every other change made on the device, including in the Fisher-Price
-  app, is overwritten too. After two failed attempts for the same event it
+  away. Every other change of these settings made on the device, including
+  in the Fisher-Price app, is overwritten too. After two failed attempts for the same event it
   stops and raises the Repair instead.
 
 A restore (automatic, from the Repair, or `lumalou.restore_profile`) opens a
 fresh session, reads everything, corrects the clock, writes only the blocks
-that differ in a fixed order (display, timers, audio, routine sound, weekly
-schedules and routines, color and brightness, then the Ready-to-Rise and
-routine on/off flags), and then reads everything again in a new session. It
+that differ in a fixed order (clock display, playlist, routine sound and
+volume, weekly times, alarms and routines, then the Ready-to-Rise and routine
+on/off flags), and then reads everything again in a new session. It
 counts as verified only if every block matches. Nothing is retried silently,
 and nothing is restored while **Maintenance** is on.
 
@@ -171,7 +182,7 @@ buttons and a switch on the device (see [Entities](#entities)).
 | Action | Description |
 | --- | --- |
 | `lumalou.export_profile` | Returns `{current_revision, profile}`. Keep it private. |
-| `lumalou.import_profile` | Saves `profile` if `expected_revision` matches the current revision. Does not write to the device. |
+| `lumalou.import_profile` | Saves a complete exported `profile` if `expected_revision` matches the current revision. Does not write to the device. |
 | `lumalou.restore_profile` | Writes the saved profile to the device and verifies it (see above). Optional `expected_revision` (default: the current revision) fails the action if the profile changed meanwhile. Can return `{revision, verified, applied_steps, clock_synced}`. |
 
 Example: a quiet night light at bedtime.
@@ -246,10 +257,11 @@ in the UI.
 | Lumalou is not discovered | Close other apps connected to it, move the adapter or proxy closer, and check that the adapter supports active connections. |
 | "Could not connect for the read-only identity probe" | Another client is connected, or the device is out of range. Retry. |
 | Controls fail with "Read and confirm the device profile…" | Open **Configure → Read the device profile** and confirm the result. |
-| Repairs: "Lumalou settings differ from the saved profile" | Choose **Restore saved profile** or **Keep device settings**. If a restore fails, bring the adapter closer and try again; **Profile last error** shows which step failed. |
+| Repairs: "Lumalou settings differ from the saved profile" | Choose **Restore saved profile** or **Keep device settings**. If a restore fails, bring the adapter closer and try again; the diagnostics download shows which step failed. |
 | Entities unavailable | The device is out of range or unpowered, or **Maintenance** is on. |
 | Device moved to a new Bluetooth address | Use **Reconfigure** on the entry. |
-| Repairs: "Lumalou profile needs recovery" | Follow the Repair and import your last export. Do not edit `.storage` by hand. |
+| Setup fails: "created by a development build" | Remove the entry and add the device again. |
+| Controls locked again after a restart | The saved profile could not be read (Home Assistant keeps an unreadable file as `.corrupt.<time>` and raises its own Repair). Read the device profile again, or import your last export. Do not edit `.storage` by hand. |
 
 For debug logs add:
 
@@ -283,9 +295,10 @@ entry with `lumalou.import_profile` and write it with
 - Palette colors cannot be exported to Apple Home.
 - The official app and Home Assistant cannot be connected at the same time;
   use **Maintenance** when you need the app.
-- Power-loss detection is a heuristic (a verified profile that no longer
-  matches the device). Restore and the write behavior of the individual
-  settings are not yet hardware-validated.
+- Power-loss detection is a heuristic (verified profile settings that no
+  longer match the device). Light, volume and timers are not part of it and
+  are not restored. Restore and the write behavior of the individual settings
+  are not yet hardware-validated.
 - Routine music and routine volume are read back as 4-bit values, so they
   are limited to 0–15.
 
