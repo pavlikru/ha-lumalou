@@ -1,12 +1,19 @@
 """Runtime GATT/opcode policy tests, with every backend operation mocked."""
 
+import asyncio
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, call, patch
 from uuid import UUID
 
 import pytest
 from bleak.backends.device import BLEDevice
-from bleak_retry_connector import BleakClientWithServiceCache
+from bleak_retry_connector import (
+    BLEAK_SAFETY_TIMEOUT,
+    MAX_CONNECT_ATTEMPTS,
+    BleakClientWithServiceCache,
+)
 from homeassistant.exceptions import HomeAssistantError
 from lumalou import crypto
 from lumalou.client import FACTORY, RX, SESSION, TX
@@ -14,7 +21,9 @@ from lumalou.client import FACTORY, RX, SESSION, TX
 from custom_components.lumalou.const import (
     ALLOWED_REQUEST_OPCODES,
     ALLOWED_SEND_OPCODES,
+    CONNECT_TIMEOUT,
     FORBIDDEN_OPCODES,
+    GATT_TIMEOUT,
     WRITE_CHARACTERISTICS,
 )
 from custom_components.lumalou.transport import (
@@ -379,3 +388,87 @@ async def test_fingerprint_probe_rejects_an_unauthenticated_token(
         await async_read_device_fingerprint(HASS, DEVICE)
 
     backend.disconnect.assert_awaited_once()
+
+
+@contextmanager
+def _fake_clock() -> Iterator[Callable[[float], None]]:
+    """Let a test jump the running loop's clock so pending deadlines expire."""
+    loop = asyncio.get_running_loop()
+    real_time = loop.time
+    offset = 0.0
+
+    def advance(seconds: float) -> None:
+        nonlocal offset
+        offset += seconds
+
+    with (
+        patch.object(loop, "time", lambda: real_time() + offset),
+        # Jumps are not slow callbacks; keep asyncio debug mode quiet.
+        patch.object(loop, "slow_callback_duration", float("inf")),
+    ):
+        yield advance
+
+
+async def test_fingerprint_probe_lets_establish_connection_run_its_retries(
+    backend, ha_bluetooth
+):
+    """A slow connect is governed by bleak-retry-connector, never cut short."""
+    with _fake_clock() as advance:
+
+        async def slow_establish(*args, **kwargs):
+            # The whole retry budget elapses; any outer deadline would fire.
+            advance(MAX_CONNECT_ATTEMPTS * BLEAK_SAFETY_TIMEOUT)
+            await asyncio.sleep(0.001)
+            return backend
+
+        ha_bluetooth.establish.side_effect = slow_establish
+        with patch(
+            "custom_components.lumalou.transport.parse_factory_device_fingerprint",
+            return_value=FINGERPRINT,
+        ):
+            assert await async_read_device_fingerprint(HASS, DEVICE) == FINGERPRINT
+
+    backend.read_gatt_char.assert_awaited_once_with(FACTORY)
+
+
+async def test_fingerprint_probe_still_bounds_the_factory_read(backend, ha_bluetooth):
+    """Only the GATT read on the established link keeps its own deadline."""
+    with _fake_clock() as advance:
+
+        async def stalled_read(characteristic):
+            advance(GATT_TIMEOUT + 1)
+            await asyncio.sleep(0.001)
+            raise AssertionError("the read deadline did not fire")
+
+        backend.read_gatt_char.side_effect = stalled_read
+        with pytest.raises(TimeoutError):
+            await async_read_device_fingerprint(HASS, DEVICE)
+
+    backend.disconnect.assert_awaited_once()
+
+
+async def test_session_connect_deadline_covers_the_connector_retries(
+    backend, ha_bluetooth
+):
+    """The library's connect deadline outlasts a full retry budget."""
+    backend.read_gatt_char.return_value = _token()
+    client = SafeLumalouClient(HASS, DEVICE, expected_device_fingerprint=FINGERPRINT)
+    with _fake_clock() as advance:
+
+        async def slow_establish(*args, **kwargs):
+            advance(MAX_CONNECT_ATTEMPTS * BLEAK_SAFETY_TIMEOUT)
+            await asyncio.sleep(0.001)
+            return backend
+
+        ha_bluetooth.establish.side_effect = slow_establish
+        with patch(
+            "lumalou.client.parse_factory_device_fingerprint", return_value=FINGERPRINT
+        ):
+            await client.connect(timeout=CONNECT_TIMEOUT)
+            assert client.connected
+            await client.disconnect()
+
+
+def test_connect_timeout_covers_the_connector_retry_budget():
+    """The session deadline exceeds every retry plus the handshake."""
+    assert CONNECT_TIMEOUT > MAX_CONNECT_ATTEMPTS * BLEAK_SAFETY_TIMEOUT + GATT_TIMEOUT

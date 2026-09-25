@@ -28,8 +28,8 @@ from lumalou.factory import parse_factory_device_fingerprint
 from .const import (
     ALLOWED_REQUEST_OPCODES,
     ALLOWED_SEND_OPCODES,
-    CONNECT_TIMEOUT,
     FORBIDDEN_OPCODES,
+    GATT_TIMEOUT,
     WRITE_CHARACTERISTICS,
 )
 
@@ -190,11 +190,15 @@ async def async_read_device_fingerprint(hass: HomeAssistant, device: BLEDevice) 
     Nothing is written to the device. The token never leaves this function;
     the library raises ``InvalidFactoryTokenError`` (a ``ValueError``) when it
     cannot authenticate it. Any other error means the read itself failed.
+
+    The connect is not wrapped in an outer deadline: ``establish_connection``
+    bounds and retries its own attempts. Only the read on the established
+    link is bounded here.
     """
     transport = RestrictedLumalouTransport(hass, device)
     try:
-        async with asyncio.timeout(CONNECT_TIMEOUT):
-            await transport.connect()
+        await transport.connect()
+        async with asyncio.timeout(GATT_TIMEOUT):
             token = bytes(await transport.read_gatt_char(FACTORY))
     finally:
         with suppress(Exception):

@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0b2] - 2026-09-25
+
+### Fixed
+
+- Bluetooth setup no longer fails with "cannot connect" when the first
+  connection attempt is slow: the connect is no longer cut off after 20
+  seconds, so Home Assistant's Bluetooth connector can time out and retry as
+  designed. Failed setup probes are logged at debug level, and the first
+  failed connection while the device is unavailable is logged once at info
+  level with the error.
+
 ## [0.1.0b1] - 2026-09-25
 
 First beta for hardware validation. Not yet validated on a real device; see
@@ -113,5 +124,6 @@ Hardware validation: summary of passed phases (anonymized).
 Requires Home Assistant 2026.9.0 or newer and lumalou-gld09==0.2.0.
 -->
 
-[Unreleased]: https://github.com/pavlikru/ha-lumalou/compare/v0.1.0b1...HEAD
+[Unreleased]: https://github.com/pavlikru/ha-lumalou/compare/v0.1.0b2...HEAD
+[0.1.0b2]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b2
 [0.1.0b1]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b1

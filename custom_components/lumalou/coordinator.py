@@ -32,6 +32,7 @@ from .const import (
     DEFAULT_AUTO_RESTORE,
     DEFAULT_LIGHT_BRIGHTNESS,
     DOMAIN,
+    GATT_TIMEOUT,
     GLOBAL_STATE_FIELDS,
     RECOVERY_COOLDOWN,
     RECOVERY_MAX_COOLDOWN,
@@ -617,10 +618,31 @@ class LumalouCoordinator:
         self._client = client
         try:
             await client.connect(timeout=CONNECT_TIMEOUT)
+        except Exception as err:
+            await self._disconnect()
+            self._log_connect_failure(err)
+            raise
         except BaseException:
             await self._disconnect()
             raise
         return client
+
+    def _log_connect_failure(self, err: Exception) -> None:
+        """Log the first failure while unavailable once; repeats go to debug."""
+        if not self._unavailable_logged:
+            _LOGGER.info(
+                "%s is unavailable: could not connect: %s: %s",
+                self.device_name,
+                type(err).__name__,
+                err,
+            )
+            self._unavailable_logged = True
+        _LOGGER.debug(
+            "Connecting to %s (%s) failed",
+            self.device_name,
+            self.address,
+            exc_info=True,
+        )
 
     @callback
     def _invalidate(self) -> SafeLumalouClient | None:
@@ -635,7 +657,7 @@ class LumalouCoordinator:
 
     async def _close_client(self, client: SafeLumalouClient) -> None:
         try:
-            async with asyncio.timeout(CONNECT_TIMEOUT):
+            async with asyncio.timeout(GATT_TIMEOUT):
                 await client.disconnect()
         except Exception:
             # Local invalidation is authoritative. Teardown failure must not hide

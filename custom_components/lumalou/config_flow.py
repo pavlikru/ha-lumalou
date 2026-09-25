@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from datetime import time
@@ -32,6 +33,8 @@ from .models import (
     validate_profile,
 )
 from .transport import async_read_device_fingerprint
+
+_LOGGER = logging.getLogger(__name__)
 
 CONF_CONFIRM = "confirm"
 MANUFACTURER_ID = 950
@@ -248,8 +251,12 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         try:
             fingerprint = await async_read_device_fingerprint(self.hass, info.device)
         except ValueError:
+            _LOGGER.debug(
+                "Could not authenticate the identity of %s", info.address, exc_info=True
+            )
             return None, {"base": "identity_unconfirmed"}
         except Exception:
+            _LOGGER.debug("Could not connect to %s", info.address, exc_info=True)
             return None, {"base": "cannot_connect"}
         return fingerprint, {}
 
