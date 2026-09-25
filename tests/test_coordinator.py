@@ -1559,16 +1559,43 @@ async def test_live_settings_are_kept_in_the_saved_profile_once_confirmed(rig):
     }
 
 
-async def test_unconfirmed_setting_is_sent_but_not_saved(rig):
+async def test_unconfirmed_setting_is_written_again_then_reported(rig):
+    """Hardware: a setting right after a session change was acked, not applied."""
     coordinator = rig.coordinator
     await verified_profile(rig)
     record = coordinator.profile_record
     rig.settings.push = False
+    start = len(rig.journal)
 
-    await coordinator.async_set_level("volume", 8)
+    with pytest.raises(HomeAssistantError) as err:
+        await coordinator.async_set_level("volume", 8)
 
-    assert sends(rig)[-1] == bytes([0x37, 8])
+    assert err.value.translation_key == "setting_not_confirmed"
+    assert sends(rig, start) == [bytes([0x37, 8])] * 2
     assert coordinator.profile_record == record
+
+
+async def test_setting_confirmed_by_the_second_write_is_kept(rig):
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    client = rig.clients[-1]
+    original = client.send.side_effect
+    dropped = {"left": 1}
+
+    async def drop_first(payload, **kwargs):
+        if dropped["left"]:
+            dropped["left"] -= 1
+            rig.journal.append(("send", payload))  # acknowledged, not applied
+            return
+        await original(payload, **kwargs)
+
+    client.send.side_effect = drop_first
+    start = len(rig.journal)
+
+    await coordinator.async_set_routine_settings(enabled=True)
+
+    assert sends(rig, start) == [bytes([0x58, 1])] * 2
+    assert coordinator.profile_record.desired_profile["routine_settings"]["enabled"]
 
 
 async def test_setting_without_a_saved_profile_is_only_sent(rig):
@@ -1585,7 +1612,6 @@ async def test_concurrent_live_commands_are_serialized(rig):
     coordinator = rig.coordinator
     await live(rig)
     client = rig.clients[0]
-    rig.settings.push = False
     send_started = asyncio.Event()
     release_send = asyncio.Event()
     original = client.send.side_effect
@@ -2792,6 +2818,7 @@ def factory_reset(fake: FakeDevice) -> None:
         lightDuration=4,
         playlistDuration=5,
         currentVolume=5,
+        lightBrightness=5,
     )
 
 
@@ -2828,3 +2855,111 @@ async def test_played_source_is_remembered_while_music_plays(rig):
 
     await coordinator.async_stop_audio()  # the pushed state shows no music
     assert coordinator.playing_source is None
+
+
+@pytest.mark.parametrize("minute", [4, 2])
+async def test_hardware_power_loss_friday_evening_is_restored(rig, minute):
+    """0.1.0b5 on hardware: replugged Friday ~18:03, a Repair instead of a restore."""
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    record = coordinator.profile_record
+    await coordinator._disconnect()
+    coordinator._last_frame_at = asyncio.get_running_loop().time() - 60
+    friday = datetime(2026, 9, 25, 18, minute, 0, tzinfo=ZONE)
+    factory_reset(rig.fake)
+    rig.fake.clock = CurrentDate(5, 0, 40, 0)
+
+    with patch(
+        "custom_components.lumalou.coordinator.dt_util.now", return_value=friday
+    ):
+        await coordinator._async_recover()
+
+    assert coordinator.last_restore_result is not None
+    assert coordinator.last_restore_result.verified
+    assert coordinator.restore_needed is None
+    assert coordinator.profile_record.desired_profile == record.desired_profile
+
+
+async def test_recent_whole_hour_power_loss_is_a_reset_without_defaults(rig):
+    """Heard a minute ago: a whole-hour offset cannot be a DST change."""
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    await coordinator._disconnect()
+    coordinator._last_frame_at = asyncio.get_running_loop().time() - 60
+    rig.fake.clock = CurrentDate(5, 0, 40, 0)
+    rig.state.update(routineVolume=5)  # not all factory defaults
+    friday = datetime(2026, 9, 25, 18, 1, 0, tzinfo=ZONE)  # 13:00:20 apart
+
+    with patch(
+        "custom_components.lumalou.coordinator.dt_util.now", return_value=friday
+    ):
+        await coordinator._async_recover()
+
+    assert coordinator.last_restore_result.verified
+
+
+async def test_a_seen_reset_survives_a_pass_that_fails_after_the_clock_write(rig):
+    """The clock is set before the restore: a later pass must still restore."""
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    await coordinator._disconnect()
+    rig.fake.clock = CurrentDate(5, 3, 0, 0)
+    rig.state.update(routineVolume=5)
+    # A step after the clock write fails (here writing back a one-off day).
+    await coordinator._set_temporary_routine_day("sunday")
+    rig.fake.routines["sunday"] = DailyRoutine(ClockTime(0, 0), (None,) * 12)
+    rig.settings.fail_opcode = 0x5A
+    with pytest.raises(HomeAssistantError):
+        await coordinator._async_recover()
+    assert rig.fake.clock.hour == 12  # the clock was already set
+    assert coordinator.restore_needed is None  # nothing was detected yet
+
+    # ... the next pass sees a correct clock but still knows the reset.
+    rig.settings.fail_opcode = None
+    await coordinator._async_recover()
+    assert coordinator.last_restore_result.verified
+    assert coordinator.restore_needed is None
+    assert not coordinator._reset_seen
+
+
+async def test_a_reset_seen_by_another_fresh_read_is_kept(rig):
+    """E.g. a profile read or an edit right after a power loss."""
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    rig.fake.clock = CurrentDate(5, 3, 0, 0)
+    rig.state.update(routineVolume=5)
+
+    await coordinator.async_read_profile_snapshot()
+    await coordinator._disconnect()
+    await coordinator._async_recover()
+
+    assert coordinator.last_restore_result.verified
+
+
+async def test_live_command_waits_for_a_session_being_opened(rig):
+    """Right after a profile write the live session may still be opening."""
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    await coordinator._disconnect()
+    coordinator.present = True
+    command = asyncio.create_task(coordinator.async_set_level("volume", 6))
+    await asyncio.sleep(0)
+    assert not command.done()
+
+    await live(rig)  # the session is back
+    await command
+
+    assert sends(rig)[-1] == bytes([0x37, 6])
+
+
+async def test_live_command_fails_when_no_session_comes(rig):
+    coordinator = rig.coordinator
+    await verified_profile(rig)
+    await coordinator._disconnect()
+    coordinator.present = True
+
+    with (
+        patch("custom_components.lumalou.coordinator.LIVE_SESSION_WAIT", 0.01),
+        pytest.raises(HomeAssistantError, match="will not be replayed"),
+    ):
+        await coordinator.async_set_level("volume", 6)

@@ -150,7 +150,7 @@ runs in English; check the actual IDs in the entity settings.
 | `button.lumalou_complete_task`, `button.lumalou_previous_task`, `button.lumalou_cancel_routine` | Button | Only while a routine runs. Complete task is the remote's check-mark button. |
 | `sensor.lumalou_routine` | Sensor (enum) | `off`, `ready` (silent preview before the first task), `in_progress`, `completed`. |
 | `sensor.lumalou_current_task` | Sensor (enum) | `none` or the current task (`get_dressed`, `wash_up`, `brush_teeth`, `toilet`, `backpack`, `meal`, `story`, `tidy_up`, `heart`, `swirl`, `star`). |
-| `event.lumalou_routine` | Event | `task_completed` (attribute `task`), `routine_completed`, `routine_cancelled`. |
+| `event.lumalou_routine` | Event | `task_completed` (attribute `task`), `routine_completed`, `routine_cancelled`, `routine_expired`. |
 | Routines | Switch (configuration) | Automatic start at each day's routine time. |
 | Routine music, Task reward sound, Routine reward sound | Switch (configuration) | Routine sounds. |
 | Routine volume | Number (configuration) | 0–9. |
@@ -170,6 +170,11 @@ There is no polling. One Bluetooth session stays open while the device is
 reachable, and the Lumalou pushes its full state after every command and every
 button press on the device, and its clock every minute. A command counts as
 done when the device acknowledges the write; nothing is read back or resent.
+A setting (volume, brightness, timers, clock and routine settings) must also
+show up in the next pushed state: if it does not, it is written once more,
+and if it still does not, the action fails with an error. A command sent while
+the session is being reopened (for example right after a profile write) waits
+up to 15 seconds for it.
 When Home Assistant Bluetooth sees the device advertising and no session is
 live, the integration reconnects (at least 2 seconds after the previous
 connection closed, retrying twice if the link drops while connecting; at most
@@ -200,7 +205,8 @@ fresh read with the saved **verified** profile:
   than Home Assistant has not heard from the device (at most 12 hours), more
   than 10 minutes off and not off by whole hours. An offset of whole hours
   (a DST or time zone change while Home Assistant was down) only sets the
-  clock, unless every setting on the device is also at its factory default. Home Assistant sets the clock first. With **automatic restore** on
+  clock, unless Home Assistant heard the device within the last hour or every
+  setting on the device is at its factory default. Home Assistant sets the clock first. With **automatic restore** on
   (the default) it then writes only the differing settings back and proves
   the whole profile with a fresh read. After two failed attempts it stops and
   raises the Repair *Lumalou settings differ from the saved profile*. With
@@ -309,9 +315,12 @@ data:
 **Follow progress** with `sensor.lumalou_routine`, `sensor.lumalou_current_task`
 and `event.lumalou_routine`. The event fires `task_completed` with the `task`
 when the child completes a task, `routine_completed` after the last task, and
-`routine_cancelled` when a routine ends before its last task (the **Cancel
-routine** button, or on the device). Events are only seen while Home Assistant
-is connected. Example: a notification when the teeth are brushed:
+`routine_cancelled` when Home Assistant cancelled it (**Cancel routine**), and
+`routine_expired` when the device ended it before its last task (for example
+an untouched routine after about two hours). Events are only seen while Home
+Assistant is connected. The sensors show what the device reports: on hardware
+an untouched scheduled routine stayed at `ready` (the preview) until it
+expired. Example: a notification when the teeth are brushed:
 
 ```yaml
 automation:

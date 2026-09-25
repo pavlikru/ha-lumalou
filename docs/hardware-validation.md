@@ -165,6 +165,10 @@ conflict.
       music after about a second; **Previous task** and **Complete task**
       behave like the app (no reconnect with `lumalou-gld09` 0.3.0);
       **Cancel routine** ends it silently and fires `routine_cancelled`.
+      (0.1.0b5 run: an untouched scheduled routine at 16:00 stayed at the
+      preview, `ready`, for about two hours until the device ended it; now
+      `routine_expired`. Check with debug logs whether the device pushes step
+      1 at the scheduled time.)
 - [ ] **One-off routine**: `lumalou.start_routine` with tasks tidy up →
       story runs those tasks; after it ends, a fresh profile read shows
       today's saved routine again and no Repair was raised. Repeat and
