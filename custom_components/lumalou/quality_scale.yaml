@@ -1,0 +1,119 @@
+# Integration Quality Scale self-assessment.
+# https://developers.home-assistant.io/docs/core/integration-quality-scale/
+# hassfest only enforces this file for core integrations; it is kept here as an
+# honest checklist. Mark a rule `done` only when the code in this directory
+# satisfies it.
+rules:
+  # Bronze
+  action-setup:
+    status: done
+    comment: Actions are registered in async_setup and reject unknown or unloaded entries.
+  appropriate-polling:
+    status: done
+    comment: No polling. State arrives from device notifications; reconnects are driven by Home Assistant Bluetooth advertisement callbacks.
+  brands:
+    status: done
+    comment: Local brand/icon.png and brand/icon@2x.png (Home Assistant 2026.3+).
+  common-modules:
+    status: done
+    comment: coordinator.py owns BLE I/O; entity.py holds the shared base entity.
+  config-flow-test-coverage:
+    status: todo
+    comment: Discovery, user, error and reconfigure paths are tested, but config_flow.py is not yet at 100% line coverage.
+  config-flow: done
+  dependency-transparency:
+    status: todo
+    comment: Switch the requirement to the published lumalou-gld09 release (public source, tagged, built in CI).
+  docs-actions: done
+  docs-conditions:
+    status: exempt
+    comment: The integration provides no conditions.
+  docs-high-level-description: done
+  docs-installation-instructions: done
+  docs-removal-instructions: done
+  docs-triggers:
+    status: exempt
+    comment: The integration provides no triggers.
+  entity-event-setup: done
+  entity-unique-id:
+    status: todo
+    comment: Entities have unique IDs, but they are still derived from the BLE address; unify them on the verified device fingerprint.
+  has-entity-name: done
+  runtime-data: done
+  test-before-configure:
+    status: done
+    comment: The config flow connects and verifies the signed device identity before creating an entry.
+  test-before-setup:
+    status: exempt
+    comment: The BLE night light may be unpowered or out of range at startup. The entry loads offline, entities stay unavailable until Home Assistant Bluetooth sees the device, and unreadable profile storage raises a Repairs issue.
+  unique-config-entry:
+    status: todo
+    comment: Entries are unique by device fingerprint, but Bluetooth discovery is still deduplicated by address before the identity probe.
+
+  # Silver
+  action-exceptions:
+    status: todo
+    comment: Device failures raise HomeAssistantError, but media_player.select_source and select.select_option still raise a bare ValueError for invalid input.
+  config-entry-unloading: done
+  docs-configuration-parameters: done
+  docs-installation-parameters: done
+  entity-unavailable: done
+  integration-owner: done
+  log-when-unavailable:
+    status: todo
+    comment: Loss and recovery of the device are only logged at debug level.
+  parallel-updates:
+    status: todo
+    comment: The coordinator serializes device I/O, but platforms do not declare PARALLEL_UPDATES.
+  reauthentication-flow:
+    status: exempt
+    comment: No credentials. A changed or replaced device is handled by the reconfigure flow.
+  test-coverage:
+    status: todo
+    comment: Overall coverage is below 95%.
+
+  # Gold
+  devices: done
+  diagnostics: done
+  discovery-update-info:
+    status: todo
+    comment: A known device that reappears at a new BLE address is not yet updated from discovery; the reconfigure flow handles it manually.
+  discovery: done
+  docs-data-update: done
+  docs-examples: done
+  docs-known-limitations: done
+  docs-supported-devices: done
+  docs-supported-functions: done
+  docs-troubleshooting: done
+  docs-use-cases: done
+  dynamic-devices:
+    status: exempt
+    comment: One config entry represents exactly one Lumalou.
+  entity-category: done
+  entity-device-class:
+    status: todo
+    comment: The connection sensor reports free-text available/unavailable instead of an enum or connectivity binary sensor.
+  entity-disabled-by-default:
+    status: todo
+    comment: Profile revision and error diagnostics are enabled by default.
+  entity-translations: done
+  exception-translations:
+    status: todo
+    comment: Service lookup errors are translated; coordinator and entity errors are not.
+  icon-translations:
+    status: todo
+    comment: No icons.json yet.
+  reconfiguration-flow: done
+  repair-issues: done
+  stale-devices:
+    status: exempt
+    comment: One device per entry; removing the entry removes the device.
+
+  # Platinum
+  async-dependency: done
+  inject-websession:
+    status: exempt
+    comment: The integration makes no HTTP requests.
+  strict-typing:
+    status: todo
+    comment: mypy runs with check_untyped_defs, not strict mode, and the protocol library ships no type information.

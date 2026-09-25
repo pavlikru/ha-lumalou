@@ -1,6 +1,6 @@
 # Lumalou protocol audit
 
-Audit date: 2026-09-24 (America/Argentina/Buenos_Aires).
+Audit date: 2026-09-24.
 
 Status: source audit, isolated synthetic checks, and the limited read-only
 browser observations recorded below. The integration did not contact a Lumalou
@@ -43,17 +43,14 @@ token identifies that SKU.
 The HA config flow first tried standard Device Information Model Number on the
 target on 2026-09-24. It was not readable, so no entry was created. The released
 `lumalou==0.1.0` only slices the factory token's public key and salt; it does
-not verify the manufacturing signature or expose its signed item-number field.
-The personal upstream fork branch `feat/strict-readback-schedules` at
-`1437dcc` has a pure parser that verifies the 192-byte token's ECDSA
-P-256/SHA-256 signature. Its offsets and public verification key are attributed
-to the independent MIT project in the upstream package notice. The parser has
-synthetic tests only. On 2026-09-24 a standalone diagnostic on the development
-host used it to verify the target FACTORY token. The token, signed identity
-fields, and address were not saved. No Mattel-published mapping from this
-identity to retail SKU `GLD09`/GWM52 or cross-device compatibility proof was
-found. The parser is not in the released package and must not be used by HA
-until released and pinned.
+not verify the manufacturing signature. The fork published as `lumalou-gld09`
+adds a parser that verifies the 192-byte token's ECDSA P-256/SHA-256 signature
+and returns a fingerprint of the signed device key. Its offsets and public
+verification key are attributed to the independent MIT project in the package
+notice. A standalone diagnostic verified the target's FACTORY token with it; the
+token, signed identity fields and address were not saved. No Mattel-published
+mapping from this identity to retail SKU `GLD09` or cross-device compatibility
+proof was found.
 
 The parser authenticates a Mattel manufacturing token; it does not by itself
 identify a retail product or prove protocol compatibility. Enrollment should
@@ -375,7 +372,7 @@ released dependency before enabling dependent features.
 
 - Compared release tag to main; downloaded the PyPI wheel, checked its SHA-256
   and compared all eight package module files against main: identical.
-- Ran upstream Python golden-vector tests: **20 passed**. The suite covers CRC,
+- Ran the upstream Python golden-vector tests: all passed. The suite covers CRC,
   key derivation, command/frame encoding, RX decryption, response framing and
   GLOBAL_STATE fixtures. It does not test BLE sessions, schedules, persistence,
   safe restore or invalid-input rejection. [Audited upstream tests][tests].
@@ -398,37 +395,29 @@ Upstream `conftest.py` imports its checkout's `src`; the separate module-byte
 comparison above establishes equivalence to the audited release. The synthetic
 probes were audit experiments, not committed HA regression coverage.
 
-### Upstream fork candidate and target read evidence
+### Fork and target read evidence
 
-The published personal fork branch `pavlikru/lumalou:feat/strict-readback-schedules`
-at `1437dcc` contains strict MPID/SSI/FE validation, session-bound response
-envelopes, exact-opcode queries without cache fallback, cancellation-safe
-disconnect cleanup, all source-backed read requests, typed schedule/routine
-codecs, playlist/clock-settings response decoders, and a signed FACTORY item
-parser. Commit `1437dcc` also verifies the FACTORY signature in every client
-handshake and optionally binds the client to one exact signed item code before
-notifications, key derivation, SESSION, or TX writes. It accepts only source-
-backed application responses and exact target-observed transport ACKs. Requests
-consume a response type once per session; a new query needs a fresh reconnect.
+The fork [`pavlikru/lumalou`](https://github.com/pavlikru/lumalou), published
+as `lumalou-gld09` with import name `lumalou`, adds strict MPID/SSI/FE
+validation, session-bound response envelopes, exact-opcode queries without
+cache fallback, cancellation-safe disconnect cleanup, all source-backed read
+requests, typed schedule/routine codecs, playlist and clock-settings decoders,
+and signed FACTORY verification. Every client handshake verifies the FACTORY
+signature and can bind the session to an expected device-key fingerprint before
+notifications, key derivation, SESSION or TX writes. It accepts only
+source-backed application responses and target-observed transport ACKs. Each
+response type is consumed once per session; a repeated query needs a fresh
+connection.
 
-Current candidate verification: **686 Python tests** on Python 3.10, 3.11 and
-3.12; **24 JavaScript tests**, TypeScript typecheck and JS build pass. Target read-only
-validation on 2026-09-24 passed strict-client handshake, GLOBAL_STATE, 12-byte
-playlist, 2-byte clock settings, two weekly time blocks, weekly alarms and seven
-14-byte routines. No real token or schedule capture is in the repository; the
-token was read in memory, verified and discarded. No settings write has been
-made through this candidate. Upstream PR #2 is open but not merged; no PyPI
-release exists. HA still pins released `lumalou==0.1.0`, which lacks both the
-signed parser and expected-item constructor API, so model-free onboarding and
-session-bound control fail closed before BLE connection.
+Read-only validation on the target with this code passed the strict handshake,
+GLOBAL_STATE, the 12-byte playlist, 2-byte clock settings, two weekly time
+blocks, weekly alarms and seven 14-byte routines. No real token or schedule
+capture is in the repository. No settings write has been made through it.
 
-The target's standard Model Number characteristic is absent. A separate
-read-only factory probe verified the Mattel signature. No SKU mapping is
-published for the signed identity, and the current HA flow does not yet
-implement confirmed enrollment with strict complete-profile compatibility.
-Model Number remains only a conflict check. Before deployment, the HA flow
-must confirm the user-selected candidate and privately bind its sessions to a
-fingerprint of the verified signed key, without exposing identity material.
+The target's standard Model Number characteristic is absent, so Model Number is
+only a conflict check. The HA flow asks the user to confirm the candidate and
+binds its sessions to the fingerprint of the verified signed key without
+exposing identity material.
 
 ### Automatable once the upstream contract is released
 

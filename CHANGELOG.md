@@ -1,30 +1,68 @@
 # Changelog
 
-## Unreleased
+All notable changes to this project are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-- Begin config-entry based Home Assistant integration.
-- Add Home Assistant Bluetooth discovery without an independent scanner.
-- Add persistent profile revision storage for the safely supported subset.
-- Add standard light and media-player entities suitable for HomeKit Bridge.
-- Add protocol audit and explicit hardware-validation gates.
-- Publish valid current-session notifications without changing saved intent.
-- Make profile commits cancellation-safe and require revision checks on import.
-- Document schedule/routine codecs found in the deployed upstream web client.
-- Prepare an unpublished upstream strict-readback and schedule-codec candidate;
-  keep HA restore disabled until it is released and accepted on hardware.
-- Add offline CAS editors for every modeled profile block, including ordered
-  playlists, clock settings, weekly schedules, and all seven daily routines.
-- Add local HACS brand assets and current metadata validation.
-- Add a guarded, validation-gated GitHub prerelease workflow and HACS release
-  archive metadata; placeholder version `0.0.0` cannot be published.
-- Expose profile presence and last verified revision as diagnostics, and create
-  an entry-scoped Home Assistant Repair when private profile storage is corrupt.
-- Document target-observed, read-only `CURRENT_DATE` evidence and its strict
-  unpublished upstream decoder.
-- Add static type checking to local and CI validation.
-- Replay Home Assistant's newest cached advertisement so reload can recover
-  presence without waiting for changed BLE payload bytes.
-- Declare fixed-palette light effects through the standard HA feature flag so
-  normal service calls and HomeKit-facing state retain palette control.
-- Add a strict passive-advertisement codec to the unpublished upstream branch;
-  HA consumption remains blocked until a released version can be exact-pinned.
+## [Unreleased]
+
+Planned as the first release, `0.1.0`, preceded by `0.1.0b1` pre-releases for
+hardware validation. When tagging, move these entries under
+`## [0.1.0] - YYYY-MM-DD`; the release workflow uses that section as release
+notes.
+
+### Added
+
+- Config-entry setup from Home Assistant Bluetooth discovery, with user
+  confirmation and no independent scanner.
+- Per-device enrollment: the signed factory key is verified and only a private
+  fingerprint is stored; every session is bound to it. Reconfigure accepts a
+  new Bluetooth address only for the same signed device.
+- Controls unlock only after one complete, strict profile read from the device.
+- Light (on/off, brightness, palette effects), media player (play/stop, volume,
+  built-in sources), light and playlist duration selects, maintenance switch,
+  clock-sync and refresh buttons, diagnostic sensors.
+- Private, revisioned profile per entry with offline editors for light and
+  audio values, playlist, clock settings, routine settings, weekly schedules,
+  alarms and all seven daily routines; JSON export/import with preview and
+  revision check.
+- Actions: `refresh_state`, `sync_clock`, `set_maintenance`, `export_profile`,
+  `import_profile`.
+- Push updates while connected; read-only reconnect on advertisement with
+  bounded backoff.
+- Repairs fix flow for unreadable profile storage; redacted diagnostics;
+  English and Russian translations; local brand icons.
+- Standard entities for Apple Home through HomeKit Bridge; configuration and
+  diagnostic entities are excluded from HomeKit by default.
+- CI with lint, type checks, tests, hassfest and HACS validation; tag-based
+  release workflow.
+
+### Security
+
+- No DFU, OTA, firmware or factory-reset access. Only allowlisted opcodes and
+  GATT characteristics are used; pairing-complete and time-prescaler commands
+  are denied.
+- Bluetooth addresses, fingerprints, tokens and schedules are kept out of the
+  UI, logs and diagnostics.
+
+### Known limitations
+
+- Automatic restore after power loss cannot be enabled yet; `restore_profile`
+  returns an error.
+- Not yet validated on hardware; see `docs/hardware-validation.md`.
+- Palette colors are not available in Apple Home.
+
+<!-- Release section template:
+## [X.Y.Z] - YYYY-MM-DD
+
+### Added
+### Changed
+### Fixed
+### Security
+### Known limitations
+
+Hardware validation: summary of passed phases (anonymized).
+Requires Home Assistant 2026.9.2 or newer and lumalou-gld09==0.2.0.
+-->
+
+[Unreleased]: https://github.com/pavlikru/ha-lumalou/commits/main
