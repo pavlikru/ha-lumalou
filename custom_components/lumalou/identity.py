@@ -10,8 +10,9 @@ from bleak import BleakClient
 from bleak.backends.device import BLEDevice
 from bleak_retry_connector import establish_connection
 
+from lumalou.factory import parse_factory_device_fingerprint
+
 from .const import CONNECT_TIMEOUT
-from .upstream_api import MissingUpstreamCapabilities, require_factory_identity_api
 
 MODEL_NUMBER_UUID = "00002a24-0000-1000-8000-00805f9b34fb"
 FIRMWARE_REVISION_UUID = "00002a26-0000-1000-8000-00805f9b34fb"
@@ -40,10 +41,6 @@ class DeviceInformation:
 
 class FactoryIdentityProbeError(Exception):
     """The read-only authenticated factory identity could not be verified."""
-
-
-class FactoryIdentityLibraryUnavailable(FactoryIdentityProbeError):
-    """The pinned upstream version lacks signed identity/session-binding APIs."""
 
 
 def _decode_gatt_text(raw: bytes | bytearray) -> str | None:
@@ -122,11 +119,7 @@ async def async_read_factory_device_fingerprint(
     The token and serial never leave this function or enter logs. Upstream
     verifies the signed device key before deriving the stable fingerprint.
     """
-    try:
-        upstream_parser = require_factory_identity_api()
-    except MissingUpstreamCapabilities as err:
-        raise FactoryIdentityLibraryUnavailable from err
-    selected_parser = parser or upstream_parser
+    selected_parser = parser or parse_factory_device_fingerprint
 
     client: BleakClient | None = None
     try:

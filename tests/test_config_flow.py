@@ -32,7 +32,6 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.lumalou.config_flow import CONF_AUTO_RESTORE, _device_title
 from custom_components.lumalou.const import (
     CONF_DEVICE_FINGERPRINT,
-    CONF_PRODUCT_CODE,
     CONF_PROTOCOL_VERIFIED,
     DOMAIN,
     ISSUE_ID_IDENTITY_ENROLLMENT,
@@ -40,7 +39,6 @@ from custom_components.lumalou.const import (
 )
 from custom_components.lumalou.identity import (
     DeviceInformation,
-    FactoryIdentityLibraryUnavailable,
     FactoryIdentityProbeError,
 )
 from custom_components.lumalou.models import (
@@ -50,7 +48,6 @@ from custom_components.lumalou.models import (
     RevisionConflictError,
     export_profile_payload,
 )
-from custom_components.lumalou.upstream_api import MissingUpstreamCapabilities
 
 ADDRESS = "AA:BB:CC:DD:EE:01"
 FINGERPRINT = "a" * 64
@@ -69,10 +66,6 @@ def bypass_integration_dependency_setup() -> Generator[None]:
         patch(
             "homeassistant.setup.async_process_deps_reqs",
             new_callable=AsyncMock,
-        ),
-        patch(
-            "custom_components.lumalou.config_flow.require_factory_identity_api",
-            return_value=lambda _token: FINGERPRINT,
         ),
     ):
         yield
@@ -762,108 +755,10 @@ async def test_missing_device_information_automatically_attempts_factory_read(
     probe.assert_awaited_once()
 
 
-async def test_factory_identity_requires_released_upstream_verifier(
-    hass: HomeAssistant,
-) -> None:
-    """Even a readable model cannot replace the unavailable signature verifier."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_BLUETOOTH},
-        data=service_info(),
-    )
-    with (
-        patch(
-            "custom_components.lumalou.config_flow.async_read_device_information",
-            new_callable=AsyncMock,
-            return_value=DeviceInformation(model_number="GLD09"),
-        ),
-        patch(
-            "custom_components.lumalou.config_flow.async_read_factory_device_fingerprint",
-            new_callable=AsyncMock,
-            side_effect=FactoryIdentityLibraryUnavailable,
-        ),
-    ):
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], user_input={}
-        )
-
-    assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {"base": "factory_verifier_unavailable"}
-    assert not hass.config_entries.async_entries(DOMAIN)
 
 
-async def test_missing_upstream_identity_binding_fails_before_any_gatt_read(
-    hass: HomeAssistant,
-) -> None:
-    """Do not open even a read-only BLE probe without signed-session APIs."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_BLUETOOTH},
-        data=service_info(),
-    )
-    with (
-        patch(
-            "custom_components.lumalou.config_flow.require_factory_identity_api",
-            side_effect=MissingUpstreamCapabilities(
-                "verify device identity",
-                ("signed FACTORY verifier", "expected device fingerprint binding"),
-            ),
-        ),
-        patch(
-            "custom_components.lumalou.config_flow.async_read_device_information",
-            new_callable=AsyncMock,
-        ) as device_information_probe,
-        patch(
-            "custom_components.lumalou.config_flow.async_read_factory_device_fingerprint",
-            new_callable=AsyncMock,
-        ) as factory_probe,
-    ):
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], user_input={}
-        )
-
-    assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {"base": "factory_verifier_unavailable"}
-    device_information_probe.assert_not_awaited()
-    factory_probe.assert_not_awaited()
-    assert not hass.config_entries.async_entries(DOMAIN)
 
 
-async def test_missing_identity_api_blocks_before_identity_probe(
-    hass: HomeAssistant,
-) -> None:
-    """An incompatible release fails before even read-only BLE discovery I/O."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_BLUETOOTH},
-        data=service_info(),
-    )
-    with (
-        patch(
-            "custom_components.lumalou.config_flow.require_factory_identity_api",
-            side_effect=MissingUpstreamCapabilities(
-                "verify device identity",
-                ("signed FACTORY verifier", "expected device fingerprint binding"),
-            ),
-        ),
-        patch(
-            "custom_components.lumalou.config_flow.async_read_device_information",
-            new_callable=AsyncMock,
-        ) as device_probe,
-        patch(
-            "custom_components.lumalou.config_flow.async_read_factory_device_fingerprint",
-            new_callable=AsyncMock,
-        ) as factory_probe,
-    ):
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], user_input={}
-        )
-
-    assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {"base": "factory_verifier_unavailable"}
-    device_probe.assert_not_awaited()
-    factory_probe.assert_not_awaited()
-    assert not hass.config_entries.async_entries(DOMAIN)
 
 
 @pytest.mark.parametrize(
@@ -1084,7 +979,7 @@ async def test_legacy_entry_reconfigure_replaces_obsolete_identity_fields(
         data={
             CONF_ADDRESS: ADDRESS,
             "factory_item_code": "synthetic-legacy-item",
-            CONF_PRODUCT_CODE: SUPPORTED_PRODUCT_CODE,
+            "product_code": SUPPORTED_PRODUCT_CODE,
         },
         options={CONF_AUTO_RESTORE: False},
     )

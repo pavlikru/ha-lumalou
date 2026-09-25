@@ -15,12 +15,10 @@ from custom_components.lumalou.identity import (
     HARDWARE_REVISION_UUID,
     MANUFACTURER_NAME_UUID,
     MODEL_NUMBER_UUID,
-    FactoryIdentityLibraryUnavailable,
     FactoryIdentityProbeError,
     async_read_device_information,
     async_read_factory_device_fingerprint,
 )
-from custom_components.lumalou.upstream_api import MissingUpstreamCapabilities
 
 
 def _device() -> BLEDevice:
@@ -29,10 +27,10 @@ def _device() -> BLEDevice:
 
 @pytest.fixture(autouse=True)
 def identity_api_available(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Unit tests inject a parser while pretending the expected API is pinned."""
+    """Unit tests use a synthetic verifier instead of real signed tokens."""
     monkeypatch.setattr(
-        "custom_components.lumalou.identity.require_factory_identity_api",
-        lambda: lambda _token: "a" * 64,
+        "custom_components.lumalou.identity.parse_factory_device_fingerprint",
+        lambda _token: "a" * 64,
     )
 
 
@@ -353,23 +351,3 @@ async def test_factory_probe_cancellation_disconnects_and_propagates() -> None:
     client.disconnect.assert_awaited_once()
     client.write_gatt_char.assert_not_called()
     client.start_notify.assert_not_called()
-
-
-async def test_factory_probe_requires_upstream_verifier_before_connecting() -> None:
-    """No verifier means no connection or unsafe field slicing fallback."""
-    with (
-        patch(
-            "custom_components.lumalou.identity.require_factory_identity_api",
-            side_effect=MissingUpstreamCapabilities(
-                "verify device identity", ("signed FACTORY verifier",)
-            ),
-        ),
-        patch(
-            "custom_components.lumalou.identity.establish_connection",
-            new_callable=AsyncMock,
-        ) as connect,
-        pytest.raises(FactoryIdentityLibraryUnavailable),
-    ):
-        await async_read_factory_device_fingerprint(_device(), "Factory probe")
-
-    connect.assert_not_awaited()

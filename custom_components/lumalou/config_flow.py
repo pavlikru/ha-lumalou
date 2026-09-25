@@ -27,7 +27,6 @@ from .const import (
 )
 from .entity import async_migrate_identifiers
 from .identity import (
-    FactoryIdentityLibraryUnavailable,
     FactoryIdentityProbeError,
     async_read_device_information,
     async_read_factory_device_fingerprint,
@@ -39,7 +38,6 @@ from .models import (
     import_profile_payload,
     validate_profile,
 )
-from .upstream_api import MissingUpstreamCapabilities, require_factory_identity_api
 
 CONF_AUTO_RESTORE = "auto_restore"
 CONF_CONFIRM = "confirm"
@@ -300,10 +298,6 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Verify the selected signed device key without guessing a SKU."""
         name = _device_title(info)
         try:
-            require_factory_identity_api()
-        except MissingUpstreamCapabilities:
-            return None, {"base": "factory_verifier_unavailable"}
-        try:
             identity = await async_read_device_information(info.device, name)
         except Exception:
             return None, {"base": "cannot_connect"}
@@ -315,8 +309,6 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # every later session to the device selected and confirmed by the user.
         try:
             fingerprint = await async_read_factory_device_fingerprint(info.device, name)
-        except FactoryIdentityLibraryUnavailable:
-            return None, {"base": "factory_verifier_unavailable"}
         except FactoryIdentityProbeError:
             return None, {"base": "identity_unconfirmed"}
         return fingerprint, {}

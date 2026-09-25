@@ -6,8 +6,6 @@ DOMAIN = "lumalou"
 ISSUE_ID_PROFILE_STORAGE = "profile_storage"
 # Entries created before signed-device enrollment must be reconfigured once.
 ISSUE_ID_IDENTITY_ENROLLMENT = "identity_enrollment"
-# Legacy entry data only; flows no longer write it.
-CONF_PRODUCT_CODE = "product_code"
 CONF_DEVICE_FINGERPRINT = "device_fingerprint"
 CONF_PROTOCOL_VERIFIED = "protocol_verified"
 SUPPORTED_PRODUCT_CODE = "GLD09"
