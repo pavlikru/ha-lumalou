@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from datetime import time
@@ -19,8 +18,10 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_AUTO_RESTORE,
     CONF_DEVICE_FINGERPRINT,
     CONF_PROTOCOL_VERIFIED,
+    DEFAULT_AUTO_RESTORE,
     DOMAIN,
     ISSUE_ID_IDENTITY_ENROLLMENT,
     SUPPORTED_PRODUCT_CODE,
@@ -35,14 +36,11 @@ from .models import (
     DAYS,
     PROFILE_RANGES,
     RevisionConflictError,
-    import_profile_payload,
+    profile_is_complete,
     validate_profile,
 )
 
-CONF_AUTO_RESTORE = "auto_restore"
 CONF_CONFIRM = "confirm"
-CONF_PROFILE_JSON = "profile_json"
-DEFAULT_AUTO_RESTORE = False
 MANUFACTURER_ID = 950
 MANUFACTURER_PREFIX = b"MB"
 MAX_ROUTINE_TASKS = 12
@@ -82,53 +80,27 @@ def _enrolled_fingerprint(entry: config_entries.ConfigEntry) -> str | None:
     return None
 
 
-def parse_profile_json(value: Any) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Validate an export envelope or the complete export action response.
-
-    Returns the envelope and its validated profile. The revision in an export
-    action response is ignored; callers use the entry's current revision.
-    """
-    if not isinstance(value, str):
-        raise ValueError("Profile JSON must be text")
-    document = json.loads(value)
-    if (
-        isinstance(document, dict)
-        and set(document) == {"current_revision", "profile"}
-        and isinstance(document["profile"], dict)
-    ):
-        document = document["profile"]
-    if not isinstance(document, dict):
-        raise ValueError("Profile export must be a JSON object")
-    return document, import_profile_payload(document)
-
-
-def _read_profile_summary(profile: dict[str, Any]) -> str:
-    """Build a compact preview of persistent values without IDs or raw bytes."""
-    ready_times = profile["ready_to_rise"]["times"]
-    sleepy_times = profile["sleepy_times"]
-    routines = profile["routines"]
-    midnight = {"hour": 0, "minute": 0}
-    wake_count = sum(value is not None for value in ready_times.values())
-    wake_midnight = sum(value == midnight for value in ready_times.values())
-    sleepy_count = sum(value is not None for value in sleepy_times.values())
-    sleepy_midnight = sum(value == midnight for value in sleepy_times.values())
-    routine_days = sum(value["time"] is not None for value in routines.values())
-    routine_tasks = sum(
-        slot is not None for value in routines.values() for slot in value["slots"]
-    )
-    active_alarms = sum(value != 9 for value in profile["alarm"]["days"].values())
-    clock = profile["clock_settings"]
-    return (
-        f"Light {profile['brightness']}/9, color {profile['color']}; "
-        f"volume {profile['volume']}/9; playlist {len(profile['playlist'])}/12; "
-        f"clock {'on' if clock['display'] else 'off'}, "
-        f"brightness {clock['brightness']}/9, "
-        f"{'24' if clock['format'] else '12'}-hour; "
-        f"wake {wake_count}/7 ({wake_midnight} at midnight); "
-        f"bedtime {sleepy_count}/7 ({sleepy_midnight} at midnight); "
-        f"alarms {active_alarms}/7; routines {routine_days}/7, "
-        f"{routine_tasks}/84 tasks"
-    )
+def _read_profile_placeholders(profile: dict[str, Any]) -> dict[str, str]:
+    """Summarize a device read as numbers; the sentence itself is translated."""
+    routines = profile["routines"].values()
+    counts = {
+        "brightness": profile["brightness"],
+        "color": profile["color"],
+        "volume": profile["volume"],
+        "song_count": len(profile["playlist"]),
+        "wake_count": sum(
+            value is not None for value in profile["ready_to_rise"]["times"].values()
+        ),
+        "bedtime_count": sum(
+            value is not None for value in profile["sleepy_times"].values()
+        ),
+        "alarm_count": sum(value != 9 for value in profile["alarm"]["days"].values()),
+        "routine_days": sum(routine["time"] is not None for routine in routines),
+        "task_count": sum(
+            slot is not None for routine in routines for slot in routine["slots"]
+        ),
+    }
+    return {name: str(value) for name, value in counts.items()}
 
 
 class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -160,60 +132,78 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="not_connectable")
         if not _is_supported(discovery_info):
             return self.async_abort(reason="unsupported_device")
-        return await self._async_select(discovery_info)
+        await self._async_claim(discovery_info)
+        self._discovered = discovery_info
+        return await self.async_step_bluetooth_confirm()
 
     @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Select a currently discovered connectable Lumalou."""
+        """Select a discovered connectable Lumalou; selecting it confirms it."""
+        errors: dict[str, str] = {}
         if user_input is not None:
-            return await self._async_select(self._candidates[user_input[CONF_ADDRESS]])
+            info = self._candidates[user_input[CONF_ADDRESS]]
+            await self._async_claim(info)
+            result, errors = await self._async_create_verified(info)
+            if result is not None:
+                return result
 
         self._candidates = self._discovered_candidates()
         if not self._candidates:
             return self.async_abort(reason="no_devices_found")
-        return self.async_show_form(step_id="user", data_schema=self._address_schema())
+        return self.async_show_form(
+            step_id="user", data_schema=self._address_schema(), errors=errors
+        )
 
-    async def _async_select(self, info: BluetoothServiceInfoBleak) -> ConfigFlowResult:
-        """Deduplicate a candidate before any connection, then ask to confirm.
+    async def _async_claim(self, info: BluetoothServiceInfoBleak) -> None:
+        """Deduplicate a candidate before any connection.
 
         The address is only a provisional unique ID: it stops duplicate
-        discovery flows and allows ignoring a candidate. Confirmation replaces
-        it with the signed-device fingerprint.
+        discovery flows and allows ignoring a candidate. Creating the entry
+        replaces it with the signed-device fingerprint.
         """
         await self.async_set_unique_id(
             info.address, raise_on_progress=self.source != config_entries.SOURCE_USER
         )
         self._abort_if_unique_id_configured()
         self._async_abort_entries_match({CONF_ADDRESS: info.address})
-        self._discovered = info
         self.context["title_placeholders"] = {"name": _device_title(info)}
-        return await self.async_step_bluetooth_confirm()
+
+    async def _async_create_verified(
+        self, info: BluetoothServiceInfoBleak
+    ) -> tuple[ConfigFlowResult | None, dict[str, str]]:
+        """Verify the user-chosen device's signed identity and create the entry."""
+        # Another flow may have configured this address meanwhile.
+        self._async_abort_entries_match({CONF_ADDRESS: info.address})
+        fingerprint, errors = await self._async_probe(info)
+        if fingerprint is None:
+            return None, errors
+        await self.async_set_unique_id(fingerprint)
+        # The same signed device at a new address: follow it, but keep
+        # control locked until its profile is read again.
+        self._abort_if_unique_id_configured(
+            updates={CONF_ADDRESS: info.address, CONF_PROTOCOL_VERIFIED: False}
+        )
+        return (
+            self.async_create_entry(
+                title=_device_title(info),
+                data=_entry_data(info.address, fingerprint),
+                options={CONF_AUTO_RESTORE: DEFAULT_AUTO_RESTORE},
+            ),
+            {},
+        )
 
     async def async_step_bluetooth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Verify the user-confirmed device's signed identity and create the entry."""
+        """Ask the user to confirm a discovered device before any connection."""
         assert self._discovered is not None
-        address = self._discovered.address
         errors: dict[str, str] = {}
         if user_input is not None:
-            # Another flow may have configured this address meanwhile.
-            self._async_abort_entries_match({CONF_ADDRESS: address})
-            fingerprint, errors = await self._async_probe(self._discovered)
-            if fingerprint is not None:
-                await self.async_set_unique_id(fingerprint)
-                # The same signed device at a new address: follow it, but keep
-                # control locked until its profile is read again.
-                self._abort_if_unique_id_configured(
-                    updates={CONF_ADDRESS: address, CONF_PROTOCOL_VERIFIED: False}
-                )
-                return self.async_create_entry(
-                    title=_device_title(self._discovered),
-                    data=_entry_data(address, fingerprint),
-                    options={CONF_AUTO_RESTORE: DEFAULT_AUTO_RESTORE},
-                )
+            result, errors = await self._async_create_verified(self._discovered)
+            if result is not None:
+                return result
 
         self._set_confirm_only()
         return self.async_show_form(
@@ -479,8 +469,9 @@ def _parse_alarm(user_input: dict[str, Any]) -> dict[str, Any]:
 class LumalouOptionsFlow(config_entries.OptionsFlow):
     """Edit behavior options and the private desired profile.
 
-    Every profile change is a detached draft of one captured revision and is
-    saved only after an explicit confirmation, with a revision check.
+    Editors start from a complete profile read from the device. Every change
+    is a detached draft of one captured revision and is saved only after an
+    explicit confirmation, with a revision check.
     """
 
     def __init__(self) -> None:
@@ -496,11 +487,18 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Choose a profile source, one profile editor, or behavior options."""
+        """Offer the editors only once a complete profile exists."""
+        record = self._record()
+        if record is None or not profile_is_complete(record.desired_profile):
+            return self.async_show_menu(
+                step_id="read_first", menu_options=["read_profile", "behavior"]
+            )
         return self.async_show_menu(
-            step_id="init",
-            menu_options=["read_profile", "import_profile", *EDITORS, "behavior"],
+            step_id="init", menu_options=["read_profile", *EDITORS, "behavior"]
         )
+
+    # Menu shown instead of "init" until a complete profile exists.
+    async_step_read_first = async_step_init
 
     async def async_step_behavior(
         self, user_input: dict[str, Any] | None = None
@@ -523,8 +521,6 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
             last_step=True,
         )
 
-    # Profile sources: a full fresh device read or an exported backup.
-
     async def async_step_read_profile(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -542,58 +538,11 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
             )
 
         placeholders = {
-            "field_count": str(len(snapshot)),
             "revision": str(revision),
-            "summary": _read_profile_summary(snapshot),
+            **_read_profile_placeholders(snapshot),
         }
         self._pending = ("read_profile_confirm", placeholders, save)
         return await self._async_confirm()
-
-    async def async_step_import_profile(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Validate an exported profile before showing an explicit preview."""
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            try:
-                payload, profile = parse_profile_json(user_input[CONF_PROFILE_JSON])
-            except KeyError, TypeError, ValueError:
-                errors["base"] = "invalid_profile_import"
-            else:
-                if (record := self._record()) is None:
-                    return self.async_abort(reason="entry_not_loaded")
-                # The entry's captured revision is used for CAS instead of any
-                # revision carried by a backup from another point in time.
-                revision = record.revision
-
-                async def save(coordinator: Any) -> None:
-                    await coordinator.async_import_profile(
-                        deepcopy(payload), revision, confirmed=True
-                    )
-
-                removed = sorted(set(record.desired_profile) - set(profile))
-                placeholders = {
-                    "schema_version": str(payload["schema_version"]),
-                    "scope": str(payload["scope"]),
-                    "field_count": str(len(profile)),
-                    "revision": str(revision),
-                    "removed_count": str(len(removed)),
-                    "removed_fields": ", ".join(removed) or "—",
-                }
-                self._pending = ("import_profile_confirm", placeholders, save)
-                return await self._async_confirm()
-
-        return self.async_show_form(
-            step_id="import_profile",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_PROFILE_JSON): selector.TextSelector(
-                        selector.TextSelectorConfig(multiline=True)
-                    )
-                }
-            ),
-            errors=errors,
-        )
 
     # Offline block editors.
 
@@ -677,8 +626,8 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Choose one daily routine to edit."""
-        if not self._ensure_draft("routine"):
-            return self.async_abort(reason="entry_not_loaded")
+        if reason := self._ensure_draft("routine"):
+            return self.async_abort(reason=reason)
         if user_input is not None:
             self._routine_day = user_input["routine_day"]
             return await self.async_step_routine_tasks()
@@ -746,8 +695,8 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
         editor: str | None = None,
     ) -> ConfigFlowResult:
         """Show one draft form, or validate it into the draft and continue."""
-        if not self._ensure_draft(editor or step_id):
-            return self.async_abort(reason="entry_not_loaded")
+        if reason := self._ensure_draft(editor or step_id):
+            return self.async_abort(reason=reason)
         assert self._draft is not None
         errors: dict[str, str] = {}
         if user_input is not None:
@@ -815,7 +764,6 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
     async_step_routine_settings_confirm = _async_confirm
     async_step_schedule_confirm = _async_confirm
     async_step_routine_confirm = _async_confirm
-    async_step_import_profile_confirm = _async_confirm
     async_step_read_profile_confirm = _async_confirm
 
     def _edit_summary(self) -> dict[str, str]:
@@ -859,15 +807,17 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
             }
         return {name: str(value) for name, value in summary.items()}
 
-    def _ensure_draft(self, editor: str) -> bool:
-        """Capture one detached profile revision for this flow."""
+    def _ensure_draft(self, editor: str) -> str | None:
+        """Capture one detached complete revision; return an abort reason."""
         if self._draft is None:
             if (record := self._record()) is None:
-                return False
+                return "entry_not_loaded"
+            if not profile_is_complete(record.desired_profile):
+                return "profile_not_read"
             self._draft = deepcopy(record.desired_profile)
             self._revision = record.revision
             self._editor = editor
-        return True
+        return None
 
     def _record(self) -> Any | None:
         """Get the loaded profile record without touching Bluetooth."""
@@ -926,20 +876,16 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
     def _current_routines(self) -> dict[str, dict[str, Any]]:
         """Return a detached complete seven-day routine block."""
         assert self._draft is not None
-        if "routines" in self._draft:
-            return deepcopy(self._draft["routines"])
-        return {
-            day: {"time": None, "slots": [None] * MAX_ROUTINE_TASKS} for day in DAYS
-        }
+        return deepcopy(self._draft["routines"])
 
-    # Form schemas. Absent blocks are shown as new draft values.
+    # Form schemas, prefilled from the complete draft.
 
     def _basic_schema(self) -> vol.Schema:
         """Return native selectors for private light and audio values."""
         assert self._draft is not None
         return vol.Schema(
             {
-                vol.Required(name, default=str(self._draft.get(name, 0))): _select(
+                vol.Required(name, default=str(self._draft[name])): _select(
                     _options(first, last)
                 )
                 for name, (first, last) in PROFILE_RANGES.items()
@@ -949,7 +895,7 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
     def _playlist_schema(self) -> vol.Schema:
         """Return twelve fixed ordered playlist rows, including empty rows."""
         assert self._draft is not None
-        playlist = self._draft.get("playlist", [])
+        playlist = self._draft["playlist"]
         schema = vol.Schema(
             {
                 vol.Optional(f"song_{index}"): _select(_options(1, 12))
@@ -964,9 +910,7 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
     def _clock_settings_schema(self) -> vol.Schema:
         """Return native controls for one complete clock settings block."""
         assert self._draft is not None
-        clock = self._draft.get(
-            "clock_settings", {"display": False, "brightness": 0, "format": 0}
-        )
+        clock = self._draft["clock_settings"]
         return vol.Schema(
             {
                 vol.Required(
@@ -984,16 +928,7 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
     def _routine_settings_schema(self) -> vol.Schema:
         """Return native controls for one complete routine settings block."""
         assert self._draft is not None
-        settings = self._draft.get(
-            "routine_settings",
-            {
-                "enabled": False,
-                "music": 0,
-                "volume": 0,
-                "task_reward_sfx": 0,
-                "routine_reward_sfx": 0,
-            },
-        )
+        settings = self._draft["routine_settings"]
         return vol.Schema(
             {
                 vol.Required(
@@ -1017,11 +952,8 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
     def _schedule_schema(self) -> vol.Schema:
         """Return native controls for both seven-day time blocks."""
         assert self._draft is not None
-        empty_week = dict.fromkeys(DAYS)
-        ready = self._draft.get(
-            "ready_to_rise", {"enabled": False, "times": empty_week}
-        )
-        sleepy = self._draft.get("sleepy_times", empty_week)
+        ready = self._draft["ready_to_rise"]
+        sleepy = self._draft["sleepy_times"]
         fields: dict[vol.Marker, Any] = {
             vol.Required(
                 "ready_to_rise_enabled", default=ready["enabled"]
@@ -1053,7 +985,7 @@ class LumalouOptionsFlow(config_entries.OptionsFlow):
     def _alarm_schema(self) -> vol.Schema:
         """Return translated alarm offset and sound selectors."""
         assert self._draft is not None
-        alarm = self._draft.get("alarm", {"days": dict.fromkeys(DAYS, 9), "sound": 0})
+        alarm = self._draft["alarm"]
         fields: dict[vol.Marker, Any] = {
             vol.Required(f"alarm_{day}", default=str(alarm["days"][day])): _select(
                 _options(0, 10), "alarm_offset"

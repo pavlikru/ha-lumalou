@@ -130,6 +130,7 @@ async def loaded_lumalou(hass: HomeAssistant) -> MockConfigEntry:
         async_start=Mock(),
         async_shutdown=AsyncMock(),
         async_add_listener=Mock(return_value=lambda: None),
+        restore_needed=None,
     )
     entry = MockConfigEntry(
         domain=DOMAIN,

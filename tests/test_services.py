@@ -14,13 +14,16 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.lumalou.const import DOMAIN
+from custom_components.lumalou.coordinator import ProfileRestoreError
+from custom_components.lumalou.models import (
+    ProfileValidationError,
+    RevisionConflictError,
+)
+from custom_components.lumalou.restore import ProfileRestoreResult
 from custom_components.lumalou.services import (
     SERVICE_EXPORT_PROFILE,
     SERVICE_IMPORT_PROFILE,
-    SERVICE_REFRESH_STATE,
     SERVICE_RESTORE_PROFILE,
-    SERVICE_SET_MAINTENANCE,
-    SERVICE_SYNC_CLOCK,
     async_setup_services,
 )
 
@@ -30,8 +33,6 @@ def loaded_entry(hass: HomeAssistant) -> tuple[MockConfigEntry, SimpleNamespace]
     record = SimpleNamespace(revision=4, pending=False)
     coordinator = SimpleNamespace(
         profile_record=record,
-        async_request_refresh=AsyncMock(),
-        async_sync_clock=AsyncMock(),
         async_export_profile=AsyncMock(
             return_value={
                 "current_revision": 4,
@@ -39,8 +40,15 @@ def loaded_entry(hass: HomeAssistant) -> tuple[MockConfigEntry, SimpleNamespace]
             }
         ),
         async_import_profile=AsyncMock(),
-        async_restore_profile=AsyncMock(),
-        async_set_maintenance=AsyncMock(),
+        async_restore_profile=AsyncMock(
+            return_value=ProfileRestoreResult(
+                revision=4,
+                automatic=False,
+                planned_steps=("volume",),
+                applied_steps=("volume",),
+                verified=True,
+            )
+        ),
     )
 
     async def import_profile(*args, **kwargs):
@@ -65,7 +73,9 @@ async def test_actions_require_explicit_loaded_lumalou_target(
     """Missing, foreign, and unloaded targets are rejected."""
     async_setup_services(hass)
     with pytest.raises(vol.Invalid):
-        await hass.services.async_call(DOMAIN, SERVICE_REFRESH_STATE, {}, blocking=True)
+        await hass.services.async_call(
+            DOMAIN, SERVICE_EXPORT_PROFILE, {}, blocking=True, return_response=True
+        )
 
     foreign = MockConfigEntry(
         domain="test", state=ConfigEntryState.LOADED, entry_id="foreign"
@@ -75,9 +85,10 @@ async def test_actions_require_explicit_loaded_lumalou_target(
     with pytest.raises(ServiceValidationError):
         await hass.services.async_call(
             DOMAIN,
-            SERVICE_REFRESH_STATE,
+            SERVICE_EXPORT_PROFILE,
             {ATTR_CONFIG_ENTRY_ID: foreign.entry_id},
             blocking=True,
+            return_response=True,
         )
 
     unloaded = MockConfigEntry(domain=DOMAIN, entry_id="unloaded")
@@ -85,23 +96,11 @@ async def test_actions_require_explicit_loaded_lumalou_target(
     with pytest.raises(ServiceValidationError):
         await hass.services.async_call(
             DOMAIN,
-            SERVICE_REFRESH_STATE,
+            SERVICE_EXPORT_PROFILE,
             {ATTR_CONFIG_ENTRY_ID: unloaded.entry_id},
             blocking=True,
+            return_response=True,
         )
-
-
-async def test_refresh_and_clock_target_selected_entry(hass: HomeAssistant) -> None:
-    """Simple actions call only the explicit entry coordinator."""
-    entry, coordinator = loaded_entry(hass)
-    async_setup_services(hass)
-    data = {ATTR_CONFIG_ENTRY_ID: entry.entry_id}
-
-    await hass.services.async_call(DOMAIN, SERVICE_REFRESH_STATE, data, blocking=True)
-    await hass.services.async_call(DOMAIN, SERVICE_SYNC_CLOCK, data, blocking=True)
-
-    coordinator.async_request_refresh.assert_awaited_once_with()
-    coordinator.async_sync_clock.assert_awaited_once_with()
 
 
 async def test_export_is_response_only(hass: HomeAssistant) -> None:
@@ -202,32 +201,137 @@ async def test_import_rejects_coerced_revision(
     coordinator.async_import_profile.assert_not_awaited()
 
 
-async def test_restore_error_is_raised(hass: HomeAssistant) -> None:
-    """Restore failures are exceptions, never error payloads."""
+async def test_removed_duplicate_actions_are_not_registered(
+    hass: HomeAssistant,
+) -> None:
+    """Buttons and the maintenance switch cover refresh, clock and maintenance."""
+    async_setup_services(hass)
+    assert set(hass.services.async_services_for_domain(DOMAIN)) == {
+        SERVICE_EXPORT_PROFILE,
+        SERVICE_IMPORT_PROFILE,
+        SERVICE_RESTORE_PROFILE,
+    }
+
+
+async def test_restore_defaults_to_current_revision(hass: HomeAssistant) -> None:
+    """Without a revision, the current saved revision is restored and reported."""
     entry, coordinator = loaded_entry(hass)
-    coordinator.async_restore_profile.side_effect = HomeAssistantError(
-        "restore unavailable"
+    async_setup_services(hass)
+
+    response = await hass.services.async_call(
+        DOMAIN,
+        SERVICE_RESTORE_PROFILE,
+        {ATTR_CONFIG_ENTRY_ID: entry.entry_id},
+        blocking=True,
+        return_response=True,
+    )
+
+    coordinator.async_restore_profile.assert_awaited_once_with(4, confirmed=True)
+    assert response == {
+        "revision": 4,
+        "verified": True,
+        "applied_steps": ["volume"],
+        "clock_synced": False,
+    }
+
+
+async def test_restore_passes_explicit_revision(hass: HomeAssistant) -> None:
+    entry, coordinator = loaded_entry(hass)
+    async_setup_services(hass)
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_RESTORE_PROFILE,
+        {ATTR_CONFIG_ENTRY_ID: entry.entry_id, "expected_revision": 3},
+        blocking=True,
+    )
+    coordinator.async_restore_profile.assert_awaited_once_with(3, confirmed=True)
+
+
+@pytest.mark.parametrize(
+    ("error", "key"),
+    [
+        ("restore_write", "restore_write"),
+        ("restore_verify", "restore_verify"),
+        ("restore_mismatch", "restore_mismatch"),
+        (None, "restore_verify"),
+    ],
+)
+async def test_restore_failure_is_translated(
+    hass: HomeAssistant, error: str | None, key: str
+) -> None:
+    """Executor failures become translated errors, never error payloads."""
+    entry, coordinator = loaded_entry(hass)
+    outcome = ProfileRestoreResult(
+        revision=4,
+        automatic=False,
+        planned_steps=("volume", "playlist"),
+        applied_steps=("volume",),
+        verified=False,
+        mismatched_blocks=("playlist",),
+        error=error,
+    )
+    coordinator.async_restore_profile.side_effect = ProfileRestoreError(
+        "not verified", outcome
     )
     async_setup_services(hass)
 
-    with pytest.raises(HomeAssistantError, match="restore unavailable"):
+    with pytest.raises(HomeAssistantError) as caught:
         await hass.services.async_call(
             DOMAIN,
             SERVICE_RESTORE_PROFILE,
             {ATTR_CONFIG_ENTRY_ID: entry.entry_id},
             blocking=True,
-            return_response=True,
         )
+    assert caught.value.translation_domain == DOMAIN
+    assert caught.value.translation_key == key
+    assert caught.value.translation_placeholders == {
+        "applied": "1",
+        "planned": "2",
+        "blocks": "playlist",
+    }
 
 
-async def test_set_maintenance(hass: HomeAssistant) -> None:
-    """Maintenance validates a boolean and targets one entry."""
+@pytest.mark.parametrize(
+    ("error", "key"),
+    [
+        (RevisionConflictError("changed"), "revision_conflict"),
+        (ProfileValidationError("incomplete"), "invalid_profile"),
+    ],
+)
+async def test_restore_and_import_validation_errors_are_translated(
+    hass: HomeAssistant, error: Exception, key: str
+) -> None:
     entry, coordinator = loaded_entry(hass)
+    coordinator.async_restore_profile.side_effect = error
+    coordinator.async_import_profile.side_effect = error
     async_setup_services(hass)
-    await hass.services.async_call(
-        DOMAIN,
-        SERVICE_SET_MAINTENANCE,
-        {ATTR_CONFIG_ENTRY_ID: entry.entry_id, "enabled": True},
-        blocking=True,
-    )
-    coordinator.async_set_maintenance.assert_awaited_once_with(True)
+
+    for service, data in (
+        (SERVICE_RESTORE_PROFILE, {}),
+        (
+            SERVICE_IMPORT_PROFILE,
+            {"profile": {}, "expected_revision": 4},
+        ),
+    ):
+        with pytest.raises(ServiceValidationError) as caught:
+            await hass.services.async_call(
+                DOMAIN,
+                service,
+                {ATTR_CONFIG_ENTRY_ID: entry.entry_id, **data},
+                blocking=True,
+            )
+        assert caught.value.translation_key == key
+
+
+async def test_other_restore_errors_propagate(hass: HomeAssistant) -> None:
+    entry, coordinator = loaded_entry(hass)
+    coordinator.async_restore_profile.side_effect = HomeAssistantError("offline")
+    async_setup_services(hass)
+
+    with pytest.raises(HomeAssistantError, match="offline"):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_RESTORE_PROFILE,
+            {ATTR_CONFIG_ENTRY_ID: entry.entry_id},
+            blocking=True,
+        )

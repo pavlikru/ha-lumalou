@@ -363,6 +363,9 @@ def test_profile_diagnostics_remain_readable_offline_without_profile_contents():
         "saved",
     ]
     assert error.native_value == "ble_apply"
+    assert "restore_mismatch" in error.options
+    entry.runtime_data.profile_record.last_error = "legacy_unknown_error"
+    assert error.native_value is None
 
     coordinator.data = {"playlistDuration": 3}
     entry.runtime_data.profile_record.pending = False

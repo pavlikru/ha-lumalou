@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS, Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
@@ -14,11 +14,13 @@ from .const import (
     CONF_DEVICE_FINGERPRINT,
     DOMAIN,
     ISSUE_ID_IDENTITY_ENROLLMENT,
+    ISSUE_ID_PROFILE_RESTORE_NEEDED,
     ISSUE_ID_PROFILE_STORAGE,
     PLATFORMS,
 )
 from .entity import async_migrate_identifiers
 from .models import LumalouRuntimeData
+from .repairs import async_sync_restore_issue
 from .services import async_setup_services
 from .storage import ProfileStore
 
@@ -85,6 +87,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: LumalouConfigEntry) -> b
         )
     entry.runtime_data = LumalouRuntimeData(coordinator)
 
+    restore_needed = coordinator.restore_needed
+
+    @callback
+    def _async_sync_restore_issue() -> None:
+        nonlocal restore_needed
+        if (need := coordinator.restore_needed) != restore_needed:
+            restore_needed = need
+            async_sync_restore_issue(hass, entry.entry_id, need)
+
+    entry.async_on_unload(coordinator.async_add_listener(_async_sync_restore_issue))
+
     try:
         coordinator.async_start()
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -101,6 +114,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: LumalouConfigEntry) -> 
         return False
 
     await entry.runtime_data.coordinator.async_shutdown()
+    # Restore detection is runtime state; the next setup detects it again.
+    async_sync_restore_issue(hass, entry.entry_id, None)
     return True
 
 
@@ -110,6 +125,10 @@ async def async_remove_entry(hass: HomeAssistant, entry: LumalouConfigEntry) -> 
     The saved profile is bound to this entry and device key; users keep a copy
     with the export action before removing the device.
     """
-    for issue in (ISSUE_ID_PROFILE_STORAGE, ISSUE_ID_IDENTITY_ENROLLMENT):
+    for issue in (
+        ISSUE_ID_PROFILE_STORAGE,
+        ISSUE_ID_IDENTITY_ENROLLMENT,
+        ISSUE_ID_PROFILE_RESTORE_NEEDED,
+    ):
         ir.async_delete_issue(hass, DOMAIN, f"{entry.entry_id}_{issue}")
     await ProfileStore(hass, entry.entry_id).async_remove()
