@@ -49,7 +49,7 @@
     "step": {
       "init": {
         "title": "Edit Lumalou",
-        "description": "Edit the saved profile that Home Assistant keeps for this Lumalou. Saving an editor creates a pending revision and does not change the device; the `lumalou.restore_profile` action writes it to Lumalou and verifies it. Reading the device profile again replaces the saved profile.",
+        "description": "Edit the profile that Home Assistant keeps for this Lumalou. Confirming an editor writes the change to Lumalou right away and checks it with a fresh read. Reading the device profile again replaces the saved profile.",
         "menu_options": {
           "read_profile": "Read the device profile",
           "playlist": "Playlist",
@@ -77,7 +77,7 @@
       },
       "behavior": {
         "title": "Behavior options",
-        "description": "Automatic restore is off by default. When it is on and Lumalou reappears with schedules, routines, playlist, clock or routine settings that differ from the saved verified profile (for example after a power loss reset them), Home Assistant writes the saved profile back and checks it with a fresh read. Light, volume and timers are never restored. Any other change of these settings made on the device, including in the Fisher-Price app, is overwritten too. If two attempts fail, a repair is raised instead. When it is off, a repair lets you choose which settings to keep.",
+        "description": "Automatic restore is on by default. A power loss resets Lumalou to factory settings: the clock, playlist, schedules, routines, timers, volume and brightness. When Home Assistant reconnects and finds the clock restarted at 05:00 on Sunday (as after a power loss) and the settings different from the saved profile, it sets the clock and writes the saved profile back, then checks it with a fresh read. It never turns light or sound on. If two attempts fail, a repair is raised instead. When automatic restore is off, a repair lets you choose which settings to keep. Settings changed on the device without a reset (for example in the Fisher-Price app) always raise the repair.",
         "data": {
           "auto_restore": "Restore the saved profile automatically"
         },
@@ -87,7 +87,7 @@
       },
       "playlist": {
         "title": "Ordered playlist",
-        "description": "Use fixed rows to preserve order and duplicates. Clear every row for an empty playlist. Nothing is sent to the device.",
+        "description": "Use fixed rows to preserve order and duplicates. Clear every row for an empty playlist.",
         "data": {
           "song_1": "Song row 1",
           "song_2": "Song row 2",
@@ -105,7 +105,7 @@
       },
       "clock_settings": {
         "title": "Clock settings",
-        "description": "Edit the saved clock-settings block. Nothing is sent to the device.",
+        "description": "Edit the clock settings.",
         "data": {
           "clock_display": "Show clock",
           "clock_brightness": "Clock brightness",
@@ -114,7 +114,7 @@
       },
       "routine_settings": {
         "title": "Routine settings",
-        "description": "Edit the saved routine-settings block. Music and volume are raw values from 0 to 15, as Lumalou reports them, not named modes. Nothing is sent to the device.",
+        "description": "Edit the routine settings. Music and volume are raw values from 0 to 15, as Lumalou reports them, not named modes.",
         "data": {
           "routine_enabled": "Enable routine mode",
           "routine_music": "Routine music value",
@@ -191,22 +191,20 @@
       },
       "routine_tasks": {
         "title": "Edit daily routine",
-        "description": "Rows are stored in order. Clear a row to remove it. Existing source task ID 0 rows are retained but are not shown as a named choice. Drag-and-drop reordering is unavailable in Home Assistant options flows; move choices between fixed rows instead.",
+        "description": "Choose the start time and the tasks in order: row 1 is step 1, row 2 step 2, and so on. Empty rows are skipped; each task can be used once. Leave every row empty for no routine on this day.",
         "data": {
-          "routine_has_time": "Routine has a start time",
-          "routine_time": "Routine start time",
-          "task_1": "Task row 1",
-          "task_2": "Task row 2",
-          "task_3": "Task row 3",
-          "task_4": "Task row 4",
-          "task_5": "Task row 5",
-          "task_6": "Task row 6",
-          "task_7": "Task row 7",
-          "task_8": "Task row 8",
-          "task_9": "Task row 9",
-          "task_10": "Task row 10",
-          "task_11": "Task row 11",
-          "task_12": "Task row 12"
+          "routine_time": "Start time",
+          "task_1": "Step 1",
+          "task_2": "Step 2",
+          "task_3": "Step 3",
+          "task_4": "Step 4",
+          "task_5": "Step 5",
+          "task_6": "Step 6",
+          "task_7": "Step 7",
+          "task_8": "Step 8",
+          "task_9": "Step 9",
+          "task_10": "Step 10",
+          "task_11": "Step 11"
         }
       },
       "routine_copy": {
@@ -218,35 +216,35 @@
       },
       "schedule_confirm": {
         "title": "Confirm weekly schedule",
-        "description": "Revision {revision}: {ready_count} Ready-to-Rise times, {sleepy_count} Sleepy times, {alarm_count} enabled alarms, alarm sound {alarm_sound}. Saving changes only the private profile; it does not write to the device.",
+        "description": "Revision {revision}: {ready_count} Ready-to-Rise times, {sleepy_count} Sleepy times, {alarm_count} enabled alarms, alarm sound {alarm_sound}. Confirming writes it to Lumalou and checks it with a fresh read.",
         "data": {
           "confirm": "Save this schedule"
         }
       },
       "routine_confirm": {
         "title": "Confirm daily routine",
-        "description": "Revision {revision}: {day}, {task_count} task rows, {copy_count} matching copied days, {zero_count} preserved unnamed task ID 0 rows. Saving changes only the private profile; it does not write to the device.",
+        "description": "Revision {revision}: {day} at {time}: {tasks}. Copied to {copy_count} more days. Confirming writes it to Lumalou and checks it with a fresh read.",
         "data": {
           "confirm": "Save this routine"
         }
       },
       "playlist_confirm": {
         "title": "Confirm playlist",
-        "description": "Revision {revision}: {song_count} song rows: {songs}. Saving changes only the private profile; it does not write to the device.",
+        "description": "Revision {revision}: {song_count} song rows: {songs}. Confirming writes it to Lumalou and checks it with a fresh read.",
         "data": {
           "confirm": "Save this playlist"
         }
       },
       "clock_settings_confirm": {
         "title": "Confirm clock settings",
-        "description": "Revision {revision}: display {display}, brightness {brightness}, format {format}. Saving changes only the private profile; it does not write to the device.",
+        "description": "Revision {revision}: display {display}, brightness {brightness}, format {format}. Confirming writes it to Lumalou and checks it with a fresh read.",
         "data": {
           "confirm": "Save clock settings"
         }
       },
       "routine_settings_confirm": {
         "title": "Confirm routine settings",
-        "description": "Revision {revision}: enabled {enabled}, music {music}, volume {volume}, task reward sound {task_reward_sfx}, routine reward sound {routine_reward_sfx}. Saving changes only the private profile; it does not write to the device.",
+        "description": "Revision {revision}: enabled {enabled}, music {music}, volume {volume}, task reward sound {task_reward_sfx}, routine reward sound {routine_reward_sfx}. Confirming writes it to Lumalou and checks it with a fresh read.",
         "data": {
           "confirm": "Save routine settings"
         }
@@ -256,18 +254,20 @@
       "invalid_schedule": "Enter valid minute-resolution schedule times.",
       "invalid_schedule_copy": "Choose supported source and target days for schedule copying.",
       "invalid_schedule_alarm": "Choose a supported alarm offset and sound.",
-      "invalid_routine_tasks": "Use no more than 12 supported task rows and a valid minute-resolution time.",
+      "invalid_routine_tasks": "Choose each task only once and a valid minute-resolution time.",
       "invalid_playlist": "Use at most 12 song IDs from 1 through 12.",
       "invalid_clock_settings": "Choose a supported clock display, brightness, and format.",
       "invalid_routine_settings": "Use whole music and volume values from 0 to 15 and supported reward sounds.",
       "confirmation_required": "Confirm before saving.",
       "revision_conflict": "The profile changed while this editor was open. Cancel and reopen it to use the latest revision.",
-      "profile_save_failed": "The profile could not be saved. Nothing was changed."
+      "profile_save_failed": "The profile could not be saved. Nothing was changed.",
+      "routine_running": "A routine is running on Lumalou. Confirm again after it ends; nothing was saved."
     },
     "abort": {
       "entry_not_loaded": "Load the Lumalou entry before reading or editing its profile.",
       "profile_read_failed": "Home Assistant could not obtain a complete, consistent fresh device profile. The saved profile was not changed.",
-      "profile_not_read": "Read the complete profile from the device first."
+      "profile_not_read": "Read the complete profile from the device first.",
+      "saved_not_applied": "Saved in Home Assistant, but not written to Lumalou: it could not be reached or checked (out of range, another app connected, or Maintenance on). The change stays pending: when Home Assistant reconnects, Repairs offers to write it (after a power loss it is restored automatically)."
     }
   },
   "selector": {
@@ -319,17 +319,17 @@
     },
     "routine_task": {
       "options": {
-        "1": "Get dressed",
-        "2": "Wash up",
-        "3": "Brush teeth",
-        "4": "Bathroom",
-        "5": "Backpack",
-        "6": "Meal",
-        "7": "Story",
-        "8": "Tidy up",
-        "9": "Heart",
-        "10": "Swirl",
-        "11": "Star"
+        "get_dressed": "Get dressed",
+        "wash_up": "Wash up",
+        "brush_teeth": "Brush teeth",
+        "toilet": "Toilet",
+        "backpack": "Backpack",
+        "meal": "Meal",
+        "story": "Story",
+        "tidy_up": "Tidy up",
+        "heart": "Heart",
+        "swirl": "Swirl",
+        "star": "Star"
       }
     }
   },
@@ -373,6 +373,42 @@
         "expected_revision": {
           "name": "Expected revision",
           "description": "Optional saved revision to restore; the action fails if the profile changed. Defaults to the current revision."
+        }
+      }
+    },
+    "set_routine": {
+      "name": "Set routine",
+      "description": "Save the routine for the chosen weekdays and write it to Lumalou, verified with a fresh read. Tasks run in the given order, one per step; an empty task list removes the routine on those days.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Device",
+          "description": "Lumalou configuration entry."
+        },
+        "days": {
+          "name": "Days",
+          "description": "Weekdays that get this routine."
+        },
+        "time": {
+          "name": "Time",
+          "description": "Start time; required when there are tasks."
+        },
+        "tasks": {
+          "name": "Tasks",
+          "description": "Tasks in order, each at most once (up to 11)."
+        }
+      }
+    },
+    "start_routine": {
+      "name": "Start routine",
+      "description": "Start today's routine now, like the scheduled start: the first task becomes current with its music. With tasks, those tasks run instead, this time only; today's saved routine is written back when the routine ends.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Device",
+          "description": "Lumalou configuration entry."
+        },
+        "tasks": {
+          "name": "Tasks",
+          "description": "Optional tasks in order for this run only."
         }
       }
     }
@@ -420,11 +456,23 @@
     "command_failed": {
       "message": "The Lumalou command failed and will not be retried. Check that Lumalou is nearby and try again."
     },
-    "refresh_failed": {
-      "message": "Could not read the current Lumalou state. Check that Lumalou is nearby and try again."
-    },
     "clock_untrusted": {
       "message": "The Home Assistant clock does not look set, so the Lumalou clock was not changed."
+    },
+    "routine_running": {
+      "message": "A routine is already running on Lumalou. Wait until it ends or cancel it."
+    },
+    "routine_not_running": {
+      "message": "No routine is running on Lumalou."
+    },
+    "invalid_routine": {
+      "message": "Invalid routine: use each task at most once, and a start time when there are tasks."
+    },
+    "profile_saved_not_applied": {
+      "message": "The change was saved in Home Assistant but could not be written to Lumalou (not reachable, or Maintenance on). It stays pending; when Home Assistant reconnects, Repairs offers to write it."
+    },
+    "routine_not_started": {
+      "message": "Lumalou did not start the routine. Nothing was changed; try again."
     }
   },
   "issues": {
@@ -434,7 +482,7 @@
         "step": {
           "init": {
             "title": "Choose which Lumalou settings to keep",
-            "description": "A fresh read shows {block_count} profile blocks that differ from the saved verified profile, for example because a power loss reset the device. Automatic restore attempts so far: {attempts}.",
+            "description": "A fresh read shows {block_count} profile blocks that differ from the saved profile, for example because a power loss reset the device, a setting was changed in the Fisher-Price app, or a change saved in Home Assistant could not be written yet. Automatic restore attempts so far: {attempts}.",
             "menu_options": {
               "restore": "Restore saved profile",
               "keep_device": "Keep device settings"
@@ -465,8 +513,17 @@
       "sync_clock": {
         "name": "Synchronize clock"
       },
-      "refresh": {
-        "name": "Refresh"
+      "start_routine": {
+        "name": "Start routine"
+      },
+      "complete_task": {
+        "name": "Complete task"
+      },
+      "previous_task": {
+        "name": "Previous task"
+      },
+      "cancel_routine": {
+        "name": "Cancel routine"
       }
     },
     "light": {
@@ -475,15 +532,15 @@
         "state_attributes": {
           "effect": {
             "state": {
-              "warm": "Warm",
+              "warm": "Warm (shimmer)",
               "red": "Red",
               "yellow": "Yellow",
               "orange": "Orange",
               "green": "Green",
               "blue": "Blue",
               "purple": "Purple",
-              "night_light": "Night light",
-              "cool": "Cool",
+              "night_light": "Night light (steady green)",
+              "cool": "Cool (blue)",
               "rainbow": "Rainbow"
             }
           }
@@ -496,9 +553,9 @@
         "state_attributes": {
           "source": {
             "state": {
-              "sleep_playlist": "Sleep playlist",
+              "sleep_playlist": "Sleep playlist (soother with light)",
               "custom_playlist": "Custom playlist",
-              "pink_noise": "Pink noise",
+              "pink_noise": "White noise",
               "ocean": "Ocean",
               "rain": "Rain",
               "brown_noise": "Brown noise",
@@ -537,6 +594,13 @@
           "continuous": "Continuous",
           "min_1": "1 minute"
         }
+      },
+      "clock_format": {
+        "name": "Clock format",
+        "state": {
+          "h12": "12-hour",
+          "h24": "24-hour"
+        }
       }
     },
     "sensor": {
@@ -552,11 +616,90 @@
           "applying": "Applying",
           "error": "Error"
         }
+      },
+      "routine": {
+        "name": "Routine",
+        "state": {
+          "off": "Off",
+          "ready": "Ready",
+          "in_progress": "In progress",
+          "completed": "Completed"
+        }
+      },
+      "current_task": {
+        "name": "Current task",
+        "state": {
+          "none": "None",
+          "get_dressed": "Get dressed",
+          "wash_up": "Wash up",
+          "brush_teeth": "Brush teeth",
+          "toilet": "Toilet",
+          "backpack": "Backpack",
+          "meal": "Meal",
+          "story": "Story",
+          "tidy_up": "Tidy up",
+          "heart": "Heart",
+          "swirl": "Swirl",
+          "star": "Star"
+        }
       }
     },
     "switch": {
       "maintenance": {
         "name": "Maintenance"
+      },
+      "clock_display": {
+        "name": "Clock display"
+      },
+      "routines": {
+        "name": "Routines"
+      },
+      "routine_music": {
+        "name": "Routine music"
+      },
+      "task_reward_sound": {
+        "name": "Task reward sound"
+      },
+      "routine_reward_sound": {
+        "name": "Routine reward sound"
+      }
+    },
+    "number": {
+      "clock_brightness": {
+        "name": "Clock brightness"
+      },
+      "routine_volume": {
+        "name": "Routine volume"
+      }
+    },
+    "event": {
+      "routine": {
+        "name": "Routine",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "task_completed": "Task completed",
+              "routine_completed": "Routine completed",
+              "routine_cancelled": "Routine cancelled"
+            }
+          },
+          "task": {
+            "name": "Task",
+            "state": {
+              "get_dressed": "Get dressed",
+              "wash_up": "Wash up",
+              "brush_teeth": "Brush teeth",
+              "toilet": "Toilet",
+              "backpack": "Backpack",
+              "meal": "Meal",
+              "story": "Story",
+              "tidy_up": "Tidy up",
+              "heart": "Heart",
+              "swirl": "Swirl",
+              "star": "Star"
+            }
+          }
+        }
       }
     }
   }

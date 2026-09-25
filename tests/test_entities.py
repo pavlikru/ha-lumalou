@@ -27,10 +27,16 @@ from custom_components.lumalou import (
     button as button_platform,
 )
 from custom_components.lumalou import (
+    event as event_platform,
+)
+from custom_components.lumalou import (
     light as light_platform,
 )
 from custom_components.lumalou import (
     media_player as media_player_platform,
+)
+from custom_components.lumalou import (
+    number as number_platform,
 )
 from custom_components.lumalou import (
     select as select_platform,
@@ -43,20 +49,38 @@ from custom_components.lumalou import (
 )
 from custom_components.lumalou.binary_sensor import LumalouConnectionBinarySensor
 from custom_components.lumalou.button import (
-    LumalouRefreshButton,
+    LumalouCancelRoutineButton,
+    LumalouCompleteTaskButton,
+    LumalouPreviousTaskButton,
+    LumalouStartRoutineButton,
     LumalouSyncClockButton,
 )
+from custom_components.lumalou.event import LumalouRoutineEvent
 from custom_components.lumalou.light import LumalouLight
 from custom_components.lumalou.media_player import LumalouMediaPlayer
+from custom_components.lumalou.number import (
+    LumalouClockBrightnessNumber,
+    LumalouRoutineVolumeNumber,
+)
 from custom_components.lumalou.select import (
+    LumalouClockFormatSelect,
     LumalouLightDurationSelect,
     LumalouPlaylistDurationSelect,
 )
 from custom_components.lumalou.sensor import (
+    LumalouCurrentTaskSensor,
     LumalouFirmwareSensor,
     LumalouProfileSyncStatusSensor,
+    LumalouRoutineSensor,
 )
-from custom_components.lumalou.switch import LumalouMaintenanceSwitch
+from custom_components.lumalou.switch import (
+    LumalouClockDisplaySwitch,
+    LumalouMaintenanceSwitch,
+    LumalouRoutineMusicSwitch,
+    LumalouRoutineRewardSoundSwitch,
+    LumalouRoutinesSwitch,
+    LumalouTaskRewardSoundSwitch,
+)
 
 FINGERPRINT = "f" * 64
 
@@ -78,18 +102,35 @@ class FakeCoordinator:
         self.data = data
         self.available = available
         self.profile_record = profile_record
-        self.async_set_light = AsyncMock()
-        self.async_set_volume = AsyncMock()
+        self.async_turn_on_light = AsyncMock()
+        self.async_turn_off_light = AsyncMock()
+        self.async_set_clock_settings = AsyncMock()
+        self.async_set_level = AsyncMock()
         self.async_play = AsyncMock()
         self.async_stop_audio = AsyncMock()
-        self.async_set_light_duration = AsyncMock()
-        self.async_set_playlist_duration = AsyncMock()
         self.async_set_maintenance = AsyncMock()
         self.async_sync_clock = AsyncMock()
-        self.async_request_refresh = AsyncMock()
+        self.async_set_routine_settings = AsyncMock()
+        self.async_start_routine = AsyncMock()
+        self.async_routine_control = AsyncMock()
+        self.routine_phase = "off"
+        self.current_task = "none"
+        self.routine_listeners = []
+
+    @property
+    def maintenance(self):
+        return self.profile_record.maintenance
+
+    @property
+    def sync_status(self):
+        return self.profile_record.sync_status
 
     def async_add_listener(self, callback):
         return lambda: None
+
+    def async_add_routine_listener(self, callback):
+        self.routine_listeners.append(callback)
+        return lambda: self.routine_listeners.remove(callback)
 
 
 def make_entry(
@@ -129,7 +170,9 @@ def test_homekit_support_controls_are_not_primary_entities():
     assert LumalouMediaPlayer(entry).entity_category is None
     assert LumalouMaintenanceSwitch(entry).entity_category is EntityCategory.CONFIG
     assert LumalouSyncClockButton(entry).entity_category is EntityCategory.CONFIG
-    assert LumalouRefreshButton(entry).entity_category is EntityCategory.DIAGNOSTIC
+    assert LumalouClockFormatSelect(entry).entity_category is EntityCategory.CONFIG
+    assert LumalouClockDisplaySwitch(entry).entity_category is EntityCategory.CONFIG
+    assert LumalouClockBrightnessNumber(entry).entity_category is EntityCategory.CONFIG
     assert LumalouLightDurationSelect(entry).entity_category is EntityCategory.CONFIG
     assert LumalouPlaylistDurationSelect(entry).entity_category is EntityCategory.CONFIG
 
@@ -147,9 +190,11 @@ async def test_light_scale_effects_and_commands():
     assert entity.effect == "blue"
     assert entity.effect_list == [color.name.lower() for color in Color]
     await entity.async_turn_on(brightness=128, effect="red")
-    coordinator.async_set_light.assert_awaited_once_with(True, 5, int(Color.RED))
+    coordinator.async_turn_on_light.assert_awaited_once_with(5, int(Color.RED))
+    await entity.async_turn_on(brightness=1)
+    coordinator.async_turn_on_light.assert_awaited_with(1, None)
     await entity.async_turn_off()
-    coordinator.async_set_light.assert_awaited_with(False)
+    coordinator.async_turn_off_light.assert_awaited_once_with()
 
 
 async def test_light_service_forwards_fixed_palette_effect(
@@ -170,14 +215,16 @@ async def test_light_service_forwards_fixed_palette_effect(
         blocking=True,
     )
 
-    coordinator.async_set_light.assert_awaited_once_with(True, None, int(Color.RED))
+    coordinator.async_turn_on_light.assert_awaited_once_with(None, int(Color.RED))
 
 
-def test_light_preserves_observed_zero_brightness():
-    """An off device value must remain zero, not be fabricated as one."""
-    entry, _coordinator = make_entry({"lightStatus": 0, "lightBrightness": 0})
+def test_light_off_keeps_the_brightness_the_next_on_uses():
+    """The device keeps brightness while off; the entity shows it honestly."""
+    entry, _coordinator = make_entry({"lightStatus": 0, "lightBrightness": 3})
 
-    assert LumalouLight(entry).brightness == 0
+    light = LumalouLight(entry)
+    assert light.is_on is False
+    assert light.brightness == 85
 
 
 @pytest.mark.asyncio
@@ -202,13 +249,13 @@ async def test_media_controls_and_exact_features():
     await entity.async_turn_off()
     coordinator.async_stop_audio.assert_awaited_once_with()
     await entity.async_set_volume_level(0.5)
-    coordinator.async_set_volume.assert_awaited_with(4)
+    coordinator.async_set_level.assert_awaited_with("volume", 4)
     await entity.async_select_source("ocean")
     coordinator.async_play.assert_awaited_with(int(Audio.OCEAN))
 
 
 def test_unavailable_semantics_and_no_io_from_properties():
-    entry, coordinator = make_entry(None, available=False)
+    entry, _coordinator = make_entry(None, available=False)
     light = LumalouLight(entry)
     media = LumalouMediaPlayer(entry)
     assert light.available is False
@@ -217,7 +264,15 @@ def test_unavailable_semantics_and_no_io_from_properties():
     assert media.available is False
     assert media.volume_level is None
     assert media.source is None
-    coordinator.async_request_refresh.assert_not_called()
+    clock = (
+        LumalouClockFormatSelect(entry),
+        LumalouClockDisplaySwitch(entry),
+        LumalouClockBrightnessNumber(entry),
+    )
+    assert not any(entity.available for entity in clock)
+    assert clock[0].current_option is None
+    assert clock[1].is_on is None
+    assert clock[2].native_value is None
 
 
 async def test_maintenance_remains_usable_offline():
@@ -254,8 +309,31 @@ async def test_device_info_unique_ids_and_buttons():
 
     await LumalouSyncClockButton(entry).async_press()
     coordinator.async_sync_clock.assert_awaited_once_with()
-    await LumalouRefreshButton(entry).async_press()
-    coordinator.async_request_refresh.assert_awaited_once_with()
+
+
+async def test_clock_entities_show_state_and_change_one_setting():
+    """24-hour format is option h24 (device format 1); each writes one field."""
+    entry, coordinator = make_entry(
+        {"clockDisplay": 1, "clockBrightness": 2, "clockFormat": 0}
+    )
+    clock_format = LumalouClockFormatSelect(entry)
+    display = LumalouClockDisplaySwitch(entry)
+    brightness = LumalouClockBrightnessNumber(entry)
+
+    assert clock_format.options == ["h12", "h24"]
+    assert clock_format.current_option == "h12"
+    assert display.is_on is True
+    assert brightness.native_value == 2
+    assert (brightness.native_min_value, brightness.native_max_value) == (0, 9)
+
+    await clock_format.async_select_option("h24")
+    coordinator.async_set_clock_settings.assert_awaited_with(clock_format=1)
+    await display.async_turn_off()
+    coordinator.async_set_clock_settings.assert_awaited_with(display=False)
+    await display.async_turn_on()
+    coordinator.async_set_clock_settings.assert_awaited_with(display=True)
+    await brightness.async_set_native_value(7.0)
+    coordinator.async_set_clock_settings.assert_awaited_with(brightness=7)
 
 
 @pytest.mark.asyncio
@@ -272,7 +350,7 @@ async def test_light_duration_select_routes_enum():
     ]
     assert entity.current_option == "continuous"
     await entity.async_select_option("min_15")
-    coordinator.async_set_light_duration.assert_awaited_once_with(0)
+    coordinator.async_set_level.assert_awaited_once_with("light_duration", 0)
 
 
 @pytest.mark.asyncio
@@ -282,7 +360,7 @@ async def test_playlist_duration_select_routes_supported_enum():
 
     assert entity.current_option == "min_1"
     await entity.async_select_option("continuous")
-    coordinator.async_set_playlist_duration.assert_awaited_once_with(5)
+    coordinator.async_set_level.assert_awaited_once_with("playlist_duration", 5)
     coordinator.data = {"playlistDuration": 99}
     assert entity.current_option is None
 
@@ -296,15 +374,17 @@ async def test_platform_setup_callbacks_add_all_entities():
     for platform in (
         binary_sensor_platform,
         button_platform,
+        event_platform,
         light_platform,
         media_player_platform,
+        number_platform,
         select_platform,
         sensor_platform,
         switch_platform,
     ):
         await platform.async_setup_entry(None, entry, add_entities)
 
-    assert sum(len(call.args[0]) for call in add_entities.call_args_list) == 10
+    assert sum(len(call.args[0]) for call in add_entities.call_args_list) == 24
 
 
 def test_diagnostic_sensor_values_remain_readable_offline():
@@ -356,7 +436,7 @@ async def test_media_state_sources_volume_steps_and_validation():
     assert entity.source == "ocean"
     assert "ocean" in entity.source_list
     await entity.async_volume_up()
-    coordinator.async_set_volume.assert_awaited_once_with(9)
+    coordinator.async_set_level.assert_awaited_once_with("volume", 9)
 
     coordinator.data = {
         "musicStatus": 1,
@@ -368,7 +448,7 @@ async def test_media_state_sources_volume_steps_and_validation():
     assert entity.source is None
     assert entity.media_title is None
     await entity.async_volume_down()
-    coordinator.async_set_volume.assert_awaited_with(0)
+    coordinator.async_set_level.assert_awaited_with("volume", 0)
 
     with pytest.raises(ServiceValidationError) as err:
         await entity.async_select_source("not_real")
@@ -386,7 +466,7 @@ async def test_media_missing_snapshot_commands_are_noops():
     assert entity.media_title is None
     await entity.async_volume_up()
     await entity.async_volume_down()
-    coordinator.async_set_volume.assert_not_awaited()
+    coordinator.async_set_level.assert_not_awaited()
 
 
 def test_controls_stay_unavailable_until_protocol_is_verified():
@@ -399,11 +479,13 @@ def test_controls_stay_unavailable_until_protocol_is_verified():
         LumalouLightDurationSelect(entry),
         LumalouPlaylistDurationSelect(entry),
         LumalouSyncClockButton(entry),
+        LumalouClockFormatSelect(entry),
+        LumalouClockDisplaySwitch(entry),
+        LumalouClockBrightnessNumber(entry),
     )
 
     assert not any(entity.available for entity in controls)
-    # Read-only and local entities remain usable for recovery.
-    assert LumalouRefreshButton(entry).available is True
+    # Local entities remain usable for recovery.
     assert LumalouMaintenanceSwitch(entry).available is True
     assert LumalouFirmwareSensor(entry).available is True
 
@@ -411,3 +493,119 @@ def test_controls_stay_unavailable_until_protocol_is_verified():
     assert all(entity.available for entity in controls)
     coordinator.available = False
     assert not any(entity.available for entity in controls)
+
+
+async def test_routine_buttons_start_and_control_only_while_running():
+    """Start is a plain control; the others need a running routine (mode 7)."""
+    entry, coordinator = make_entry({"operationMode": 0})
+    start = LumalouStartRoutineButton(entry)
+    controls = {
+        LumalouCompleteTaskButton(entry): 0,
+        LumalouPreviousTaskButton(entry): 1,
+        LumalouCancelRoutineButton(entry): 4,
+    }
+    assert start.entity_category is None
+    assert start.available
+    assert not any(button.available for button in controls)
+
+    coordinator.data = {"operationMode": 7}
+    assert all(button.available for button in controls)
+    assert not start.available
+    coordinator.protocol_verified = False
+    assert not any(button.available for button in (start, *controls))
+    coordinator.protocol_verified = True
+
+    coordinator.data = {"operationMode": 0}
+    await start.async_press()
+    coordinator.async_start_routine.assert_awaited_once_with()
+    coordinator.data = {"operationMode": 7}
+    for button, code in controls.items():
+        assert button.entity_category is None
+        await button.async_press()
+        coordinator.async_routine_control.assert_awaited_with(code)
+    assert {button.unique_id for button in controls} == {
+        f"{FINGERPRINT}_complete_task",
+        f"{FINGERPRINT}_previous_task",
+        f"{FINGERPRINT}_cancel_routine",
+    }
+
+
+async def test_routine_setting_switches_and_volume():
+    """Routines and the three sounds are booleans; volume is 0..9."""
+    entry, coordinator = make_entry(
+        {
+            "routineModeStatus": 1,
+            "routineMusicStatus": 0,
+            "taskRewardSfx": 1,
+            "routineRewardSfx": 0,
+            "routineVolume": 2,
+        }
+    )
+    switches = {
+        LumalouRoutinesSwitch(entry): ("enabled", True, True),
+        LumalouRoutineMusicSwitch(entry): ("music", False, 1),
+        LumalouTaskRewardSoundSwitch(entry): ("task_reward_sfx", True, 1),
+        LumalouRoutineRewardSoundSwitch(entry): ("routine_reward_sfx", False, 1),
+    }
+    for switch, (setting, is_on, on_value) in switches.items():
+        assert switch.entity_category is EntityCategory.CONFIG
+        assert switch.is_on is is_on
+        await switch.async_turn_on()
+        coordinator.async_set_routine_settings.assert_awaited_with(
+            **{setting: on_value}
+        )
+        await switch.async_turn_off()
+        coordinator.async_set_routine_settings.assert_awaited_with(
+            **{setting: False if setting == "enabled" else 0}
+        )
+
+    volume = LumalouRoutineVolumeNumber(entry)
+    assert volume.entity_category is EntityCategory.CONFIG
+    assert volume.native_value == 2
+    assert (volume.native_min_value, volume.native_max_value) == (0, 9)
+    await volume.async_set_native_value(4.0)
+    coordinator.async_set_routine_settings.assert_awaited_with(volume=4)
+
+    coordinator.data = None
+    assert LumalouRoutinesSwitch(entry).is_on is None
+
+
+def test_routine_sensors_are_enums_fed_by_the_coordinator():
+    entry, coordinator = make_entry({"operationMode": 7})
+    routine = LumalouRoutineSensor(entry)
+    task = LumalouCurrentTaskSensor(entry)
+
+    assert routine.options == ["off", "ready", "in_progress", "completed"]
+    assert task.options[:4] == ["none", "get_dressed", "wash_up", "brush_teeth"]
+    assert len(task.options) == 12
+    assert routine.entity_category is None
+    coordinator.routine_phase = "in_progress"
+    coordinator.current_task = "brush_teeth"
+    assert routine.native_value == "in_progress"
+    assert task.native_value == "brush_teeth"
+
+
+async def test_routine_event_entity_fires_coordinator_events(hass: HomeAssistant):
+    entry, coordinator = make_entry({"operationMode": 7})
+    event = LumalouRoutineEvent(entry)
+    event.hass = hass
+    event.entity_id = "event.lumalou_routine"
+    event.async_write_ha_state = Mock()
+    assert event.event_types == [
+        "task_completed",
+        "routine_completed",
+        "routine_cancelled",
+    ]
+
+    await event.async_added_to_hass()
+    (listener,) = coordinator.routine_listeners
+    listener("task_completed", {"task": "brush_teeth"})
+
+    assert event.state_attributes == {
+        "event_type": "task_completed",
+        "task": "brush_teeth",
+    }
+    event.async_write_ha_state.assert_called_once()
+    for remove in event._on_remove or []:
+        remove()
+    assert coordinator.routine_listeners == []

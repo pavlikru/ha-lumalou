@@ -7,18 +7,20 @@ in one deterministic write order:
 
 1. ``clock_settings`` - display configuration only, no activation.
 2. ``playlist``.
-3. ``routine_settings.music`` (music byte + reward sounds), then
+3. ``light_and_sound.*`` - light and playlist timers, volume and LED
+   brightness. Verified on hardware not to switch light or sound on.
+4. ``routine_settings.music`` (music byte + reward sounds), then
    ``routine_settings.volume``.
-4. ``sleepy_times``, ``ready_to_rise.times``, ``alarm``, then
+5. ``sleepy_times``, ``ready_to_rise.times``, ``alarm``, then
    ``routines.<day>`` Sunday..Saturday - schedule data.
-5. ``ready_to_rise.enabled``, ``routine_settings.enabled`` - activation flags
+6. ``ready_to_rise.enabled``, ``routine_settings.enabled`` - activation flags
    last, only after every schedule they activate has been written.
 
-Live state (light brightness and colour, volume, timers) is not part of the
-profile, so a restore never turns the light on. Current device time is not
-part of it either; callers synchronize it from Home Assistant before step 1,
-after a fresh read. Only steps whose logical value differs from the fresh
-device readback are produced.
+Light colour, play/stop, soother, nap, routine start and routine control are
+never part of a restore, so it never turns light or sound on. Current device
+time is not part of the profile either; callers set it from Home Assistant
+before step 1, after a fresh read. Only steps whose logical value differs
+from the fresh device readback are produced.
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ from lumalou.schedules import (
 from .models import (
     DAYS,
     FULL_PROFILE_FIELDS,
+    LIVE_BLOCK,
     ProfileValidationError,
     require_complete_profile,
 )
@@ -75,14 +78,16 @@ class ProfileRestoreResult:
 class RestoreNeeded:
     """A verified saved profile differs from a fresh complete device read.
 
-    There is no documented power-loss marker on this device, so this is the
-    detection heuristic: the current revision was verified on this device key
-    before, and a later strict readback no longer matches it.
+    ``reset`` means the device clock was also far off (a power loss resets
+    the clock and every setting); only such an event is restored
+    automatically. Without it, only differences outside the light and sound
+    block are reported (for example a change made in the Fisher-Price app).
     """
 
     revision: int
     changed_blocks: tuple[str, ...]
     detected_at: datetime
+    reset: bool = False
     auto_restore_attempts: int = 0
     auto_restore_exhausted: bool = False
 
@@ -139,8 +144,9 @@ def profile_from_readback(
 ) -> dict[str, Any]:
     """Build a complete logical profile from one session's typed responses.
 
-    Routine settings and the Ready-to-Rise flag come from GLOBAL_STATE
-    (nibbles). The dedicated clock settings response must agree with
+    Routine settings, the Ready-to-Rise flag and the light and sound block
+    come from GLOBAL_STATE (nibbles; brightness is kept while the light is
+    off). The dedicated clock settings response must agree with
     GLOBAL_STATE or the read is rejected.
     """
     expected_clock = (
@@ -177,17 +183,28 @@ def profile_from_readback(
                 "sound": alarms.sound,
             },
             "routines": {day: _read_routine(routines[day]) for day in DAYS},
+            LIVE_BLOCK: {
+                "volume": state["currentVolume"],
+                "light_brightness": state["lightBrightness"],
+                "light_duration": state["lightDuration"],
+                "playlist_duration": state["playlistDuration"],
+            },
         }
     )
 
 
-def changed_blocks(desired: Any, observed: Any) -> tuple[str, ...]:
-    """Return sorted top-level blocks where two complete profiles differ."""
+def changed_blocks(
+    desired: Any, observed: Any, *, live: bool = True
+) -> tuple[str, ...]:
+    """Return sorted top-level blocks where two complete profiles differ.
+
+    ``live=False`` skips the light and sound block, which also changes in
+    everyday use.
+    """
     target = require_complete_profile(desired)
     actual = require_complete_profile(observed)
-    return tuple(
-        sorted(field for field in FULL_PROFILE_FIELDS if target[field] != actual[field])
-    )
+    fields = FULL_PROFILE_FIELDS if live else FULL_PROFILE_FIELDS - {LIVE_BLOCK}
+    return tuple(sorted(field for field in fields if target[field] != actual[field]))
 
 
 def _time(value: dict[str, int] | None) -> ClockTime | None:
@@ -206,6 +223,11 @@ def _routine(value: dict[str, Any]) -> DailyRoutine:
             for slot in value["slots"]
         ),
     )
+
+
+def day_routine_payload(day: str, routine: dict[str, Any]) -> bytes:
+    """Build the setter for one validated logical day routine."""
+    return bytes(commands.set_day_routine(day, _routine(routine)))
 
 
 def build_restore_steps(desired: Any, observed: Any) -> tuple[RestoreStep, ...]:
@@ -237,6 +259,16 @@ def build_restore_steps(desired: Any, observed: Any) -> tuple[RestoreStep, ...]:
                 commands.set_music_playlist(MusicPlaylist.from_songs(want["playlist"])),
             )
         )
+
+    levels = want[LIVE_BLOCK]
+    for key, setter in (
+        ("light_duration", commands.set_light_duration),
+        ("playlist_duration", commands.set_playlist_duration),
+        ("volume", commands.set_volume),
+        ("light_brightness", commands.set_led_brightness),
+    ):
+        if differs(LIVE_BLOCK, key):
+            steps.append(RestoreStep(f"{LIVE_BLOCK}.{key}", setter(levels[key])))
 
     routine = want["routine_settings"]
     if any(
@@ -292,8 +324,7 @@ def build_restore_steps(desired: Any, observed: Any) -> tuple[RestoreStep, ...]:
         if differs("routines", day):
             steps.append(
                 RestoreStep(
-                    f"routines.{day}",
-                    commands.set_day_routine(day, _routine(want["routines"][day])),
+                    f"routines.{day}", day_routine_payload(day, want["routines"][day])
                 )
             )
 
@@ -339,3 +370,53 @@ def clock_offset_seconds(device: CurrentDate, moment: datetime) -> int:
     )
     difference = (device_seconds - local_seconds) % _WEEK_SECONDS
     return min(difference, _WEEK_SECONDS - difference)
+
+
+def is_whole_hour_offset(offset: int, tolerance: int) -> bool:
+    """Return whether a clock offset is whole hours (DST or time zone)."""
+    return min(offset % 3600, 3600 - offset % 3600) <= tolerance
+
+
+def is_factory_clock(device: CurrentDate, window: int) -> bool:
+    """Return whether the device clock runs from the power-loss 05:00 Sunday.
+
+    After a power loss the clock restarts at 05:00:00 on Sunday; ``window``
+    bounds how long it can have run since (seconds).
+    """
+    since_reset = device.hour * 3600 + device.minute * 60 + device.second - 5 * 3600
+    return device.weekday == 0 and 0 <= since_reset <= window
+
+
+_MIDNIGHT = {"hour": 0, "minute": 0}
+
+
+def is_factory_default(profile: dict[str, Any]) -> bool:
+    """Return whether a complete device read equals the power-loss defaults.
+
+    Hardware (firmware 0.3.7): playlist 1..12, 12-hour clock shown at
+    brightness 2, all weekly times and routines 00:00 with no tasks, alarms
+    off (9) with sound 0, routine mode and Ready-to-Rise off, routine music
+    and both reward sounds 1, routine volume 5, light timer 4, playlist timer
+    5, volume 5.
+    """
+    week = dict.fromkeys(DAYS, _MIDNIGHT)
+    levels = profile[LIVE_BLOCK]
+    return (
+        profile["playlist"] == list(range(1, 13))
+        and profile["clock_settings"] == {"display": True, "brightness": 2, "format": 0}
+        and profile["ready_to_rise"] == {"enabled": False, "times": week}
+        and profile["sleepy_times"] == week
+        and profile["routines"]
+        == {day: {"time": _MIDNIGHT, "slots": [None] * 12} for day in DAYS}
+        and profile["alarm"] == {"days": dict.fromkeys(DAYS, 9), "sound": 0}
+        and profile["routine_settings"]
+        == {
+            "enabled": False,
+            "music": 1,
+            "volume": 5,
+            "task_reward_sfx": 1,
+            "routine_reward_sfx": 1,
+        }
+        and (levels["light_duration"], levels["playlist_duration"], levels["volume"])
+        == (4, 5, 5)
+    )

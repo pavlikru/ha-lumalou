@@ -20,6 +20,10 @@ DAYS = (
     "friday",
     "saturday",
 )
+# Settings the device also changes in everyday use (volume and brightness
+# buttons). A power loss resets them too, so they are restored, but they are
+# compared with the device only when the clock shows a reset.
+LIVE_BLOCK = "light_and_sound"
 FULL_PROFILE_FIELDS = frozenset(
     {
         "playlist",
@@ -29,13 +33,12 @@ FULL_PROFILE_FIELDS = frozenset(
         "sleepy_times",
         "alarm",
         "routines",
+        LIVE_BLOCK,
     }
 )
-# Only persistent configuration. Intentionally absent: live state that changes
-# in everyday use (light brightness and colour, which read 0 while the light is
-# off; volume; light and playlist timers, which only GLOBAL_STATE reports; on/off
-# and playing state), current date/time, nap state, executing alarm, current
-# routine step and task status.
+# Only persistent configuration. Intentionally absent: light colour and
+# on/off, audio playing state, current date/time, nap state, executing alarm,
+# current routine step and task status.
 # The `alarm` block is only the established seven alarm nibbles plus sound nibble.
 # GLOBAL_STATE reports routine music and volume as 4-bit values, so only
 # 0..15 can be verified after a restore.
@@ -138,6 +141,23 @@ def _routine_settings(value: Any) -> dict[str, Any]:
     }
 
 
+def _light_and_sound(value: Any) -> dict[str, int]:
+    fields = {"volume", "light_brightness", "light_duration", "playlist_duration"}
+    data = _strict_mapping(value, fields, "light and sound settings")
+    return {
+        "volume": validate_integer(data["volume"], 0, 9, "volume"),
+        "light_brightness": validate_integer(
+            data["light_brightness"], 0, 9, "light brightness"
+        ),
+        "light_duration": validate_integer(
+            data["light_duration"], 0, 5, "light duration"
+        ),
+        "playlist_duration": validate_integer(
+            data["playlist_duration"], 0, 6, "playlist duration"
+        ),
+    }
+
+
 def _ready_to_rise(value: Any) -> dict[str, Any]:
     data = _strict_mapping(value, {"enabled", "times"}, "ready-to-rise settings")
     return {
@@ -180,6 +200,40 @@ def _routine(value: Any, day: str) -> dict[str, Any]:
     }
 
 
+def routine_from_tasks(time: dict[str, int] | None, tasks: list[int]) -> dict[str, Any]:
+    """Build one day routine: one task per step, in the given order.
+
+    Tasks are ids 1..11 without duplicates (the device reports task status by
+    task id). No tasks means no routine that day, so the time is dropped. A
+    routine without a time only starts manually.
+    """
+    if not isinstance(tasks, list) or len(tasks) > 12:
+        raise ProfileValidationError("A routine holds at most 12 tasks")
+    for task in tasks:
+        validate_integer(task, 1, 11, "routine task")
+    if len(set(tasks)) != len(tasks):
+        raise ProfileValidationError("A routine task can appear only once")
+    slots: list[dict[str, int] | None] = [
+        {"step": step, "task": task} for step, task in enumerate(tasks, 1)
+    ]
+    return _routine(
+        {
+            "time": time if tasks else None,
+            "slots": slots + [None] * (12 - len(slots)),
+        },
+        "edited",
+    )
+
+
+def routine_task_ids(routine: dict[str, Any]) -> list[int]:
+    """Return a day routine's named tasks in slot order."""
+    return [
+        slot["task"]
+        for slot in routine["slots"]
+        if slot is not None and slot["task"] != 0
+    ]
+
+
 def _routines(value: Any) -> dict[str, dict[str, Any]]:
     data = _strict_mapping(value, set(DAYS), "daily routines")
     return {day: _routine(data[day], day) for day in DAYS}
@@ -203,6 +257,8 @@ def validate_profile(value: Any) -> dict[str, Any]:
             result[name] = _week(item, "sleepy times")
         elif name == "alarm":
             result[name] = _alarm(item)
+        elif name == LIVE_BLOCK:
+            result[name] = _light_and_sound(item)
         else:
             result[name] = _routines(item)
     return result
@@ -255,7 +311,6 @@ class ProfileRecord:
     schema_version: int = PROFILE_SCHEMA_VERSION
     revision: int = 0
     desired_profile: dict[str, Any] = field(default_factory=dict)
-    previous: dict[str, Any] | None = None
     verified_revision: int | None = None
     pending: bool = False
     sync_status: str = "empty"
@@ -264,6 +319,10 @@ class ProfileRecord:
     # Private device-key fingerprint of the session that verified
     # `verified_revision`.
     verified_fingerprint: str | None = None
+    # Weekday whose device routine a one-off routine replaced; the saved
+    # routine of that day is written back when it ends (runtime marker, kept
+    # here so a restart still writes it back).
+    temporary_routine_day: str | None = None
 
     @property
     def is_verified(self) -> bool:
@@ -285,7 +344,7 @@ class ProfileRecord:
 
 
 def _validate_record(value: Any) -> dict[str, Any]:
-    """Validate record metadata and both saved profiles."""
+    """Validate record metadata and the saved profile."""
     if not isinstance(value, dict) or set(value) != set(
         ProfileRecord.__dataclass_fields__
     ):
@@ -308,14 +367,10 @@ def _validate_record(value: Any) -> dict[str, Any]:
         raise ProfileValidationError("Invalid boolean metadata")
     if value["last_error"] is not None and not isinstance(value["last_error"], str):
         raise ProfileValidationError("Invalid error metadata")
+    if value["temporary_routine_day"] not in (None, *DAYS):
+        raise ProfileValidationError("Invalid temporary routine day")
     data = deepcopy(value)
     data["desired_profile"] = validate_profile(data["desired_profile"])
-    previous = data["previous"]
-    if previous is not None:
-        if not isinstance(previous, dict) or set(previous) != {"revision", "profile"}:
-            raise ProfileValidationError("Invalid previous revision")
-        validate_integer(previous["revision"], 0, data["revision"], "previous")
-        previous["profile"] = validate_profile(previous["profile"])
     return data
 
 

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock, call, patch
 import pytest
 from homeassistant.components.homekit.accessories import TYPES, get_accessory
 from homeassistant.components.homekit.config_flow import (
+    DEFAULT_DOMAINS,
     _exclude_by_entity_registry,
 )
 from homeassistant.components.homekit.const import (
@@ -116,6 +117,8 @@ async def loaded_lumalou(hass: HomeAssistant) -> MockConfigEntry:
         available=True,
         protocol_verified=True,
         profile_record=ProfileRecord(),
+        maintenance=False,
+        sync_status="empty",
         data={
             "lightStatus": 1,
             "lightBrightness": 5,
@@ -124,13 +127,24 @@ async def loaded_lumalou(hass: HomeAssistant) -> MockConfigEntry:
             "currentVolume": 3,
             "lightDuration": 4,
             "playlistDuration": 5,
+            "clockDisplay": 1,
+            "clockBrightness": 2,
+            "clockFormat": 1,
+            "operationMode": 0,
+            "routineModeStatus": 1,
+            "routineMusicStatus": 1,
+            "taskRewardSfx": 1,
+            "routineRewardSfx": 1,
+            "routineVolume": 2,
         },
+        routine_phase="off",
+        current_task="none",
+        async_add_routine_listener=Mock(return_value=lambda: None),
         async_setup=AsyncMock(),
         async_start=Mock(),
         async_shutdown=AsyncMock(),
         async_add_listener=Mock(return_value=lambda: None),
-        restore_needed=None,
-        async_schedule_clock_check=Mock(),
+        repair_needed=None,
     )
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -165,20 +179,40 @@ async def test_default_homekit_bridge_exports_only_light_and_audio_switch(
     lumalou_entities = er.async_entries_for_config_entry(
         entity_registry, loaded_lumalou.entry_id
     )
-    assert len(lumalou_entities) == 10
+    # Light, audio, three selects, six switches, two numbers, five buttons,
+    # five sensors (three diagnostic) and the routine event.
+    assert len(lumalou_entities) == 24
 
     exported: dict[str, str | None] = {}
+    uncategorized: set[str] = set()
     accessory_types = {name: Mock(return_value=name) for name in TYPES}
     for registry_entry in lumalou_entities:
         # HomeKit Bridge skips categorized and hidden entities by default.
         if registry_entry.entity_category or registry_entry.hidden_by:
             continue
+        uncategorized.add(registry_entry.entity_id)
         state = hass.states.get(registry_entry.entity_id)
         assert state is not None
+        # A bridge created in the UI includes its default domains.
+        if state.domain not in DEFAULT_DOMAINS:
+            continue
         with patch.dict(TYPES, accessory_types):
             exported[state.domain] = get_accessory(hass, Mock(), state, 2, {})
 
     assert exported == {"light": "Light", "media_player": "MediaPlayer"}
+    # Routine controls and status stay in Home Assistant (the Routines and
+    # routine sound switches are configuration entities).
+    assert uncategorized == {
+        "light.lumalou_light",
+        "media_player.lumalou_audio",
+        "button.lumalou_start_routine",
+        "button.lumalou_complete_task",
+        "button.lumalou_previous_task",
+        "button.lumalou_cancel_routine",
+        "sensor.lumalou_routine",
+        "sensor.lumalou_current_task",
+        "event.lumalou_routine",
+    }
     audio = hass.states.get("media_player.lumalou_audio")
     assert audio.attributes["device_class"] == "speaker"
     assert get_media_player_features(audio) == [FEATURE_ON_OFF]

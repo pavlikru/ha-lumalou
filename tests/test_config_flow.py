@@ -25,7 +25,7 @@ from homeassistant.config_entries import (
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType, InvalidData
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 from lumalou.factory import InvalidFactoryTokenError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -39,13 +39,16 @@ from custom_components.lumalou.const import (
     CONF_DEVICE_FINGERPRINT,
     CONF_PROTOCOL_VERIFIED,
     DOMAIN,
+    ROUTINE_TASKS,
 )
+from custom_components.lumalou.coordinator import ProfileRestoreError
 from custom_components.lumalou.models import (
     DAYS,
     LumalouRuntimeData,
     ProfileRecord,
     RevisionConflictError,
 )
+from custom_components.lumalou.restore import ProfileRestoreResult
 
 ADDRESS = "AA:BB:CC:DD:EE:01"
 FINGERPRINT = "a" * 64
@@ -129,6 +132,12 @@ def complete_profile() -> dict:
         "sleepy_times": deepcopy(empty_week),
         "alarm": {"days": {day: 9 for day in DAYS}, "sound": 0},
         "routines": {day: {"time": None, "slots": [None] * 12} for day in DAYS},
+        "light_and_sound": {
+            "volume": 5,
+            "light_brightness": 5,
+            "light_duration": 4,
+            "playlist_duration": 5,
+        },
     }
 
 
@@ -148,7 +157,7 @@ def profile_entry(
             else editable_profile(),
             sync_status="saved",
         ),
-        async_edit_profile=save or AsyncMock(),
+        async_apply_profile_edit=save or AsyncMock(),
         async_import_profile=AsyncMock(),
         async_accept_device_profile=AsyncMock(),
         async_read_profile_snapshot=AsyncMock(
@@ -211,7 +220,7 @@ async def test_bluetooth_discovery_confirm(hass: HomeAssistant) -> None:
         CONF_PROTOCOL_VERIFIED: False,
     }
     assert result["result"].data[CONF_PROTOCOL_VERIFIED] is False
-    assert result["options"] == {CONF_AUTO_RESTORE: False}
+    assert result["options"] == {CONF_AUTO_RESTORE: True}
     setup.assert_awaited_once()
 
 
@@ -246,7 +255,7 @@ async def test_new_entry_opens_profile_source_options_flow(
         CONF_DEVICE_FINGERPRINT: FINGERPRINT,
         CONF_PROTOCOL_VERIFIED: False,
     }
-    assert result["options"] == {CONF_AUTO_RESTORE: False}
+    assert result["options"] == {CONF_AUTO_RESTORE: True}
 
 
 @pytest.mark.parametrize(
@@ -267,7 +276,7 @@ async def test_without_a_device_read_only_read_and_behavior_are_offered(
     assert result["menu_options"] == ["read_profile", "behavior"]
     assert entry.data == {CONF_ADDRESS: ADDRESS}
     assert entry.options == {CONF_AUTO_RESTORE: False}
-    coordinator.async_edit_profile.assert_not_awaited()
+    coordinator.async_apply_profile_edit.assert_not_awaited()
 
 
 async def test_read_profile_menu_offers_editors_without_json_import(
@@ -871,24 +880,23 @@ async def test_reconfigure_rejects_address_claimed_after_form_opened(
     assert entry.data[CONF_ADDRESS] == ADDRESS
 
 
-async def test_auto_restore_is_opt_in(hass: HomeAssistant) -> None:
-    """Automatic restore defaults off and is saved only when the user enables it."""
+async def test_auto_restore_is_on_by_default_and_can_be_switched_off(
+    hass: HomeAssistant,
+) -> None:
+    """Automatic restore defaults on; the user can switch it off."""
     entry = MockConfigEntry(
-        domain=DOMAIN,
-        unique_id=ADDRESS,
-        data={CONF_ADDRESS: ADDRESS},
-        options={CONF_AUTO_RESTORE: False},
+        domain=DOMAIN, unique_id=ADDRESS, data={CONF_ADDRESS: ADDRESS}, options={}
     )
     entry.add_to_hass(hass)
 
     result = await start_editor(hass, entry, "behavior")
-    assert result["data_schema"]({})[CONF_AUTO_RESTORE] is False
+    assert result["data_schema"]({})[CONF_AUTO_RESTORE] is True
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={CONF_AUTO_RESTORE: True}
+        result["flow_id"], user_input={CONF_AUTO_RESTORE: False}
     )
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert entry.options[CONF_AUTO_RESTORE] is True
+    assert entry.options[CONF_AUTO_RESTORE] is False
 
 
 async def test_behavior_options_flow_still_completes(hass: HomeAssistant) -> None:
@@ -928,7 +936,7 @@ async def test_schedule_draft_saves_only_at_final_confirmation(
     )
 
     assert result["step_id"] == "schedule_copy"
-    coordinator.async_edit_profile.assert_not_awaited()
+    coordinator.async_apply_profile_edit.assert_not_awaited()
     assert entry.options == original_options
 
     result = await hass.config_entries.options.async_configure(
@@ -949,7 +957,7 @@ async def test_schedule_draft_saves_only_at_final_confirmation(
     )
 
     assert result["step_id"] == "schedule_confirm"
-    coordinator.async_edit_profile.assert_not_awaited()
+    coordinator.async_apply_profile_edit.assert_not_awaited()
     assert result["description_placeholders"]["ready_count"] == "1"
     assert result["description_placeholders"]["sleepy_count"] == "1"
 
@@ -959,8 +967,8 @@ async def test_schedule_draft_saves_only_at_final_confirmation(
         )
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    coordinator.async_edit_profile.assert_awaited_once()
-    changes, expected_revision = coordinator.async_edit_profile.await_args.args
+    coordinator.async_apply_profile_edit.assert_awaited_once()
+    changes, expected_revision = coordinator.async_apply_profile_edit.await_args.args
     assert expected_revision == 7
     assert changes["ready_to_rise"]["times"]["sunday"] == {
         "hour": 0,
@@ -1001,7 +1009,7 @@ async def test_cancel_discards_schedule_draft(hass: HomeAssistant) -> None:
     assert result["step_id"] == "schedule_alarm"
     hass.config_entries.options.async_abort(result["flow_id"])
 
-    coordinator.async_edit_profile.assert_not_awaited()
+    coordinator.async_apply_profile_edit.assert_not_awaited()
     assert entry.options == original_options
 
 
@@ -1042,7 +1050,7 @@ async def test_schedule_confirmation_rejects_revision_conflict(
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "schedule_confirm"
     assert result["errors"] == {"base": "revision_conflict"}
-    coordinator.async_edit_profile.assert_awaited_once()
+    coordinator.async_apply_profile_edit.assert_awaited_once()
     assert entry.options == {CONF_AUTO_RESTORE: False}
 
 
@@ -1090,7 +1098,7 @@ async def test_schedule_copy_applies_each_time_to_selected_days_only(
     )
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    changes = coordinator.async_edit_profile.await_args.args[0]
+    changes = coordinator.async_apply_profile_edit.await_args.args[0]
     ready = changes["ready_to_rise"]["times"]
     sleepy = changes["sleepy_times"]
     assert (
@@ -1109,25 +1117,32 @@ async def test_schedule_copy_applies_each_time_to_selected_days_only(
     assert sleepy["thursday"] == {"hour": 23, "minute": 0}
 
 
-async def test_routine_copy_is_independent_and_preserves_task_zero(
+async def routine_editor(hass: HomeAssistant, entry, day: str) -> dict:
+    """Open the routine editor for one day."""
+    result = await start_editor(hass, entry, "routine")
+    return await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"routine_day": day}
+    )
+
+
+async def test_routine_editor_one_task_per_step_in_row_order_and_copies(
     hass: HomeAssistant,
 ) -> None:
-    """Copied routines detach and unnamed task zero cannot be selected or lost."""
+    """Filled rows become steps 1, 2, 3; copies to other days are detached."""
     entry, coordinator = profile_entry(hass)
-    result = await start_editor(hass, entry, "routine")
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"routine_day": "sunday"}
-    )
+    result = await routine_editor(hass, entry, "sunday")
     task_selector = result["data_schema"].schema["task_2"]
-    assert task_selector.config["options"] == [str(value) for value in range(1, 12)]
+    assert task_selector.config["options"] == list(ROUTINE_TASKS)
+    assert task_selector.config["translation_key"] == "routine_task"
+    assert "task_12" not in result["data_schema"].schema
 
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         user_input={
-            "routine_has_time": True,
-            "routine_time": "00:00:00",
-            "task_2": "3",
-            "task_12": "11",
+            "routine_time": "20:00:00",
+            "task_1": "brush_teeth",
+            "task_3": "toilet",
+            "task_11": "story",
         },
     )
     assert result["step_id"] == "routine_copy"
@@ -1135,33 +1150,44 @@ async def test_routine_copy_is_independent_and_preserves_task_zero(
         result["flow_id"], user_input={"copy_to": ["monday", "tuesday"]}
     )
     assert result["step_id"] == "routine_confirm"
-    assert result["description_placeholders"]["copy_count"] == "2"
-    assert result["description_placeholders"]["day"] == "Sunday"
+    assert result["description_placeholders"] == {
+        "revision": "7",
+        "day": "Sunday",
+        "time": "20:00",
+        "tasks": "Brush teeth → Toilet → Story",
+        "copy_count": "2",
+    }
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], user_input={"confirm": True}
     )
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    routines = coordinator.async_edit_profile.await_args.args[0]["routines"]
-    assert routines["sunday"]["time"] == {"hour": 0, "minute": 0}
-    assert routines["sunday"]["slots"][0] == {"step": 2, "task": 0}
+    routines = coordinator.async_apply_profile_edit.await_args.args[0]["routines"]
+    assert routines["sunday"] == {
+        "time": {"hour": 20, "minute": 0},
+        "slots": [
+            {"step": 1, "task": 3},
+            {"step": 2, "task": 4},
+            {"step": 3, "task": 7},
+            *([None] * 9),
+        ],
+    }
     assert routines["sunday"] == routines["monday"] == routines["tuesday"]
     routines["monday"]["slots"][1]["task"] = 8
-    assert routines["sunday"]["slots"][1]["task"] == 3
-    assert routines["tuesday"]["slots"][1]["task"] == 3
+    assert routines["sunday"]["slots"][1]["task"] == 4
+    assert routines["tuesday"]["slots"][1]["task"] == 4
 
 
-async def test_routine_confirm_translates_the_day(hass: HomeAssistant) -> None:
-    """The day placeholder uses the configured language, not the storage key."""
+async def test_routine_confirm_translates_the_day_and_tasks(
+    hass: HomeAssistant,
+) -> None:
+    """Placeholders use the configured language, not the storage keys."""
     hass.config.language = "ru"
     entry, _ = profile_entry(hass)
-    result = await start_editor(hass, entry, "routine")
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"routine_day": "friday"}
-    )
+    result = await routine_editor(hass, entry, "friday")
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        user_input={"routine_has_time": False, "routine_time": "00:00:00"},
+        user_input={"routine_time": "20:00:00", "task_1": "brush_teeth"},
     )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], user_input={}
@@ -1169,70 +1195,64 @@ async def test_routine_confirm_translates_the_day(hass: HomeAssistant) -> None:
 
     assert result["step_id"] == "routine_confirm"
     assert result["description_placeholders"]["day"] == "Пятница"
+    assert result["description_placeholders"]["tasks"] == "Почистить зубы"
 
 
-async def test_routine_existing_task_can_be_cleared(hass: HomeAssistant) -> None:
-    """An omitted optional row clears a visible task instead of defaulting it back."""
+async def test_routine_existing_tasks_are_suggested_and_can_be_cleared(
+    hass: HomeAssistant,
+) -> None:
+    """Named tasks prefill the rows; no tasks means no routine that day."""
     entry, coordinator = profile_entry(hass)
-    result = await start_editor(hass, entry, "routine")
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"routine_day": "sunday"}
-    )
+    result = await routine_editor(hass, entry, "sunday")
     task_marker = next(
-        marker for marker in result["data_schema"].schema if marker.schema == "task_2"
+        marker for marker in result["data_schema"].schema if marker.schema == "task_1"
     )
-    assert task_marker.description == {"suggested_value": "11"}
+    # The unnamed task 0 row is not offered; the star task moves to step 1.
+    assert task_marker.description == {"suggested_value": "star"}
 
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        user_input={"routine_has_time": True, "routine_time": "00:00:00"},
+        result["flow_id"], user_input={"routine_time": "07:30:00"}
     )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], user_input={"copy_to": []}
     )
+    assert result["description_placeholders"]["tasks"] == "—"
+    assert result["description_placeholders"]["time"] == "—"
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], user_input={"confirm": True}
     )
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    routine = coordinator.async_edit_profile.await_args.args[0]["routines"]["sunday"]
-    assert routine["slots"][0] == {"step": 2, "task": 0}
-    assert routine["slots"][1] is None
+    routine = coordinator.async_apply_profile_edit.await_args.args[0]["routines"][
+        "sunday"
+    ]
+    assert routine == {"time": None, "slots": [None] * 12}
 
 
-async def test_routine_no_time_distinct_from_midnight(hass: HomeAssistant) -> None:
-    """Routine toggle stores null even when visible selector contains midnight."""
+async def test_routine_duplicate_task_is_rejected(hass: HomeAssistant) -> None:
+    """Task status is reported per task id, so a task may appear only once."""
     entry, coordinator = profile_entry(hass)
-    result = await start_editor(hass, entry, "routine")
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"routine_day": "monday"}
-    )
+    result = await routine_editor(hass, entry, "monday")
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        user_input={"routine_has_time": False, "routine_time": "00:00:00"},
-    )
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"copy_to": []}
-    )
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"confirm": True}
+        user_input={
+            "routine_time": "20:00:00",
+            "task_1": "brush_teeth",
+            "task_2": "brush_teeth",
+        },
     )
 
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    routines = coordinator.async_edit_profile.await_args.args[0]["routines"]
-    assert routines["monday"]["time"] is None
+    assert result["step_id"] == "routine_tasks"
+    assert result["errors"] == {"base": "invalid_routine_tasks"}
+    coordinator.async_apply_profile_edit.assert_not_awaited()
 
 
 async def test_confirm_after_unload_aborts_cleanly(hass: HomeAssistant) -> None:
     """An open draft never crashes if the config entry unloads before save."""
     entry, coordinator = profile_entry(hass)
-    result = await start_editor(hass, entry, "routine")
+    result = await routine_editor(hass, entry, "monday")
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"routine_day": "monday"}
-    )
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        user_input={"routine_has_time": False, "routine_time": "00:00:00"},
+        result["flow_id"], user_input={"routine_time": "20:00:00"}
     )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], user_input={"copy_to": []}
@@ -1245,37 +1265,26 @@ async def test_confirm_after_unload_aborts_cleanly(hass: HomeAssistant) -> None:
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "entry_not_loaded"
-    coordinator.async_edit_profile.assert_not_awaited()
+    coordinator.async_apply_profile_edit.assert_not_awaited()
 
 
-async def test_routine_invalid_and_overlength_input_rejected(
+async def test_routine_invalid_and_extra_rows_rejected(
     hass: HomeAssistant,
 ) -> None:
-    """Native schema rejects unsupported task IDs and a thirteenth row."""
+    """Native schema rejects unsupported task keys and a twelfth row."""
     entry, coordinator = profile_entry(hass)
-    result = await start_editor(hass, entry, "routine")
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], user_input={"routine_day": "friday"}
-    )
+    result = await routine_editor(hass, entry, "friday")
     with pytest.raises(InvalidData):
         await hass.config_entries.options.async_configure(
             result["flow_id"],
-            user_input={
-                "routine_has_time": True,
-                "routine_time": "12:00:00",
-                "task_1": "0",
-            },
+            user_input={"routine_time": "12:00:00", "task_1": "3"},
         )
     with pytest.raises(InvalidData):
         await hass.config_entries.options.async_configure(
             result["flow_id"],
-            user_input={
-                "routine_has_time": True,
-                "routine_time": "12:00:00",
-                **{f"task_{index}": "1" for index in range(1, 14)},
-            },
+            user_input={"routine_time": "12:00:00", "task_12": "star"},
         )
-    coordinator.async_edit_profile.assert_not_awaited()
+    coordinator.async_apply_profile_edit.assert_not_awaited()
 
 
 async def test_playlist_fixed_rows_preserve_order_duplicates_and_clear(
@@ -1289,13 +1298,13 @@ async def test_playlist_fixed_rows_preserve_order_duplicates_and_clear(
         user_input={"song_1": "12", "song_2": "2", "song_3": "2", "song_4": "1"},
     )
     assert result["step_id"] == "playlist_confirm"
-    coordinator.async_edit_profile.assert_not_awaited()
+    coordinator.async_apply_profile_edit.assert_not_awaited()
 
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], user_input={"confirm": True}
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert coordinator.async_edit_profile.await_args.args[0] == {
+    assert coordinator.async_apply_profile_edit.await_args.args[0] == {
         "playlist": [12, 2, 2, 1]
     }
 
@@ -1308,7 +1317,7 @@ async def test_playlist_fixed_rows_preserve_order_duplicates_and_clear(
         result["flow_id"], user_input={"confirm": True}
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert coordinator.async_edit_profile.await_args.args[0] == {"playlist": []}
+    assert coordinator.async_apply_profile_edit.await_args.args[0] == {"playlist": []}
 
 
 async def test_routine_settings_rejects_non_byte_values(
@@ -1328,7 +1337,7 @@ async def test_routine_settings_rejects_non_byte_values(
                 "routine_reward_sfx": "0",
             },
         )
-    coordinator.async_edit_profile.assert_not_awaited()
+    coordinator.async_apply_profile_edit.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -1376,7 +1385,7 @@ async def test_new_editor_invalid_payloads_return_validation_form(
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == section
     assert result["errors"] == {"base": error}
-    coordinator.async_edit_profile.assert_not_awaited()
+    coordinator.async_apply_profile_edit.assert_not_awaited()
 
 
 async def test_routine_settings_rejects_fractional_byte_in_validation_branch(
@@ -1399,7 +1408,7 @@ async def test_routine_settings_rejects_fractional_byte_in_validation_branch(
 
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "invalid_routine_settings"}
-    coordinator.async_edit_profile.assert_not_awaited()
+    coordinator.async_apply_profile_edit.assert_not_awaited()
 
 
 @pytest.mark.parametrize("invalid_row", ("song_13", "unknown_song"))
@@ -1415,7 +1424,7 @@ async def test_playlist_schema_rejects_unknown_rows(
             result["flow_id"], user_input={"song_1": "1", invalid_row: "2"}
         )
 
-    coordinator.async_edit_profile.assert_not_awaited()
+    coordinator.async_apply_profile_edit.assert_not_awaited()
 
 
 async def test_editor_confirmation_retains_draft_after_cas_conflict(
@@ -1435,7 +1444,7 @@ async def test_editor_confirmation_retains_draft_after_cas_conflict(
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "playlist_confirm"
     assert result["errors"] == {"base": "revision_conflict"}
-    coordinator.async_edit_profile.assert_awaited_once_with({"playlist": [2]}, 7)
+    coordinator.async_apply_profile_edit.assert_awaited_once_with({"playlist": [2]}, 7)
 
 
 def _probe_patch(fingerprint: str = FINGERPRINT):
@@ -1620,11 +1629,67 @@ async def test_confirmation_checkbox_is_required_and_failures_keep_draft(
         result["flow_id"], user_input={"confirm": False}
     )
     assert result["errors"] == {"confirm": "confirmation_required"}
-    coordinator.async_edit_profile.assert_not_awaited()
+    coordinator.async_apply_profile_edit.assert_not_awaited()
 
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], user_input={"confirm": True}
     )
+    assert result["errors"] == {"base": "profile_save_failed"}
+
+
+async def playlist_confirm_with(hass: HomeAssistant, error: Exception) -> dict:
+    """Confirm a playlist edit whose device write raises ``error``."""
+    entry, _ = profile_entry(hass, save=AsyncMock(side_effect=error))
+    result = await start_editor(hass, entry, "playlist")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"song_1": "3"}
+    )
+    return await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"confirm": True}
+    )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        HomeAssistantError(
+            translation_domain=DOMAIN, translation_key="profile_saved_not_applied"
+        ),
+        ProfileRestoreError(
+            "not verified",
+            ProfileRestoreResult(
+                revision=8,
+                automatic=False,
+                planned_steps=("playlist",),
+                applied_steps=(),
+                verified=False,
+                error="restore_write",
+            ),
+        ),
+    ],
+)
+async def test_editor_saved_but_not_written_ends_with_a_clear_message(
+    hass: HomeAssistant, error: Exception
+) -> None:
+    """The edit is saved (pending); retrying the form would only conflict."""
+    result = await playlist_confirm_with(hass, error)
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "saved_not_applied"
+
+
+async def test_editor_refused_while_a_routine_runs(hass: HomeAssistant) -> None:
+    result = await playlist_confirm_with(
+        hass,
+        ServiceValidationError(
+            translation_domain=DOMAIN, translation_key="routine_running"
+        ),
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "routine_running"}
+
+    result = await playlist_confirm_with(hass, ValueError("invalid"))
     assert result["errors"] == {"base": "profile_save_failed"}
 
 
@@ -1691,7 +1756,7 @@ async def test_block_editors_start_from_the_read_profile(
     )
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    coordinator.async_edit_profile.assert_awaited_once_with(changes, 7)
+    coordinator.async_apply_profile_edit.assert_awaited_once_with(changes, 7)
 
 
 @pytest.mark.parametrize(

@@ -64,6 +64,12 @@ def complete_profile() -> dict:
         "sleepy_times": dict.fromkeys(DAYS),
         "alarm": {"days": dict.fromkeys(DAYS, 9), "sound": 0},
         "routines": {day: {"time": None, "slots": [None] * 12} for day in DAYS},
+        "light_and_sound": {
+            "volume": 5,
+            "light_brightness": 5,
+            "light_duration": 4,
+            "playlist_duration": 5,
+        },
     }
 
 
@@ -91,6 +97,12 @@ def everything_changed() -> dict:
         }
         for day in DAYS
     }
+    desired["light_and_sound"] = {
+        "volume": 2,
+        "light_brightness": 3,
+        "light_duration": 1,
+        "playlist_duration": 0,
+    }
     return desired
 
 
@@ -105,6 +117,10 @@ def test_full_diff_uses_documented_order_and_only_allowlisted_setters():
     assert [step.name for step in steps] == [
         "clock_settings",
         "playlist",
+        "light_and_sound.light_duration",
+        "light_and_sound.playlist_duration",
+        "light_and_sound.volume",
+        "light_and_sound.light_brightness",
         "routine_settings.music",
         "routine_settings.volume",
         "sleepy_times",
@@ -129,10 +145,24 @@ def test_full_diff_uses_documented_order_and_only_allowlisted_setters():
     assert payloads["routines.saturday"][0] == 0x66
     assert payloads["ready_to_rise.enabled"] == bytes([0x44, 1])
     assert payloads["routine_settings.enabled"] == bytes([0x58, 1])
-    # Live light and audio setters are never part of a restore.
-    assert not {0x37, 0x3A, 0x3C, 0x3E, 0x3F, 0x42, 0x6C} & {
+    assert payloads["light_and_sound.light_duration"] == bytes([0x6C, 1])
+    assert payloads["light_and_sound.playlist_duration"] == bytes([0x42, 0])
+    assert payloads["light_and_sound.volume"] == bytes([0x37, 2])
+    assert payloads["light_and_sound.light_brightness"] == bytes([0x3A, 3])
+    # Colour, light off, play/stop, soother, nap and routine start are never
+    # part of a restore, so it never switches light or sound on.
+    assert not {0x01, 0x03, 0x38, 0x3C, 0x3E, 0x3F, 0x4D, 0x4F, 0x6B, 0x7B} & {
         step.payload[0] for step in steps
     }
+
+
+def test_live_block_is_compared_only_when_asked():
+    desired = complete_profile()
+    observed = deepcopy(desired)
+    observed["light_and_sound"]["volume"] = 1
+
+    assert changed_blocks(desired, observed) == ("light_and_sound",)
+    assert changed_blocks(desired, observed, live=False) == ()
 
 
 def test_only_differing_sub_blocks_are_written():
@@ -185,3 +215,51 @@ def test_clock_offset_is_circular_over_the_week():
         3 * 86400 + 12 * 3600
     )
     assert set_current_date_payload(saturday) == bytes([0x30, 0x23, 0x59, 0x55, 6])
+
+
+def test_whole_hour_offsets_and_the_power_loss_clock():
+    from custom_components.lumalou.restore import (
+        is_factory_clock,
+        is_whole_hour_offset,
+    )
+
+    assert is_whole_hour_offset(3600 + 90, 120)
+    assert is_whole_hour_offset(7200 - 90, 120)
+    assert not is_whole_hour_offset(3600 + 300, 120)
+    assert is_factory_clock(CurrentDate(5, 0, 0, 0), 0)
+    assert is_factory_clock(CurrentDate(6, 0, 0, 0), 3600)
+    assert not is_factory_clock(CurrentDate(6, 0, 1, 0), 3600)
+    assert not is_factory_clock(CurrentDate(5, 0, 0, 1), 3600)
+
+
+def test_factory_default_profile_matches_the_hardware_power_loss_values():
+    from custom_components.lumalou.restore import is_factory_default
+
+    midnight = {"hour": 0, "minute": 0}
+    week = dict.fromkeys(DAYS, midnight)
+    profile = {
+        "playlist": list(range(1, 13)),
+        "clock_settings": {"display": True, "brightness": 2, "format": 0},
+        "routine_settings": {
+            "enabled": False,
+            "music": 1,
+            "volume": 5,
+            "task_reward_sfx": 1,
+            "routine_reward_sfx": 1,
+        },
+        "ready_to_rise": {"enabled": False, "times": dict(week)},
+        "sleepy_times": dict(week),
+        "alarm": {"days": dict.fromkeys(DAYS, 9), "sound": 0},
+        "routines": {day: {"time": midnight, "slots": [None] * 12} for day in DAYS},
+        "light_and_sound": {
+            "volume": 5,
+            "light_brightness": 5,
+            "light_duration": 4,
+            "playlist_duration": 5,
+        },
+    }
+    assert is_factory_default(profile)
+    profile["light_and_sound"]["light_brightness"] = 9  # not compared
+    assert is_factory_default(profile)
+    profile["clock_settings"]["format"] = 1
+    assert not is_factory_default(profile)

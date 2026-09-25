@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from homeassistant.core import HomeAssistant
 
-from custom_components.lumalou.const import PROFILE_SCHEMA_VERSION
+from custom_components.lumalou.const import STORE_VERSION
 from custom_components.lumalou.models import ProfileRecord
 from custom_components.lumalou.storage import ProfileStore
 from tests.test_restore import complete_profile
@@ -23,7 +23,7 @@ async def test_missing_then_saved_profile_survives_new_store(
     await store.async_save(record)
     await hass.async_block_till_done()
 
-    assert hass_storage[KEY]["version"] == PROFILE_SCHEMA_VERSION
+    assert hass_storage[KEY]["version"] == STORE_VERSION
     assert hass_storage[KEY]["data"] == record.to_dict()
     assert await ProfileStore(hass, "synthetic-entry").async_load() == record
 
@@ -34,7 +34,7 @@ async def test_invalid_record_is_ignored_with_a_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     hass_storage[KEY] = {
-        "version": PROFILE_SCHEMA_VERSION,
+        "version": STORE_VERSION,
         "minor_version": 1,
         "key": KEY,
         "data": {"revision": "not a record"},
@@ -42,6 +42,21 @@ async def test_invalid_record_is_ignored_with_a_warning(
 
     assert await ProfileStore(hass, "synthetic-entry").async_load() == ProfileRecord()
     assert "Ignoring an invalid saved Lumalou profile" in caplog.text
+
+
+async def test_older_profile_schema_needs_a_fresh_device_read(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    """A schema 2 record (no light and sound block) loads as empty, no crash."""
+    old = ProfileRecord(revision=1).to_dict() | {"schema_version": 2}
+    hass_storage[KEY] = {
+        "version": STORE_VERSION,
+        "minor_version": 1,
+        "key": KEY,
+        "data": old,
+    }
+
+    assert await ProfileStore(hass, "synthetic-entry").async_load() == ProfileRecord()
 
 
 async def test_remove_deletes_the_saved_profile(
