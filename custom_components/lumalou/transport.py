@@ -28,6 +28,7 @@ from lumalou.factory import parse_factory_device_fingerprint
 from .const import (
     ALLOWED_REQUEST_OPCODES,
     ALLOWED_SEND_OPCODES,
+    EXACT_SEND_PAYLOADS,
     FORBIDDEN_OPCODES,
     GATT_TIMEOUT,
     WRITE_CHARACTERISTICS,
@@ -51,12 +52,18 @@ def _allowed_uuid(characteristic: str, allowed: frozenset[str]) -> str:
 
 
 def _require_opcode(app_data: bytes, allowed: frozenset[int]) -> None:
-    """Deny unknown and explicitly unsafe application opcodes before I/O."""
+    """Deny unknown and explicitly unsafe application operations before I/O.
+
+    Routine start and control are only allowed as their exact documented
+    payloads (no extra or unknown arguments).
+    """
     if (
         not isinstance(app_data, bytes | bytearray)
         or not app_data
         or app_data[0] in FORBIDDEN_OPCODES
         or app_data[0] not in allowed
+        or bytes(app_data)
+        not in EXACT_SEND_PAYLOADS.get(app_data[0], frozenset({bytes(app_data)}))
     ):
         raise HomeAssistantError("Unsupported Lumalou operation")
 
@@ -150,6 +157,7 @@ class SafeLumalouClient(LumalouClient):
         *,
         expected_device_fingerprint: str | None,
         on_state: Callable[[dict], None] | None = None,
+        on_response: Callable[[ResponseEnvelope], None] | None = None,
         disconnected_callback: Callable[[LumalouClient], None] | None = None,
     ) -> None:
         if not expected_device_fingerprint:
@@ -159,6 +167,7 @@ class SafeLumalouClient(LumalouClient):
         super().__init__(
             device,
             on_state=on_state,
+            on_response=on_response,
             client_factory=partial(RestrictedLumalouTransport, hass),
             disconnected_callback=disconnected_callback,
             expected_device_fingerprint=expected_device_fingerprint,

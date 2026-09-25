@@ -42,7 +42,7 @@ async def test_repair_factory_rejects_mismatched_entry_scope(
 def _need(**changes) -> RestoreNeeded:
     return RestoreNeeded(
         revision=3,
-        changed_blocks=("routines", "volume"),
+        changed_blocks=("light_and_sound", "routines"),
         detected_at=datetime(2026, 1, 1, tzinfo=UTC),
         **changes,
     )
@@ -151,7 +151,7 @@ async def test_restore_issue_follows_coordinator_state(hass: HomeAssistant) -> N
     entry.add_to_hass(hass)
     listeners = []
     coordinator = Mock(
-        restore_needed=None,
+        repair_needed=None,
         async_setup=AsyncMock(),
         async_start=Mock(),
         async_shutdown=AsyncMock(),
@@ -174,12 +174,11 @@ async def test_restore_issue_follows_coordinator_state(hass: HomeAssistant) -> N
             "async_unload_platforms",
             new=AsyncMock(return_value=True),
         ),
-        patch("custom_components.lumalou.async_track_time_change"),
     ):
         assert await async_setup_entry(hass, entry)
         assert registry.async_get_issue(DOMAIN, issue_id) is None
 
-        coordinator.restore_needed = _need(auto_restore_attempts=1)
+        coordinator.repair_needed = _need(auto_restore_attempts=1)
         for listener in listeners:
             listener()
         issue = registry.async_get_issue(DOMAIN, issue_id)
@@ -190,7 +189,7 @@ async def test_restore_issue_follows_coordinator_state(hass: HomeAssistant) -> N
         assert issue.translation_placeholders == {"block_count": "2", "attempts": "1"}
         assert issue.data == {"entry_id": entry.entry_id}
 
-        coordinator.restore_needed = _need(
+        coordinator.repair_needed = _need(
             auto_restore_attempts=2, auto_restore_exhausted=True
         )
         for listener in listeners:
@@ -198,12 +197,12 @@ async def test_restore_issue_follows_coordinator_state(hass: HomeAssistant) -> N
         issue = registry.async_get_issue(DOMAIN, issue_id)
         assert issue.severity is ir.IssueSeverity.ERROR
 
-        coordinator.restore_needed = None
+        coordinator.repair_needed = None
         for listener in listeners:
             listener()
         assert registry.async_get_issue(DOMAIN, issue_id) is None
 
-        coordinator.restore_needed = _need()
+        coordinator.repair_needed = _need()
         for listener in listeners:
             listener()
         assert registry.async_get_issue(DOMAIN, issue_id) is not None

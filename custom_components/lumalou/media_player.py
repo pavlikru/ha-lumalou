@@ -30,8 +30,10 @@ async def async_setup_entry(hass: Any, entry: Any, async_add_entities: Any) -> N
 class LumalouMediaPlayer(LumalouControlEntity, MediaPlayerEntity):
     """Expose only controls implemented by the toy (no streaming claims).
 
-    HomeKit Bridge maps this speaker to a switch accessory: on plays the sleep
-    playlist and off stops audio. Volume and source stay Home Assistant-only.
+    Source ``sleep_playlist`` is the soother: sleep music plus a
+    colour-cycling light. Off stops audio only; the soother light stays on
+    and is shown by the light entity. HomeKit Bridge maps this speaker to a
+    switch accessory. Volume and source stay Home Assistant-only.
     """
 
     _attr_translation_key = "audio"
@@ -87,17 +89,19 @@ class LumalouMediaPlayer(LumalouControlEntity, MediaPlayerEntity):
         await self.coordinator.async_stop_audio()
 
     async def async_set_volume_level(self, volume: float) -> None:
-        await self.coordinator.async_set_volume(round(max(0.0, min(1.0, volume)) * 9))
+        await self.coordinator.async_set_level(
+            "volume", round(max(0.0, min(1.0, volume)) * 9)
+        )
 
     async def async_volume_up(self) -> None:
         current = self.snapshot_value("currentVolume")
         if current is not None:
-            await self.coordinator.async_set_volume(min(9, int(current) + 1))
+            await self.coordinator.async_set_level("volume", min(9, int(current) + 1))
 
     async def async_volume_down(self) -> None:
         current = self.snapshot_value("currentVolume")
         if current is not None:
-            await self.coordinator.async_set_volume(max(0, int(current) - 1))
+            await self.coordinator.async_set_level("volume", max(0, int(current) - 1))
 
     async def async_select_source(self, source: str) -> None:
         if source not in AUDIOS:

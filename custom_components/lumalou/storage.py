@@ -8,7 +8,7 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
-from .const import DOMAIN, PROFILE_SCHEMA_VERSION
+from .const import DOMAIN, STORE_VERSION
 from .models import ProfileRecord, ProfileValidationError
 
 _LOGGER = logging.getLogger(__name__)
@@ -20,7 +20,7 @@ class ProfileStore:
     def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
         self._store: Store[dict[str, Any]] = Store(
             hass,
-            PROFILE_SCHEMA_VERSION,
+            STORE_VERSION,
             f"{DOMAIN}.{entry_id}.profile",
             private=True,
             atomic_writes=True,

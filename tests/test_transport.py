@@ -472,3 +472,27 @@ async def test_session_connect_deadline_covers_the_connector_retries(
 def test_connect_timeout_covers_the_connector_retry_budget():
     """The session deadline exceeds every retry plus the handshake."""
     assert CONNECT_TIMEOUT > MAX_CONNECT_ATTEMPTS * BLEAK_SAFETY_TIMEOUT + GATT_TIMEOUT
+
+
+async def test_routine_start_and_control_only_as_exact_payloads():
+    """0x7B has no arguments and 0x6B only codes 0..4; nap stays forbidden."""
+    client = SafeLumalouClient(HASS, DEVICE, expected_device_fingerprint=FINGERPRINT)
+    allowed = [bytes([0x7B]), *(bytes([0x6B, code]) for code in range(5))]
+    rejected = [
+        bytes([0x7B, 0]),
+        bytes([0x6B]),
+        bytes([0x6B, 5]),
+        bytes([0x6B, 0, 0]),
+        bytes([0x4D, 1]),
+        bytes([0x4F]),
+    ]
+    with patch("lumalou.client.LumalouClient.send", new=AsyncMock()) as send:
+        for payload in rejected:
+            with pytest.raises(HomeAssistantError, match="Unsupported"):
+                await client.send(payload)
+        send.assert_not_awaited()
+        for payload in allowed:
+            await client.send(bytearray(payload))
+    assert [call.args[0] for call in send.await_args_list] == allowed
+    assert {0x01, 0x03, 0x34, 0x4D, 0x4F, 0x52} <= FORBIDDEN_OPCODES
+    assert {0x58, 0x69, 0x6B, 0x77, 0x7B} <= ALLOWED_SEND_OPCODES

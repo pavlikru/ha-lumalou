@@ -6,6 +6,88 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0b4] - 2026-09-25
+
+Based on a hardware check of every Bluetooth command on firmware 0.3.7.
+
+### Upgrade notes
+
+- The saved profile format changed (schema 3). After updating, open
+  **Configure → Read the device profile** once and confirm it; controls stay
+  locked until then.
+- **Automatic restore** is now on by default for new entries. Existing entries
+  keep their setting; switch it on under **Configure → Behavior options**.
+- The **Refresh** button was removed; the device pushes its state.
+
+### Added
+
+- Clock entities: **Clock format** (12/24-hour), **Clock display** and
+  **Clock brightness**.
+- The profile now also holds the light and playlist timers, volume and light
+  brightness, which a power loss resets. Changes made in Home Assistant are
+  kept in it.
+- Routines: **Start routine**, **Complete task** (the remote's check-mark
+  button), **Previous task** and **Cancel routine** buttons; **Routine** and
+  **Current task** sensors; a **Routine** event entity firing
+  `task_completed` (with the task), `routine_completed` and
+  `routine_cancelled`; **Routines** (automatic start), **Routine music**,
+  **Task reward sound**, **Routine reward sound** and **Routine volume**
+  configuration entities, kept in the saved profile.
+- Actions `lumalou.set_routine` (a day routine for chosen weekdays, written
+  to the device and verified) and `lumalou.start_routine` (today's routine
+  now, or other tasks just this once; today's saved routine is written back
+  when it ends, also after a reconnect or restart).
+
+### Changed
+
+- Confirming a profile editor in **Configure** now writes the change to the
+  Lumalou right away and verifies it with a fresh read, instead of only
+  saving a pending revision. If the device cannot be reached, the change is
+  saved, a message says so, and the Repair offers to write it after the next
+  reconnect (a reset restores it automatically).
+- One Bluetooth session stays open while the device is reachable. State comes
+  from the device's own pushes (also for button presses on the device); a
+  command is done when the device acknowledges it, with no reconnect or read
+  afterwards. Reconnects wait 1.5 seconds after a disconnect.
+- Power loss: a reconnect that finds the device clock restarted at 05:00 on
+  Sunday (as after a power loss: more than 10 minutes off, not by whole hours,
+  and running no longer than since Home Assistant last heard from the device)
+  and the settings different is a reset. A DST change or a long Home
+  Assistant downtime only sets the clock; a whole-hour offset counts as a
+  reset only when every device setting is at its factory default. Home Assistant sets the clock and
+  restores the saved profile automatically (at most two attempts), or raises
+  the Repair when automatic restore is off. Settings changed without a reset
+  still raise the Repair and are never overwritten automatically.
+- Light: "on" switches the light on in the current color at the stored
+  brightness; a brightness is written before the color. Effect names describe
+  what the device shows.
+- The sleep playlist is labelled as the soother (music and light); stopping
+  sound leaves its light on. `pink_noise` is labelled "White noise".
+- The clock is corrected from the clock the device pushes every minute (DST,
+  drift) instead of a daily reconnect.
+- A clock offset of more than 10 minutes seen while connected (for example
+  a DST change) is corrected at once, not after the hourly limit. A failed
+  automatic clock write now fails that reconnect instead of reading the
+  device again.
+- A session that sends nothing for three minutes is closed and reconnected.
+- **Start routine** waits for the device to enter routine mode before making
+  the first task current; if it does not, a one-off routine is written back
+  and an error is shown. The button is unavailable while a routine runs, and
+  a restore is refused while one runs.
+- A one-off routine uses the device clock's weekday, and its marker is kept in
+  the private profile store instead of the config entry.
+- State pushes with an unknown value in one field are no longer dropped.
+- The aggregate state and soother commands (`0x01`, `0x03`) and the nap
+  commands (`0x4D`, `0x4F`) are blocked. Routine start (`0x7B`) and routine
+  control (`0x6B` codes 0–4) are allowed as exact payloads after their
+  hardware check.
+- Requires `lumalou-gld09` 0.3.0: it ignores the bare frame the device sends
+  after "previous task", "restart" and "complete all", which ended the
+  session with 0.2.1.
+- The **Daily routines** editor picks one task per step by name (each task
+  once, up to 11); a day without tasks has no routine. The **Bathroom** task
+  is now called **Toilet**.
+
 ## [0.1.0b3] - 2026-09-25
 
 ### Fixed
@@ -143,7 +225,8 @@ Hardware validation: summary of passed phases (anonymized).
 Requires Home Assistant 2026.9.0 or newer and lumalou-gld09==0.2.0.
 -->
 
-[Unreleased]: https://github.com/pavlikru/ha-lumalou/compare/v0.1.0b3...HEAD
+[Unreleased]: https://github.com/pavlikru/ha-lumalou/compare/v0.1.0b4...HEAD
+[0.1.0b4]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b4
 [0.1.0b3]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b3
 [0.1.0b2]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b2
 [0.1.0b1]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b1

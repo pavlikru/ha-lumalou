@@ -7,11 +7,16 @@ import re
 from pathlib import Path
 from typing import Any
 
-from lumalou import Audio, Color, LightDuration, PlaylistDuration
+from lumalou import Audio, ClockFormat, Color, LightDuration, PlaylistDuration
 
 from custom_components.lumalou.config_flow import EDITORS
-from custom_components.lumalou.const import ISSUE_ID_PROFILE_RESTORE_NEEDED
+from custom_components.lumalou.const import (
+    ISSUE_ID_PROFILE_RESTORE_NEEDED,
+    ROUTINE_TASKS,
+)
 from custom_components.lumalou.coordinator import _ERRORS
+from custom_components.lumalou.event import ROUTINE_EVENTS
+from custom_components.lumalou.sensor import ROUTINE_PHASES
 
 COMPONENT = Path(__file__).parents[1] / "custom_components" / "lumalou"
 STRINGS = json.loads((COMPONENT / "strings.json").read_text(encoding="utf-8"))
@@ -117,7 +122,18 @@ def test_entity_names_and_states_are_translated() -> None:
     for key, enum in (
         ("light_duration", LightDuration),
         ("playlist_duration", PlaylistDuration),
+        ("clock_format", ClockFormat),
     ):
         assert set(entity["select"][key]["state"]) == {
             item.name.lower() for item in enum
         }
+
+
+def test_routine_states_tasks_and_events_are_translated() -> None:
+    entity = STRINGS["entity"]
+    assert set(entity["sensor"]["routine"]["state"]) == set(ROUTINE_PHASES)
+    assert set(entity["sensor"]["current_task"]["state"]) == {"none", *ROUTINE_TASKS}
+    attributes = entity["event"]["routine"]["state_attributes"]
+    assert set(attributes["event_type"]["state"]) == set(ROUTINE_EVENTS)
+    assert set(attributes["task"]["state"]) == set(ROUTINE_TASKS)
+    assert set(STRINGS["selector"]["routine_task"]["options"]) == set(ROUTINE_TASKS)
