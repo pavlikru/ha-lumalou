@@ -420,10 +420,12 @@ candidate, reads only the signed FACTORY token and binds its sessions to the
 fingerprint of the verified signed key without exposing identity material.
 
 Light and playlist timers have dedicated queries (`6D → 95`, `43 → 1A`), but the
-pinned library has no typed decoder for those responses, so the HA side can read
-them only from GLOBAL_STATE nibbles. Together with brightness, colour and volume
-(brightness reads 0 while the light is off) they are treated as live state and
-kept out of the saved profile, power-loss detection and restore.
+pinned library has no typed decoder for those responses, so the HA side reads
+them, volume and brightness from GLOBAL_STATE nibbles (brightness is kept while
+the light is off). A power loss resets them, so they are part of the saved
+profile; they are compared with the device only when the clock shows a reset.
+Hardware results for firmware 0.3.7 are summarized in
+`docs/hardware-validation.md`.
 
 ### Automatable once the upstream contract is released
 

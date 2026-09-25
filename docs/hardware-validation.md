@@ -1,237 +1,120 @@
-# Hardware validation checklist
+# Hardware validation
 
-Manual acceptance test for one Lumalou (`GLD09`) on the target Home Assistant.
-Run it together with the device owner, one phase at a time. Every phase depends
-on the previous one passing. No stable release before all phases pass or a
-limitation is written down in the README.
+## Verified on hardware
 
-Automated tests use mocked Bluetooth only. They do not prove advertising,
-payload layouts, setter side effects or power-loss behavior.
+The device owner checked every Bluetooth call the integration uses on one
+Lumalou (firmware 0.3.7) with a library-level probe (`lumalou-gld09` 0.2.1),
+watching the device. The results below are authoritative for this firmware and
+replace the earlier design assumptions.
 
-## Rules for every session
+**Connection**
 
-- Record privately (never in Git or a public issue): date and time, Home
-  Assistant and integration versions, library version, Bluetooth adapter or
-  proxy, profile revision, result. Publish only an anonymized summary.
-- Never commit or post Bluetooth addresses, device fingerprints, factory tokens,
-  exported profiles or family schedules.
-- Use low light levels and low volume during the day. The owner does all
-  physical power cycling. Restart Home Assistant and the host only cleanly.
-- After each group of writes, restore the baseline recorded in phase 1 and
-  confirm it with a fresh read.
+- The device accepts a single BLE central. Another central (the Fisher-Price
+  app, a browser Web Bluetooth tab) blocks Home Assistant completely: connects
+  time out while the device still advertises. A power cycle drops the other
+  central.
+- The device advertises after power-on without pairing mode.
+- An immediate reconnect after a disconnect sometimes fails once; a pause of
+  about 1.5 seconds avoids it.
+- `establish_connection` through the Home Assistant Bluetooth stack works on a
+  Raspberry Pi 4 onboard adapter.
 
-**Stop immediately** on: unexpected light, sound, nap or routine activation;
-a pairing request; an unknown GATT service or characteristic; incomplete or
-malformed readback; a profile revision conflict; failure to restore the
-baseline; any effect on another integration or HomeKit accessory. Never
-continue with raw opcodes, DFU access, `.storage` edits or higher output
-levels.
+**Reads**
 
-## Phase 0 – Preparation
+- 33 of 35 named reads answer in one session. `nap_alarm_status` and
+  `nap_alarm` time out on this firmware; the integration never sends them.
+- The current-date read works in the same session as the profile reads; the
+  weekday counts Sunday as 0.
+- GLOBAL_STATE carries the live values that have no typed single-value
+  decoder (light status, brightness and color, volume, timers, clock format,
+  routine music and volume, reward sounds, playing state, stage).
 
-- [ ] Fresh Home Assistant backup exists.
-- [ ] Remove the old dev-build Lumalou entry before installing this build, then
-      add the device again after installing it (there are no migrations from
-      development builds). Update the HomeKit Bridge filter if entity IDs
-      changed.
-- [ ] Installed build and its exact library pin are recorded.
-- [ ] The Fisher-Price app and any Web Bluetooth client are disconnected.
-- [ ] The existing HomeKit Bridge configuration (mode, filter, entity list) is
-      noted so it can be compared afterwards.
-- [ ] **Automatic restore** is off (the default).
+**Pushes**
 
-Items marked **A1**–**A12** check the hardware assumptions listed at the end of
-this document. Record each as confirmed, refuted or not observed.
+- After every command the device pushes an updated GLOBAL_STATE in the same
+  session (often twice), plus the matching single-value response. Button
+  presses on the device and the remote push GLOBAL_STATE too. CURRENT_DATE is
+  pushed at least at every minute boundary.
+- The strict library refuses a second explicit state request in one session;
+  pushes make it unnecessary.
+- Write acknowledgements follow every write (handled by the library since
+  0.2.1).
 
-## Phase 1 – Read-only setup and baseline
+**Light**
 
-- [ ] Lumalou is discovered by Home Assistant without pressing a pairing
-      button.
-- [ ] Setup confirmation creates exactly one entry; the fingerprint and
-      factory token do not appear in the UI or logs.
-- [ ] **A12**: setup and the first profile read connect reliably through the
-      adapter in use (the Raspberry Pi 4 onboard adapter, CYW43455, unless an
-      external USB adapter or proxy is used; record which). Note any retries
-      in the debug log.
-- [ ] **Read the device profile** succeeds; the summary looks plausible;
-      confirm it. Export the profile (`lumalou.export_profile`) and keep it
-      privately as the baseline.
-- [ ] **A10**: the same read session answered the current-date request (no
-      read error; diagnostics show `last_clock_offset`).
-- [ ] **A9**: the Firmware sensor matches the version shown by the official
-      app or the device documentation (it is available as soon as the device
-      advertises).
-- [ ] Reload the entry and restart Home Assistant: still one entry and one
-      device, entities come back, no settings changed on the device.
-- [ ] Download diagnostics and check that they contain no address, fingerprint
-      or schedule.
+- SET_LIGHT_COLOR switches the light on at the stored brightness.
+- SET_LED_BRIGHTNESS changes brightness only; it does not switch the light on.
+  While off, the new brightness is stored and used by the next color command.
+  Level 1 is invisible in daylight, level 3 visible.
+- TURN_OFF_BACKLIGHT switches the light off and keeps brightness and color;
+  GLOBAL_STATE keeps reporting both while off.
+- Colors as seen: 0 warm (yellow slowly shimmering to pink), 1 red, 2 yellow,
+  3 orange, 4 green, 5 blue, 6 purple, 7 night light (steady green), 8 cool
+  (blue), 9 rainbow (cycling). No light command makes a sound.
 
-## Phase 2 – Light, one command at a time
+**Sound**
 
-Check the device physically and the Home Assistant state after each step.
+- SET_VOLUME while silent does not start sound.
+- PLAY_AUDIO 0 (sleep playlist) is the soother: sleep music and a
+  color-cycling light. TURN_OFF_AUDIO stops the music; the light keeps cycling
+  until TURN_OFF_BACKLIGHT. The remote's big button toggles the same soother.
+- PLAY_AUDIO 2 plays white noise without light.
 
-- [ ] Light on at brightness 1; then brightness 3.
-- [ ] Two palette effects (for example `warm`, `blue`).
-- [ ] Light off.
-- [ ] **A3**: with the light off, a fresh read (Refresh) reports brightness 0.
-      Light on without a brightness (for example from Apple Home or the light
-      card toggle) comes back at the last level (3), not at 0 or 1.
-- [ ] **A3**: with the light off, changing the color does not turn the light
-      (or sound) on unexpectedly; note what a brightness change does while the
-      light is off.
-- [ ] With the light off, reload the entry: no *settings differ* Repair
-      appears (light state is not part of the profile).
-- [ ] Light duration select: change one step, then back.
-- [ ] Note any side effects (does a brightness change turn the light on, does
-      a color change affect sound?).
-- [ ] Restore baseline; fresh read matches the export.
+**Clock**
 
-## Phase 3 – Sound at low volume
+- SET_CLOCK_SETTINGS `[display, brightness << 4 | format]`: format 1 is the
+  24-hour clock.
+- SET_CURRENT_DATE sets the clock correctly.
 
-- [ ] Set volume to 1 **before** playing.
-- [ ] **A3**: setting the volume while sound is off does not start sound; a
-      volume change never raises a *settings differ* Repair.
-- [ ] Media player on (sleep playlist) for a few seconds, then off.
-- [ ] Select one built-in sound source, then off.
-- [ ] Volume up/down by one step.
-- [ ] Playlist duration select: change one step, then back.
-- [ ] Restore baseline; fresh read matches the export.
+**Persistent settings**
 
-## Phase 4 – Clock, reconnects and maintenance
+- Playlist order, light and playlist timers, routine volume, routine music and
+  reward sounds, wake and bedtime times, alarm sound (alarms kept inactive),
+  a daily routine (time and steps) and clock settings all write and read back
+  exactly. Timer, volume and brightness writes do not switch light or sound
+  on.
 
-- [ ] **Synchronize clock**: device shows Home Assistant local time.
-- [ ] **A6**: set the device clock wrong by several minutes with the official
-      app (then disconnect the app), let Home Assistant reconnect: the clock
-      is corrected in the same session, the weekday is right (device counts
-      Sunday as 0), and an offset below 60 seconds is left alone.
-- [ ] **A6**: with a session open, trigger the daily clock check early (change
-      the Home Assistant time zone and back, or wait for 03:05): a device
-      clock more than 60 seconds off is corrected after a short reconnect.
-- [ ] **A8**: leave the device idle for an hour and count disconnects and
-      reconnects in the debug log. Each reconnect performs one full profile
-      read, at most one per 30 seconds; record whether that frequency is
-      acceptable.
-- [ ] **Maintenance** on: Bluetooth is released, the Fisher-Price app can
-      connect. Disconnect the app, Maintenance off: Home Assistant reconnects.
+**Power loss**
 
-## Phase 5 – Profile restore without power loss
+Unplugging the device for about 10 seconds resets it to factory settings:
+clock 05:00 on Sunday in 12-hour format; wake and bedtime times and all
+routines 00:00 with empty slots; playlist 1–12; light timer 4, playlist timer
+5, volume 5, routine volume 5, routine music 1, reward sounds 1/1, alarm sound
+0, LED brightness 5, color 0; light and sound off. The integration therefore
+treats a device clock far off on reconnect plus a differing profile as a reset
+and restores the saved profile (see the README).
 
-- [ ] In the options editors change one setting per block (playlist, clock
-      settings, routine music and rewards, routine volume, Ready-to-Rise and
-      Sleepy times, alarms, and at least one day routine), keeping sound and
-      light levels low. **Profile sync status** shows `pending`; nothing
-      changes on the device.
-- [ ] Run `lumalou.restore_profile` with `return_response: true`. Record the
-      applied steps.
-- [ ] **A1**: every setter persisted and the verification read returned
-      exactly the saved values (`verified: true`); repeat for all seven day
-      routines.
-- [ ] **A2**: routine music and routine volume (limited to 0–15 by the
-      editor) read back exactly as saved; include one low nonzero value for
-      each.
-- [ ] **A4**: enabling Ready-to-Rise and routine mode (written last) does not
-      start a routine, alarm or sound immediately.
-- [ ] **A5**: a restore of every block (16 writes) succeeds with the
-      library's 150 ms write spacing and a fresh verification session; note
-      any dropped write or timeout.
-- [ ] **A11**: a second full read right after the writes returns the new
-      values, not cached old ones (compare with **Read the device profile**
-      preview a minute later).
-- [ ] Change a setting with the official app, reconnect Home Assistant: the
-      *settings differ* Repair appears. Test **Keep device settings** once and
-      **Restore saved profile** once.
-- [ ] Restore the original baseline.
+## Home Assistant acceptance checklist
 
-## Phase 6 – Power-loss recovery
+Still to run on the target Home Assistant with this build. Record results
+privately (never Bluetooth addresses, fingerprints, exported profiles or
+family schedules) and publish only an anonymized summary. Use low light levels
+and low volume. The owner does all physical power cycling. Stop on any
+unexpected light, sound, nap or routine activation, a pairing request or a
+profile revision conflict.
 
-- [ ] **A7**: owner unplugs the Lumalou for about 10 seconds, then plugs it
-      back in. Record whether the clock and/or the profile were reset, and
-      whether the device advertises again without a button press or pairing
-      mode, and how long it takes.
-- [ ] With automatic restore **off**: the clock is corrected and, if the
-      profile was reset, the Repair appears; **Restore saved profile**
-      verifies.
-- [ ] Enable **Automatic restore** and repeat: Home Assistant corrects the
-      clock, re-applies only the settings that differ and confirms the whole
-      profile with a fresh read.
-- [ ] No sound, light, nap or routine was started by the restore; light
-      brightness and color, volume and timers were not written.
-- [ ] Repeat with a long outage (several minutes) and after a Home Assistant
-      restart during the outage.
-- [ ] Disable automatic restore again unless the owner wants it, and restore
-      the original baseline.
+- [ ] **Install**: fresh backup; install through HACS; restart. After an
+      update from 0.1.0b3, **Read the device profile** once (the saved
+      profile format changed) and confirm it.
+- [ ] **Setup**: discovery, confirmation and the first profile read succeed
+      with the Fisher-Price app and Web Bluetooth tabs closed; exactly one
+      entry; diagnostics contain no address, fingerprint or schedule.
+- [ ] **Light**: on, off, two effects and a brightness change from Home
+      Assistant; the entity follows within a second, also for changes made
+      with the remote. No reconnect after a command in the debug log.
+- [ ] **Speaker**: volume while silent does not start sound; media player on
+      starts the soother, off stops the music and leaves the light on (the
+      light entity shows it on).
+- [ ] **Clock**: select **24-hour**; the device shows 24-hour time and the
+      saved profile keeps it (export).
+- [ ] **Power loss**: unplug the device for about 10 seconds. Home Assistant
+      reconnects, sets the clock, restores the saved profile (24-hour clock,
+      schedules, volume, brightness) without switching light or sound on, and
+      raises no Repair. Repeat once with **automatic restore** off: the
+      Repair appears and **Restore saved profile** verifies.
+- [ ] **HomeKit Bridge**: add `light.lumalou_light` (and optionally
+      `media_player.lumalou_audio`) to the existing bridge without resetting
+      it; Apple Home shows a lightbulb with brightness and a switch; other
+      accessories are unchanged; no configuration entities appear.
 
-## Phase 7 – Apple Home through HomeKit Bridge
-
-- [ ] Add `light.lumalou_light` (and optionally `media_player.lumalou_audio`)
-      to the existing bridge as described in the README. Do **not** reset or
-      re-pair the existing bridge; keep its mode and filters.
-- [ ] Apple Home shows a lightbulb with on/off and brightness; toggling it
-      changes the device and Home Assistant state.
-- [ ] If exported, the sound switch starts and stops sound.
-- [ ] No maintenance switch, timers, buttons or diagnostic sensors appear in
-      Apple Home.
-- [ ] Other accessories, rooms and automations in Apple Home are unchanged.
-- [ ] Restore baseline.
-
-## Phase 8 – Release candidate
-
-- [ ] Install the tagged pre-release through HACS; update from the previous
-      build and roll back once.
-- [ ] Run for several days with normal use. Record disconnects and errors
-      (anonymized).
-- [ ] Write the anonymized results into the release notes and remove the
-      "development preview" warning from the README only if every phase
-      passed.
-
-## Hardware assumptions to validate
-
-The code relies on these assumptions; none is proven on hardware yet.
-
-1. **A1** Each profile setter persists and reads back exactly: playlist, clock
-   settings, routine music and rewards, routine volume, weekly times, alarms
-   and the seven day routines.
-2. **A2** Routine music and routine volume read back as 4-bit values from
-   the global state, so the integration limits both to 0–15; values 0–15
-   written by restore read back unchanged.
-3. **A3** The device reports brightness 0 while the light is off, and
-   brightness, color and volume setters cause no unwanted light or sound
-   activation. These values are live state: they are never part of the
-   profile, power-loss detection or a restore.
-4. **A4** Writing `ready_to_rise.enabled` and `routine_settings.enabled` last
-   does not start a routine, alarm or sound.
-5. **A5** The library's 150 ms write spacing and a fresh verification session
-   are enough for bursts of up to 16 writes.
-6. **A6** Setting the clock in the middle of a session works, a 60-second
-   tolerance is appropriate, the device weekday counts Sunday as 0, and a
-   daily check in a fresh session catches DST changes and drift.
-7. **A7** A power loss actually resets the clock and/or the profile, and the
-   device advertises again after power-on without pairing mode.
-8. **A8** Idle disconnects are rare enough: each one triggers a full read,
-   rate-limited to one per 30 seconds.
-9. **A9** The firmware version in the advertisement matches the device's
-   firmware.
-10. **A10** The current-date read is accepted in the same session as the other
-    profile reads.
-11. **A11** A second full read right after writes returns the new values.
-12. **A12** `establish_connection` with the service cache works on the
-    Raspberry Pi 4 onboard adapter (CYW43455), or on the external USB adapter
-    if one is used (record which during validation).
-
-## Evidence so far
-
-Read-only observations on one device, before the integration could create an
-entry:
-
-- The device advertises connectably and is found by Home Assistant Bluetooth
-  discovery on a Raspberry Pi built-in adapter. The standard Device
-  Information Model Number is not readable, so setup cannot rely on it.
-- The signed factory token was read once and its signature verified locally.
-- With the forked library, one fresh session read every persistent block
-  (state, playlist, clock settings, weekly times, alarms, seven routines);
-  the clock settings agreed with the state. No setting was written.
-- A browser session of the upstream web client saw routine and schedule
-  responses of the expected lengths and a `CURRENT_DATE` reply in BCD
-  hour/minute/second/weekday form.
-
-No write, power-cycle or HomeKit test has been run.
+Remove the "Beta" warning from the README only after every item passed.
