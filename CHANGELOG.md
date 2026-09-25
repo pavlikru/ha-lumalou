@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0b3] - 2026-09-25
+
+### Fixed
+
+- Correcting the device clock after a power cut no longer drops the Bluetooth
+  session. The library (`lumalou-gld09` 0.2.1) now accepts the device's write
+  acknowledgements for every command length; before, the clock write and
+  most profile-restore writes ended the session with "unsupported SSI route or
+  invalid FE length/checksum". Ignored and rejected device frames are logged at
+  debug level for the `lumalou` logger.
+- A failed automatic clock correction is no longer repeated on every
+  reconnect attempt: a warning is logged, the reconnect finishes with a second
+  read, and automatic clock writes pause for an hour. The **Synchronize clock**
+  button still writes at once. Diagnostics show `clock_sync_paused`.
+- Turning **Maintenance** on takes effect at once: it cancels a running
+  reconnect or clock check instead of waiting behind it.
+- Reading the device profile in the options no longer closes the connection
+  and immediately opens a new one.
+
 ## [0.1.0b2] - 2026-09-25
 
 ### Fixed
@@ -124,6 +143,7 @@ Hardware validation: summary of passed phases (anonymized).
 Requires Home Assistant 2026.9.0 or newer and lumalou-gld09==0.2.0.
 -->
 
-[Unreleased]: https://github.com/pavlikru/ha-lumalou/compare/v0.1.0b2...HEAD
+[Unreleased]: https://github.com/pavlikru/ha-lumalou/compare/v0.1.0b3...HEAD
+[0.1.0b3]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b3
 [0.1.0b2]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b2
 [0.1.0b1]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b1
