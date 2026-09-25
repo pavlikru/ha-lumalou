@@ -1102,6 +1102,25 @@ async def test_session_lost_marks_unavailable_and_schedules_recovery(rig):
     await coordinator.async_shutdown()
 
 
+async def test_advertisements_notify_only_on_presence_or_firmware_change(rig):
+    coordinator = rig.coordinator
+    listener = Mock()
+    coordinator.async_add_listener(listener)
+    advertisement = SimpleNamespace(manufacturer_data={0x03B6: b"MB\x01\x000.3.7\x00"})
+
+    coordinator._async_handle_advertisement(advertisement, None)
+    assert listener.call_count == 1
+    coordinator._async_handle_advertisement(advertisement, None)
+    coordinator._async_handle_advertisement(SimpleNamespace(manufacturer_data={}), None)
+    assert listener.call_count == 1
+    coordinator._async_handle_advertisement(
+        SimpleNamespace(manufacturer_data={0x03B6: b"MB\x01\x000.3.8\x00"}), None
+    )
+    assert listener.call_count == 2
+    assert coordinator.sw_version == "0.3.8"
+    await asyncio.gather(*rig.background_tasks)
+
+
 async def test_advertisement_records_passive_firmware_version(rig):
     coordinator = rig.coordinator
 

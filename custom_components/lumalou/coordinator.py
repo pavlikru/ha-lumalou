@@ -334,6 +334,7 @@ class LumalouCoordinator:
         """Record presence and firmware, then coalesce recovery."""
         if self._stopped:
             return
+        changed = not self.present
         self.present = True
         try:
             advertisement = parse_advertisement(
@@ -343,9 +344,12 @@ class LumalouCoordinator:
             pass
         else:
             # Passive and unauthenticated: a display value, never a gate.
-            if advertisement.firmware_version:
-                self.sw_version = advertisement.firmware_version
-        self._notify()
+            version = advertisement.firmware_version
+            if version and version != self.sw_version:
+                self.sw_version = version
+                changed = True
+        if changed:
+            self._notify()
         self._schedule_recovery()
 
     @callback
