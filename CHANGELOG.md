@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0b8] - 2026-09-25
+
+Fixes from the fourth Home Assistant run on hardware (Raspberry Pi 4).
+
+### Fixed
+
+- After a scheduled routine started, Home Assistant received no updates
+  (the sensor stayed at `ready`) and the silence watchdog never reconnected.
+  Only state, clock and routine frames now count as signs of life (other
+  pushes are logged at debug level), the limit is 90 seconds while a routine
+  runs, and a reconnect during a routine reads its progress (routine task
+  status), so the current task shows again. Reproduced with the device
+  emulator.
+- `routine_completed` fired at every reconnect of `lumalou.set_routine`
+  although no routine ran. Routine events now come only from two statuses
+  seen in one session while a routine runs.
+- The power-loss clock is accepted from 04:55 on Sunday (hardware read
+  04:59:07 right after a power loss).
+
 ## [0.1.0b7] - 2026-09-25
 
 Fixes from the third Home Assistant run on hardware (Raspberry Pi 4).
@@ -288,7 +307,8 @@ Hardware validation: summary of passed phases (anonymized).
 Requires Home Assistant 2026.9.0 or newer and lumalou-gld09==0.2.0.
 -->
 
-[Unreleased]: https://github.com/pavlikru/ha-lumalou/compare/v0.1.0b7...HEAD
+[Unreleased]: https://github.com/pavlikru/ha-lumalou/compare/v0.1.0b8...HEAD
+[0.1.0b8]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b8
 [0.1.0b7]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b7
 [0.1.0b6]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b6
 [0.1.0b5]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b5

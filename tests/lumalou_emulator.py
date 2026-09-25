@@ -134,6 +134,12 @@ class LumalouEmulator:
         self.clock = (5, 0, 32, 0)
         self.clock_base = 0.0
         self.push_clock_on_connect = False
+        # Routine progress: current step and one state nibble per task id.
+        self.routine_step = 0
+        self.task_states = [0] * 12
+        # Hardware: after a scheduled routine start the session got nothing.
+        # Set to drop every push of the current session (a new one works).
+        self.silent = False
         # Handshakes that lose the link (as seen on hardware after a replug).
         self.drop_handshakes = 0
         self.link_lost: Any = None
@@ -188,6 +194,7 @@ class LumalouEmulator:
             app_pub, self._nonce = bytes(data[:33]), bytes(data[33:])
             self._key = crypto.derive_session_key(self._device_key, app_pub)[:16]
             self._seq = 0
+            self.silent = False
             return
         assert characteristic == TX
         seq = struct.unpack(">I", data[1:5])[0]
@@ -209,6 +216,8 @@ class LumalouEmulator:
     # ---- frames ----
 
     def _push(self, opcode: int, args: bytes) -> None:
+        if self.silent or self._key is None:  # quiet, or no session
+            return
         plaintext = P.SSI0_RX_HEADER + P.compose_request(bytes([opcode]) + args)
         self._seq += 1
         h0 = (
@@ -240,6 +249,14 @@ class LumalouEmulator:
             0x02, bytes(nibbles[i] << 4 | nibbles[i + 1] for i in range(0, 26, 2))
         )
 
+    def push_routine_status(self) -> None:
+        states = self.task_states
+        self._push(
+            0x94,
+            bytes([self.routine_step])
+            + bytes(states[i] << 4 | states[i + 1] for i in range(0, 12, 2)),
+        )
+
     def push_clock(self) -> None:
         self._push(0x13, bytes(_bcd(value) for value in self.now()))
 
@@ -257,6 +274,7 @@ class LumalouEmulator:
         requests = {
             COMMANDS["REQUEST_GLOBAL_STATE"]: self.push_state,
             COMMANDS["REQUEST_CURRENT_DATE"]: self.push_clock,
+            COMMANDS["REQUEST_ROUTINE_TASK_STATUS"]: self.push_routine_status,
             COMMANDS["REQUEST_MUSIC_PLAYLIST"]: lambda: self._push(
                 0x19, bytes(self.blocks["playlist"].slots)
             ),

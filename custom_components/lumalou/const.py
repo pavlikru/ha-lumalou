@@ -106,9 +106,26 @@ ALLOWED_SEND_OPCODES = frozenset(
 # Read-only queries used by strict readback (never the nap alarm queries,
 # which time out on the device): global state 0x53, current date 0x31,
 # playlist 0x41, ready-to-rise times 0x47, sleepy times 0x49, alarms 0x4C,
-# clock settings 0x7A and the seven day-routine requests 0x5B..0x67.
+# clock settings 0x7A, the seven day-routine requests 0x5B..0x67 and, when
+# reconnecting during a routine, routine task status 0x68.
 ALLOWED_REQUEST_OPCODES = frozenset(
-    {0x31, 0x41, 0x47, 0x49, 0x4C, 0x53, 0x5B, 0x5D, 0x5F, 0x61, 0x63, 0x65, 0x67, 0x7A}
+    {
+        0x31,
+        0x41,
+        0x47,
+        0x49,
+        0x4C,
+        0x53,
+        0x5B,
+        0x5D,
+        0x5F,
+        0x61,
+        0x63,
+        0x65,
+        0x67,
+        0x68,
+        0x7A,
+    }
 )
 CONF_AUTO_RESTORE = "auto_restore"
 # A power loss resets every setting, so restoring it automatically is the
@@ -137,6 +154,10 @@ CLOCK_SYNC_RETRY_INTERVAL = 60 * 60
 # The device pushes CURRENT_DATE every minute; an open session without any
 # frame for this long is treated as lost.
 SESSION_SILENCE_TIMEOUT = 3 * 60
+# While a routine runs (operationMode 7) the limit is shorter: the owner
+# expects its progress, and on hardware a session went quiet at a scheduled
+# routine start. The clock push still comes every minute.
+ROUTINE_SILENCE_TIMEOUT = 90
 # Automatic restore attempts per detected power-loss/reset event.
 AUTO_RESTORE_MAX_ATTEMPTS = 2
 # GLOBAL_STATE operationMode while a routine runs (preview or tasks).
