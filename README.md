@@ -146,7 +146,7 @@ runs in English; check the actual IDs in the entity settings.
 | Connection | Binary sensor (connectivity, diagnostic) | On while a Bluetooth session is live. |
 | Firmware | Sensor (diagnostic) | Advertised firmware version; available while the device advertises, even without a session. |
 | Profile sync status | Sensor (enum, diagnostic) | `empty`, `saved`, `pending`, `applying` or `error`. Revisions and the last error are in the diagnostics download. |
-| `button.lumalou_start_routine` | Button | Starts today's routine now (see [Routines](#routines)). |
+| `button.lumalou_start_routine` | Button | Starts today's routine now (see [Routines](#routines)); unavailable while a routine runs. |
 | `button.lumalou_complete_task`, `button.lumalou_previous_task`, `button.lumalou_cancel_routine` | Button | Only while a routine runs. Complete task is the remote's check-mark button. |
 | `sensor.lumalou_routine` | Sensor (enum) | `off`, `ready` (silent preview before the first task), `in_progress`, `completed`. |
 | `sensor.lumalou_current_task` | Sensor (enum) | `none` or the current task (`get_dressed`, `wash_up`, `brush_teeth`, `toilet`, `backpack`, `meal`, `story`, `tidy_up`, `heart`, `swirl`, `star`). |
@@ -176,10 +176,13 @@ seconds, backing off up to 15 minutes after failures). Before the first
 confirmed profile read it only reads the state. Afterwards every reconnect
 reads the complete profile and the device clock in one session, sets the clock
 if it is more than 60 seconds off, and compares the profile with the saved one
-(see below). While connected, a clock that drifts or misses a DST change is
-corrected from the pushed clock, at most once an hour. If an automatic clock
-write fails, a warning is logged and automatic clock writes pause for an hour
-(the **Synchronize clock** button still writes at once). When Home Assistant
+(see below). While connected, a clock that drifts is corrected from the pushed
+clock at most once an hour; an offset of more than 10 minutes (such as a DST
+change) at once. If an automatic clock write fails, a warning is logged, that
+reconnect counts as failed and automatic clock writes pause for an hour (the
+**Synchronize clock** button still writes at once). A session that sends
+nothing for three minutes (not even the minute clock) is treated as lost and
+reconnected. When Home Assistant
 reports the device gone, entities become unavailable; loss and return are
 logged once at info level.
 
@@ -190,8 +193,12 @@ Sunday, 12-hour format), playlist, wake and bedtime times, alarms, routines,
 timers, volume and brightness. On every reconnect Home Assistant compares a
 fresh read with the saved **verified** profile:
 
-- **Reset** — the device clock is more than 10 minutes off *and* the profile
-  differs. Home Assistant sets the clock first. With **automatic restore** on
+- **Reset** — the device clock shows the power-loss restart *and* the profile
+  differs. The power-loss clock is Sunday, running from 05:00 for no longer
+  than Home Assistant has not heard from the device (at most 12 hours), more
+  than 10 minutes off and not off by whole hours. An offset of whole hours
+  (a DST or time zone change while Home Assistant was down) only sets the
+  clock. Home Assistant sets the clock first. With **automatic restore** on
   (the default) it then writes only the differing settings back and proves
   the whole profile with a fresh read. After two failed attempts it stops and
   raises the Repair *Lumalou settings differ from the saved profile*. With
@@ -281,7 +288,9 @@ these are part of the saved profile and come back after a power loss.
 
 **Start a routine now** with the **Start routine** button or
 `lumalou.start_routine`. Like the scheduled start, the first task becomes
-current with its music right away. With `tasks`, those tasks run instead of
+current with its music right away (if the Lumalou does not enter routine mode,
+you get an error and nothing stays changed). "Today" is the weekday of the
+device clock. With `tasks`, those tasks run instead of
 today's routine, this time only: Home Assistant writes them as today's routine
 (keeping today's time), starts it, and writes today's saved routine back when
 the routine ends. If Home Assistant is disconnected at that moment (or
@@ -351,6 +360,9 @@ Use Home Assistant's built-in [HomeKit Bridge][homekit]. What Apple Home shows:
 
   and add `script.lumalou_start_routine` to the bridge (include the entity, or
   the `script` domain). Apple Home shows it as a switch that turns itself off.
+- A YAML `homekit:` bridge without a `filter`, or one that includes the
+  `button` domain, exports the routine buttons as switches (and every other
+  button). Use a filter as in the example below.
 
 A bridge (the default mode) is fine; a separate accessory-mode instance is only
 required for TVs, cameras, locks and activity remotes.

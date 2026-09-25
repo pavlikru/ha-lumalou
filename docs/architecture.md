@@ -118,10 +118,19 @@ controls stay locked until a device read is confirmed again.
   the profile with the current revision when it is verified, or pending but
   edited from a revision verified on this device key.
 - The device pushes CURRENT_DATE at least every minute. A pushed clock more
-  than 60 seconds off (DST, drift) is corrected in the live session, at most
-  once an hour; a failed automatic write pauses automatic writes for an hour.
-- A device clock more than 10 minutes off on reconnect is the **reset marker**
-  (a power loss resets it to 05:00 on Sunday). With it, every block is
+  than 60 seconds off (drift) is corrected in the live session, at most once
+  an hour, or at once when more than 10 minutes off (DST). A failed automatic
+  write pauses automatic writes for an hour; in recovery it fails the pass
+  (retried after the backoff, then without the paused write).
+- Any frame re-arms a three-minute silence timer; when it expires the session
+  is invalidated and closed and recovery is scheduled, as for a link loss.
+- The **reset marker** is the power-loss clock: a power loss restarts the
+  device clock at 05:00:00 on Sunday. On reconnect the clock must be more
+  than 10 minutes off, not off by whole hours (±2 minutes: DST or a time
+  zone change, which only sets the clock), on Sunday, and between 05:00 and
+  05:00 plus the time since the last frame Home Assistant received from the
+  device plus 10 minutes (12 hours when unknown, for example after a
+  restart). With it, every block is
   compared; without it, the light and sound block is skipped because the
   device buttons change it in everyday use. A difference sets
   `restore_needed` (`reset` stays set until the event is resolved). A reset
@@ -160,14 +169,20 @@ controls stay locked until a device read is confirmed again.
   routine mode: a task nibble 1 -> 2 is `task_completed`; the first completed
   status is `routine_completed`; leaving routine mode (7 -> other) without it
   is `routine_cancelled`. Nothing is inferred across a reconnect.
-- Start (button or action) sends `0x7B`, waits one second and sends
-  `0x6B 0`, so task 1 becomes current with its music like a scheduled start.
+- Start (button or action) sends `0x7B`, waits for the pushed state to show
+  routine mode (else writes a one-off day back and raises
+  `routine_not_started`), waits one second and sends `0x6B 0`, so task 1
+  becomes current with its music like a scheduled start. The start button is
+  unavailable, and restores and profile edits are refused, while a routine
+  runs.
   Control buttons send `0x6B` 0 (complete, the remote's check-mark), 1
   (previous) or 4 (cancel) and are refused unless routine mode is on.
 - One-off routine (`start_routine` with tasks): the tasks are written as
   today's routine (today's saved time) in the live session, then started. The
-  saved profile is not changed. The weekday is kept in the config entry data
-  (`temporary_routine_day`, set before the write) so it survives a restart.
+  saved profile is not changed. "Today" is the weekday of the device clock
+  when a pushed clock is known (else Home Assistant's). The weekday is kept in
+  the private profile record (`temporary_routine_day`, saved before the
+  write) so it survives a restart.
   When the live session sees routine mode end, the saved day routine is
   written back and the marker cleared. If the session is gone, the next
   recovery writes it back once the device is out of routine mode; while the

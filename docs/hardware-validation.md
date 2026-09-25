@@ -115,8 +115,8 @@ clock 05:00 on Sunday in 12-hour format; wake and bedtime times and all
 routines 00:00 with empty slots; playlist 1–12; light timer 4, playlist timer
 5, volume 5, routine volume 5, routine music 1, reward sounds 1/1, alarm sound
 0, LED brightness 5, color 0; light and sound off. The integration therefore
-treats a device clock far off on reconnect plus a differing profile as a reset
-and restores the saved profile (see the README).
+treats this power-loss clock (Sunday, running from 05:00) on reconnect plus a
+differing profile as a reset and restores the saved profile (see the README).
 
 ## Home Assistant acceptance checklist
 

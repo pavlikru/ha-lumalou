@@ -57,12 +57,12 @@ and remains distinct.
   never turns light or sound on;
 - current clock time (set from Home Assistant instead), timer remainder, nap
   state/alarm, executing alarm, current routine step and task status. These
-  are transient or lack a persistent setter/readback contract;
+  are transient or lack a persistent setter/readback contract. The nap alarm
+  queries time out on the device and are never sent;
 - a one-off routine started with `lumalou.start_routine` and tasks. It
   replaces today's device routine only until it ends; the saved profile keeps
-  the day's routine, and only the weekday being replaced is kept (in the
-  config entry data) so the saved routine can be written back. The nap alarm
-  queries time out on the device and are never sent.
+  the day's routine; only the weekday being replaced is kept (the record's
+  `temporary_routine_day`) so the saved routine can be written back.
 
 The `alarm` block is only the evidenced weekly alarm nibbles and sound nibble;
 no separate ready-to-rise alarm activation or nap-alarm field is invented.
@@ -87,10 +87,11 @@ zeros from an unknown standalone playlist response layout.
 
 ## Record and export
 
-The saved record adds revision metadata: `revision`, the `previous` revision
-for undo, `verified_revision` with the `verified_fingerprint` of the device key
-that verified it, `pending`, `sync_status` (`empty`, `saved`, `pending`,
-`applying`, `error`), the symbolic `last_error` and the `maintenance` flag.
+The saved record adds revision metadata: `revision`, `verified_revision` with
+the `verified_fingerprint` of the device key that verified it, `pending`,
+`sync_status` (`empty`, `saved`, `pending`, `applying`, `error`), the symbolic
+`last_error`, the `maintenance` flag and `temporary_routine_day` (null, or the
+weekday a one-off routine replaced).
 There is no migration from earlier builds; a record that does not match this
 schema (including a schema 2 record without `light_and_sound`) is ignored with
 a warning, and the device profile has to be read again.
