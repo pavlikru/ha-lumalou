@@ -473,6 +473,9 @@
     },
     "routine_not_started": {
       "message": "Lumalou не запустил рутину. Ничего не изменено; попробуйте ещё раз."
+    },
+    "setting_not_confirmed": {
+      "message": "Lumalou не применил настройку (отправлена дважды). Проверьте соединение и повторите."
     }
   },
   "issues": {
@@ -680,7 +683,8 @@
             "state": {
               "task_completed": "Задача выполнена",
               "routine_completed": "Рутина завершена",
-              "routine_cancelled": "Рутина отменена"
+              "routine_cancelled": "Рутина отменена",
+              "routine_expired": "Рутина истекла"
             }
           },
           "task": {

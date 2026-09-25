@@ -39,8 +39,10 @@ from .const import (
     CONNECT_TIMEOUT,
     DEFAULT_AUTO_RESTORE,
     DOMAIN,
+    DST_AMBIGUITY_WINDOW,
     GATT_TIMEOUT,
     GLOBAL_STATE_FIELDS,
+    LIVE_SESSION_WAIT,
     RECONNECT_DELAY,
     RECOVERY_COOLDOWN,
     RECOVERY_MAX_COOLDOWN,
@@ -149,6 +151,7 @@ _ERRORS = {
     "routine_running": "A Lumalou routine is already running",
     "routine_not_running": "No Lumalou routine is running",
     "routine_not_started": "Lumalou did not start the routine",
+    "setting_not_confirmed": "Lumalou did not confirm the setting",
     "profile_saved_not_applied": (
         "The change was saved but could not be written to Lumalou"
     ),
@@ -236,6 +239,8 @@ class LumalouCoordinator:
         # Detached sessions whose link is not closed yet.
         self._detached: dict[int, SafeLumalouClient] = {}
         self._state_event = asyncio.Event()
+        # Set while a live session has delivered its state.
+        self._available_event = asyncio.Event()
         self._lock = asyncio.Lock()
         self._listeners: set[Callable[[], None]] = set()
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -252,11 +257,15 @@ class LumalouCoordinator:
         self.routine_status: RoutineTaskStatus | None = None
         # The running routine reached its final step in this session.
         self._routine_finished = False
+        # Home Assistant sent "cancel" to the running routine.
+        self._cancel_sent = False
         self._routine_listeners: set[Callable[[str, dict[str, str]], None]] = set()
         self._routine_task: asyncio.Task[Any] | None = None
         # Event-loop time of the last frame from the device (any session);
         # bounds how long a power-loss clock can have run since 05:00.
         self._last_frame_at: float | None = None
+        # A fresh read showed the power-loss clock; cleared once resolved.
+        self._reset_seen = False
         # Closes a session that stopped pushing (the clock comes every minute).
         self._silence_timer: asyncio.TimerHandle | None = None
 
@@ -414,6 +423,22 @@ class LumalouCoordinator:
         """Serialize a mutation and require verified controls."""
         async with self._operation():
             self._assert_device_writes_allowed()
+            yield
+
+    @asynccontextmanager
+    async def _live_write_operation(self) -> AsyncIterator[None]:
+        """A command on the live session: wait briefly for one to be ready.
+
+        Right after a session change (a profile write, a reconnect) the live
+        session may still be opening. Wait up to ``LIVE_SESSION_WAIT`` for it
+        (outside the lock, which the reconnect needs) instead of failing;
+        a command is then sent or fails with an error, never dropped.
+        """
+        if not self.available and self.present and not self._stopped:
+            with suppress(TimeoutError):
+                async with asyncio.timeout(LIVE_SESSION_WAIT):
+                    await self._available_event.wait()
+        async with self._device_write_operation():
             yield
 
     def _assert_device_writes_allowed(self) -> None:
@@ -657,11 +682,10 @@ class LumalouCoordinator:
                     raise HomeAssistantError("Lumalou recovery failed") from err
             return
         async with self._device_write_operation():
-            last_frame_at = self._last_frame_at
             try:
+                # The reset is judged in the read, before the clock is set.
                 client, snapshot = await self._async_fresh_snapshot()
-                # Judge the reset marker before the clock is corrected.
-                reset = self._is_reset(snapshot, last_frame_at)
+                reset = self._reset_seen
                 clock_synced = await self._async_sync_clock_if_needed(
                     client, snapshot.clock, snapshot.read_at, automatic=True
                 )
@@ -720,16 +744,21 @@ class LumalouCoordinator:
         if offset <= RESET_CLOCK_OFFSET:
             return False
         window = RESET_WINDOW_MAX
+        unseen: float | None = None
         if last_frame_at is not None:
-            unseen = asyncio.get_running_loop().time() - last_frame_at
+            unseen = _monotonic() - last_frame_at
             window = min(window, round(unseen) + RESET_CLOCK_OFFSET)
         if not is_factory_clock(snapshot.clock, window):
             return False
-        # A whole-hour offset is DST unless every setting is factory default
+        # A whole-hour offset is DST, unless Home Assistant heard the device
+        # within the last hour (DST changes at night, not while the device
+        # shows the Sunday 05:00 restart) or every setting is factory default
         # (a power loss that happened to come back near a full hour).
-        return not is_whole_hour_offset(
-            offset, WHOLE_HOUR_TOLERANCE
-        ) or is_factory_default(snapshot.profile)
+        return (
+            not is_whole_hour_offset(offset, WHOLE_HOUR_TOLERANCE)
+            or (unseen is not None and unseen <= DST_AMBIGUITY_WINDOW)
+            or is_factory_default(snapshot.profile)
+        )
 
     def _detect_restore_needed(
         self, record: ProfileRecord, observed: dict[str, Any], *, reset: bool
@@ -757,6 +786,8 @@ class LumalouCoordinator:
                     if previous is None
                     else replace(previous, changed_blocks=blocks, reset=reset)
                 )
+        if need is None:
+            self._reset_seen = False
         if need != self._restore_needed:
             self._restore_needed = need
             self._notify()
@@ -863,6 +894,7 @@ class LumalouCoordinator:
         ):
             self._routine_ended()
         self.available = True
+        self._available_event.set()
         self._state_event.set()
         if self._unavailable_logged:
             _LOGGER.info("%s is available again", self.device_name)
@@ -902,13 +934,17 @@ class LumalouCoordinator:
     def _routine_ended(self) -> None:
         """A routine left routine mode (7 -> other) in this live session.
 
-        A routine that never reached its final step was cancelled (cancel
-        command, or ended on the device). A one-off routine gives its day
-        back to the saved routine.
+        A routine that never reached its final step was cancelled when Home
+        Assistant sent the cancel command, else it expired (ended by the
+        device, for example after nobody completed a task for a long time).
+        A one-off routine gives its day back to the saved routine.
         """
         if not self._routine_finished:
-            self._fire_routine_event("routine_cancelled")
+            self._fire_routine_event(
+                "routine_cancelled" if self._cancel_sent else "routine_expired"
+            )
         self._routine_finished = False
+        self._cancel_sent = False
         self.routine_status = None
         if self._temporary_routine_day is not None and self._routine_task is None:
             task = self._create_background_task(
@@ -931,6 +967,11 @@ class LumalouCoordinator:
         only derived while a routine runs and from two frames of one session.
         """
         previous, self.routine_status = self.routine_status, status
+        _LOGGER.debug(
+            "Routine status: step %s, task states %s",
+            status.current_step,
+            status.task_states,
+        )
         running = (
             self.data is not None
             and self.data["operationMode"] == ROUTINE_OPERATION_MODE
@@ -1102,6 +1143,7 @@ class LumalouCoordinator:
         """Invalidate local state and detach the current session synchronously."""
         self._generation += 1
         self.available = False
+        self._available_event.clear()
         self.data = None
         if self._silence_timer is not None:
             self._silence_timer.cancel()
@@ -1110,6 +1152,7 @@ class LumalouCoordinator:
         self.routine_status = None
         self.playing_source = None
         self._routine_finished = False
+        self._cancel_sent = False
         client, self._client = self._client, None
         if client is not None:
             self._detached[id(client)] = client
@@ -1181,9 +1224,18 @@ class LumalouCoordinator:
     async def _async_fresh_snapshot(
         self,
     ) -> tuple[SafeLumalouClient, DeviceSnapshot]:
-        """Open a new strict session and read the complete profile in it."""
+        """Open a new strict session and read the complete profile in it.
+
+        Every fresh read judges the power-loss clock before anything can
+        write the clock, and a reset seen once stays pending until it is
+        resolved, even if the pass that saw it fails afterwards.
+        """
+        last_frame_at = self._last_frame_at
         client = await self._async_new_session()
-        return client, await self._read_snapshot(client)
+        snapshot = await self._read_snapshot(client)
+        if self._is_reset(snapshot, last_frame_at):
+            self._reset_seen = True
+        return client, snapshot
 
     async def _async_sync_clock_if_needed(
         self,
@@ -1290,7 +1342,12 @@ class LumalouCoordinator:
         """
         await self._write(*payloads)
         if not await self._state_confirms(confirm):
-            return
+            # Seen on hardware right after a session change: acknowledged,
+            # but not applied. A setting may safely be written again.
+            _LOGGER.debug("Lumalou did not confirm %s; writing it again", confirm)
+            await self._write(*payloads)
+            if not await self._state_confirms(confirm):
+                raise _error("setting_not_confirmed")
         record = self._profile_record
         if not profile_is_complete(record.desired_profile):
             return
@@ -1313,7 +1370,7 @@ class LumalouCoordinator:
             validate_integer(brightness, 1, 9, "brightness")
         if color is not None:
             validate_integer(color, 0, 9, "color")
-        async with self._device_write_operation():
+        async with self._live_write_operation():
             state = self._live_state()
             on = []
             if color is not None or brightness is None or not state["lightStatus"]:
@@ -1333,14 +1390,14 @@ class LumalouCoordinator:
             )
 
     async def async_turn_off_light(self) -> None:
-        async with self._device_write_operation():
+        async with self._live_write_operation():
             await self._write(commands.turn_off_backlight())
 
     async def async_set_level(self, key: str, value: int) -> None:
         """Set the volume or a timer; none of them starts sound or light."""
         field, maximum, setter = _LEVELS[key]
         validate_integer(value, 0, maximum, key)
-        async with self._device_write_operation():
+        async with self._live_write_operation():
             await self._write_setting(
                 [setter(value)], {field: value}, LIVE_BLOCK, {key: value}
             )
@@ -1359,7 +1416,7 @@ class LumalouCoordinator:
             validate_integer(brightness, 0, 9, "clock brightness")
         if clock_format is not None:
             validate_integer(clock_format, 0, 1, "clock format")
-        async with self._device_write_operation():
+        async with self._live_write_operation():
             state = self._live_state()
             clock = {
                 "display": (
@@ -1390,13 +1447,13 @@ class LumalouCoordinator:
     async def async_play(self, source: int) -> None:
         """Play a built-in sound; source 0 is the soother (music and light)."""
         validate_integer(source, 0, 7, "audio source")
-        async with self._device_write_operation():
+        async with self._live_write_operation():
             await self._write(commands.play_audio(source))
             self.playing_source = source
 
     async def async_stop_audio(self) -> None:
         """Stop audio only; a soother light stays on until turned off."""
-        async with self._device_write_operation():
+        async with self._live_write_operation():
             await self._write(commands.turn_off_audio())
 
     # ---- Routines ----
@@ -1416,7 +1473,7 @@ class LumalouCoordinator:
                     raise ProfileValidationError("Invalid routine mode")
             else:
                 validate_integer(value, 0, 9 if key == "volume" else 1, key)
-        async with self._device_write_operation():
+        async with self._live_write_operation():
             state = self._live_state()
             target: dict[str, Any] = {
                 key: state[field] for key, field in ROUTINE_SETTING_FIELDS.items()
@@ -1454,9 +1511,11 @@ class LumalouCoordinator:
         1 goes back one task, 4 cancels the routine.
         """
         validate_integer(control, 0, 4, "routine control")
-        async with self._device_write_operation():
+        async with self._live_write_operation():
             if self._live_state()["operationMode"] != ROUTINE_OPERATION_MODE:
                 raise _error("routine_not_running")
+            # Set first: the device pushes the ended routine during the write.
+            self._cancel_sent = control == 4
             await self._write(commands.routine_control(control))
 
     async def async_start_routine(self, tasks: list[int] | None = None) -> None:
@@ -1474,7 +1533,7 @@ class LumalouCoordinator:
             if not tasks:
                 raise ProfileValidationError("A routine needs at least one task")
             routine_from_tasks(None, tasks)
-        async with self._device_write_operation():
+        async with self._live_write_operation():
             if self._live_state()["operationMode"] == ROUTINE_OPERATION_MODE:
                 raise _error("routine_running")
             temporary: tuple[str, dict[str, Any]] | None = None
@@ -1608,7 +1667,7 @@ class LumalouCoordinator:
 
     async def async_sync_clock(self) -> None:
         """Explicit action only; never send a stored or naive host timestamp."""
-        async with self._device_write_operation():
+        async with self._live_write_operation():
             now = _trusted_now()
             if now is None:
                 raise _error("clock_untrusted")
@@ -1696,6 +1755,7 @@ class LumalouCoordinator:
             self._previewed_profile = None
             # The user chose the device read as it is.
             await self._set_temporary_routine_day(None)
+            self._reset_seen = False
             self._set_protocol_verified(True)
             self._schedule_recovery()
 
@@ -1819,6 +1879,7 @@ class LumalouCoordinator:
             )
         await self._save(self._as_verified(self._profile_record))
         self._restore_needed = None
+        self._reset_seen = False
         # The device now has every saved routine, one-off or not.
         await self._set_temporary_routine_day(None)
         self.last_restore_result = result(verified=True)

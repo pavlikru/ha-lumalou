@@ -45,6 +45,9 @@ SESSION_CONNECT_ATTEMPTS = 3
 # The device pushes GLOBAL_STATE right after each write; wait this long for
 # the push that confirms a setting before it is saved to the profile.
 STATE_CONFIRM_TIMEOUT = 3
+# A live command waits up to this long for a session that is being opened
+# (for example right after a profile write) instead of failing at once.
+LIVE_SESSION_WAIT = 15
 # Aggregate SET_GLOBAL_STATE 0x01 and SET_GLOBAL_ON 0x03 (soother),
 # SEND_PAIRING_COMPLETE 0x34, nap start 0x4D and nap alarm 0x4F, and
 # SET_TIME_PRESCALER 0x52 are never sent.
@@ -122,6 +125,9 @@ CLOCK_SYNC_TOLERANCE = 60
 # the device (plus RESET_CLOCK_OFFSET slack), at most RESET_WINDOW_MAX.
 RESET_CLOCK_OFFSET = 10 * 60
 WHOLE_HOUR_TOLERANCE = 2 * 60
+# A whole-hour offset is only ambiguous (DST vs power loss) when Home
+# Assistant has not heard the device for longer than this.
+DST_AMBIGUITY_WINDOW = 60 * 60
 RESET_WINDOW_MAX = 12 * 60 * 60
 # Automatic clock writes pause this long (seconds) after a failed one, and
 # corrections of drift seen in pushed CURRENT_DATE happen at most this often

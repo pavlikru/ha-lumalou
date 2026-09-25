@@ -10,7 +10,12 @@ from homeassistant.core import callback
 from .entity import LumalouEntity
 
 PARALLEL_UPDATES = 0
-ROUTINE_EVENTS = ("task_completed", "routine_completed", "routine_cancelled")
+ROUTINE_EVENTS = (
+    "task_completed",
+    "routine_completed",
+    "routine_cancelled",
+    "routine_expired",
+)
 
 
 async def async_setup_entry(hass: Any, entry: Any, async_add_entities: Any) -> None:
@@ -19,7 +24,7 @@ async def async_setup_entry(hass: Any, entry: Any, async_add_entities: Any) -> N
 
 
 class LumalouRoutineEvent(LumalouEntity, EventEntity):
-    """Fires when a routine task or the whole routine is done, or cancelled.
+    """Fires when a task or the whole routine is done, cancelled or expired.
 
     ``task_completed`` carries the ``task`` key (for example ``brush_teeth``).
     Derived from the device's pushed task status while HA is connected.
