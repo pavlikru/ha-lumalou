@@ -61,7 +61,9 @@ rules:
   integration-owner: done
   log-when-unavailable:
     status: done
-    comment: The coordinator logs device loss and return once each at info level.
+    comment: >-
+      The coordinator logs device loss (Bluetooth unavailability or a failed
+      connect) and return once each at info level.
   parallel-updates:
     status: done
     comment: Every platform sets PARALLEL_UPDATES = 0; the coordinator lock serializes all device I/O.

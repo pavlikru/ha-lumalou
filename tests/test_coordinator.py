@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from bleak.backends.device import BLEDevice
+from bleak_retry_connector import BLEAK_SAFETY_TIMEOUT, MAX_CONNECT_ATTEMPTS
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from lumalou import crypto
 from lumalou.client import FreshSessionRequiredError
@@ -36,6 +37,7 @@ from lumalou.schedules import (
 from custom_components.lumalou.const import (
     CONF_DEVICE_FINGERPRINT,
     CONF_PROTOCOL_VERIFIED,
+    CONNECT_TIMEOUT,
     DEFAULT_LIGHT_BRIGHTNESS,
     GLOBAL_STATE_FIELDS,
 )
@@ -2014,6 +2016,65 @@ async def test_unavailability_and_return_are_logged_once(rig, caplog):
     messages = [record.getMessage() for record in caplog.records]
     assert messages.count("Test Lumalou is unavailable") == 1
     assert messages.count("Test Lumalou is available again") == 1
+
+
+async def test_connect_failures_are_logged_once_until_available(rig, caplog):
+    """The first failed connect logs type and message; repeats go to debug."""
+    coordinator = rig.coordinator
+    await coordinator.async_setup()
+    original = rig.client_factory.side_effect
+
+    def fail_connect(*args, **kwargs):
+        client = original(*args, **kwargs)
+        client.connect.side_effect = OSError("Synthetic connect error")
+        return client
+
+    rig.client_factory.side_effect = fail_connect
+    caplog.set_level("DEBUG", logger="custom_components.lumalou.coordinator")
+    for _ in range(2):
+        with pytest.raises(HomeAssistantError):
+            await coordinator.async_request_refresh()
+
+    records = [
+        record
+        for record in caplog.records
+        if record.name == "custom_components.lumalou.coordinator"
+    ]
+    info = [record for record in records if record.levelname == "INFO"]
+    assert [record.getMessage() for record in info] == [
+        "Test Lumalou is unavailable: could not connect: OSError: "
+        "Synthetic connect error"
+    ]
+    assert info[0].exc_info is None
+    debug = [record for record in records if record.exc_info]
+    assert len(debug) == 2
+    assert all(record.levelname == "DEBUG" for record in debug)
+    assert FINGERPRINT not in caplog.text
+
+    # A successful session logs the return once and re-arms the first log.
+    rig.client_factory.side_effect = original
+    caplog.clear()
+    await coordinator.async_request_refresh()
+    rig.client_factory.side_effect = fail_connect
+    with pytest.raises(HomeAssistantError):
+        await coordinator.async_request_refresh()
+    messages = [record.getMessage() for record in caplog.records]
+    assert messages.count("Test Lumalou is available again") == 1
+    assert (
+        messages.count(
+            "Test Lumalou is unavailable: could not connect: OSError: "
+            "Synthetic connect error"
+        )
+        == 1
+    )
+
+
+async def test_session_connect_uses_the_connector_retry_budget(rig):
+    """The coordinator never passes a deadline shorter than the retries."""
+    await rig.coordinator.async_request_refresh()
+
+    rig.clients[0].connect.assert_awaited_once_with(timeout=CONNECT_TIMEOUT)
+    assert CONNECT_TIMEOUT > MAX_CONNECT_ATTEMPTS * BLEAK_SAFETY_TIMEOUT
 
 
 async def test_device_write_invalidates_a_pending_preview(rig):
