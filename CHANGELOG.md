@@ -6,6 +6,47 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0b4] - 2026-09-25
+
+Based on a hardware check of every Bluetooth command on firmware 0.3.7.
+
+### Upgrade notes
+
+- The saved profile format changed (schema 3). After updating, open
+  **Configure → Read the device profile** once and confirm it; controls stay
+  locked until then.
+- **Automatic restore** is now on by default for new entries. Existing entries
+  keep their setting; switch it on under **Configure → Behavior options**.
+- The **Refresh** button was removed; the device pushes its state.
+
+### Added
+
+- Clock entities: **Clock format** (12/24-hour), **Clock display** and
+  **Clock brightness**.
+- The profile now also holds the light and playlist timers, volume and light
+  brightness, which a power loss resets. Changes made in Home Assistant are
+  kept in it.
+
+### Changed
+
+- One Bluetooth session stays open while the device is reachable. State comes
+  from the device's own pushes (also for button presses on the device); a
+  command is done when the device acknowledges it, with no reconnect or read
+  afterwards. Reconnects wait 1.5 seconds after a disconnect.
+- Power loss: a reconnect that finds the device clock more than 10 minutes off
+  and the settings different is a reset. Home Assistant sets the clock and
+  restores the saved profile automatically (at most two attempts), or raises
+  the Repair when automatic restore is off. Settings changed without a reset
+  still raise the Repair and are never overwritten automatically.
+- Light: "on" switches the light on in the current color at the stored
+  brightness; a brightness is written before the color. Effect names describe
+  what the device shows.
+- The sleep playlist is labelled as the soother (music and light); stopping
+  sound leaves its light on. `pink_noise` is labelled "White noise".
+- The clock is corrected from the clock the device pushes every minute (DST,
+  drift) instead of a daily reconnect.
+- The aggregate state and soother commands (`0x01`, `0x03`) are blocked.
+
 ## [0.1.0b3] - 2026-09-25
 
 ### Fixed
@@ -143,7 +184,8 @@ Hardware validation: summary of passed phases (anonymized).
 Requires Home Assistant 2026.9.0 or newer and lumalou-gld09==0.2.0.
 -->
 
-[Unreleased]: https://github.com/pavlikru/ha-lumalou/compare/v0.1.0b3...HEAD
+[Unreleased]: https://github.com/pavlikru/ha-lumalou/compare/v0.1.0b4...HEAD
+[0.1.0b4]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b4
 [0.1.0b3]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b3
 [0.1.0b2]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b2
 [0.1.0b1]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b1
