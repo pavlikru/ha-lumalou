@@ -3,7 +3,7 @@ name: Validate
 on:
   workflow_call:
   push:
-    branches: [main, feat/lumalou-integration]
+    branches: [main]
   pull_request:
   workflow_dispatch:
   schedule:
