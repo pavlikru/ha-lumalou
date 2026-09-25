@@ -124,7 +124,15 @@ differing profile as a reset and restores the saved profile (see the README).
 In the 0.1.0b6 Home Assistant run a replug reset the settings (12-hour clock,
 routines, routine settings) but the clock was only slightly off and was not
 recognised; since 0.1.0b7 factory settings alone are a reset, and the raw
-clock and every criterion are logged at info level.
+clock and every criterion are logged at info level. With 0.1.0b7 the
+restore worked; the device clock read 04:59:07 on Sunday right after that
+power loss, so the power-loss clock is accepted from 04:55.
+
+After a scheduled routine started (0.1.0b7), the live session received no
+state, clock or routine frame for more than four minutes while the device
+ran the tasks; a session opened before the start (library probe) kept
+receiving step changes. Since 0.1.0b8 such a session is reconnected after 90
+seconds and the routine progress is read again.
 
 ## Home Assistant acceptance checklist
 
