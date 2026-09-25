@@ -17,7 +17,6 @@ from .const import (
     DOMAIN,
     ISSUE_ID_IDENTITY_ENROLLMENT,
     ISSUE_ID_PROFILE_RESTORE_NEEDED,
-    ISSUE_ID_PROFILE_STORAGE,
     PLATFORMS,
 )
 from .entity import async_migrate_identifiers
@@ -105,19 +104,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: LumalouConfigEntry) -> b
 
     coordinator = LumalouCoordinator(hass, entry)
     await coordinator.async_setup()
-    issue_id = f"{entry.entry_id}_{ISSUE_ID_PROFILE_STORAGE}"
-    if coordinator.profile_storage_healthy:
-        ir.async_delete_issue(hass, DOMAIN, issue_id)
-    else:
-        ir.async_create_issue(
-            hass,
-            DOMAIN,
-            issue_id,
-            data={"entry_id": entry.entry_id},
-            is_fixable=True,
-            severity=ir.IssueSeverity.ERROR,
-            translation_key=ISSUE_ID_PROFILE_STORAGE,
-        )
     entry.runtime_data = LumalouRuntimeData(coordinator)
 
     restore_needed = coordinator.restore_needed
@@ -158,10 +144,6 @@ async def async_remove_entry(hass: HomeAssistant, entry: LumalouConfigEntry) -> 
     The saved profile is bound to this entry and device key; users keep a copy
     with the export action before removing the device.
     """
-    for issue in (
-        ISSUE_ID_PROFILE_STORAGE,
-        ISSUE_ID_IDENTITY_ENROLLMENT,
-        ISSUE_ID_PROFILE_RESTORE_NEEDED,
-    ):
+    for issue in (ISSUE_ID_IDENTITY_ENROLLMENT, ISSUE_ID_PROFILE_RESTORE_NEEDED):
         ir.async_delete_issue(hass, DOMAIN, f"{entry.entry_id}_{issue}")
     await ProfileStore(hass, entry.entry_id).async_remove()

@@ -115,7 +115,6 @@ async def loaded_lumalou(hass: HomeAssistant) -> MockConfigEntry:
         sw_version="1.0",
         available=True,
         protocol_verified=True,
-        profile_storage_healthy=True,
         profile_record=ProfileRecord(),
         data={
             "lightStatus": 1,

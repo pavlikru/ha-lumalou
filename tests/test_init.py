@@ -14,12 +14,16 @@ from custom_components.lumalou import (
     async_setup_entry,
     async_unload_entry,
 )
-from custom_components.lumalou.const import DOMAIN, ISSUE_ID_PROFILE_STORAGE, PLATFORMS
+from custom_components.lumalou.const import (
+    DOMAIN,
+    ISSUE_ID_PROFILE_RESTORE_NEEDED,
+    PLATFORMS,
+)
 
 
-def _profile_storage_issue_id(entry: MockConfigEntry) -> str:
-    """Return the entry-scoped saved-profile Repairs issue id."""
-    return f"{entry.entry_id}_{ISSUE_ID_PROFILE_STORAGE}"
+def _restore_issue_id(entry: MockConfigEntry) -> str:
+    """Return the entry-scoped restore Repairs issue id."""
+    return f"{entry.entry_id}_{ISSUE_ID_PROFILE_RESTORE_NEEDED}"
 
 
 async def test_offline_setup_starts_callbacks_and_forwards_platforms(
@@ -56,95 +60,6 @@ async def test_offline_setup_starts_callbacks_and_forwards_platforms(
     forward.assert_awaited_once_with(entry, PLATFORMS)
 
 
-async def test_unhealthy_profile_creates_entry_scoped_repair_issue(
-    hass: HomeAssistant,
-) -> None:
-    """A failed saved-profile load is visible without replacing the profile."""
-    entry = MockConfigEntry(domain=DOMAIN, data={"address": "synthetic-device"})
-    coordinator = Mock(
-        profile_storage_healthy=False,
-        async_setup=AsyncMock(),
-        async_start=Mock(),
-        async_shutdown=AsyncMock(),
-    )
-
-    with (
-        patch(
-            "custom_components.lumalou.coordinator.LumalouCoordinator",
-            return_value=coordinator,
-        ),
-        patch.object(
-            hass.config_entries,
-            "async_forward_entry_setups",
-            new=AsyncMock(),
-        ),
-    ):
-        assert await async_setup_entry(hass, entry)
-
-    issue = ir.async_get(hass).async_get_issue(DOMAIN, _profile_storage_issue_id(entry))
-    assert issue is not None
-    assert issue.is_fixable is True
-    assert issue.is_persistent is False
-    assert issue.severity is ir.IssueSeverity.ERROR
-    assert issue.translation_key == ISSUE_ID_PROFILE_STORAGE
-    assert issue.data == {"entry_id": entry.entry_id}
-
-
-async def test_healthy_entry_only_deletes_its_own_stale_profile_issue(
-    hass: HomeAssistant,
-) -> None:
-    """A recovered entry cannot clear another entry's profile recovery issue."""
-    unhealthy_entry = MockConfigEntry(
-        domain=DOMAIN, data={"address": "unhealthy-device"}
-    )
-    healthy_entry = MockConfigEntry(domain=DOMAIN, data={"address": "healthy-device"})
-    ir.async_create_issue(
-        hass,
-        DOMAIN,
-        _profile_storage_issue_id(unhealthy_entry),
-        is_fixable=False,
-        severity=ir.IssueSeverity.ERROR,
-        translation_key=ISSUE_ID_PROFILE_STORAGE,
-    )
-    ir.async_create_issue(
-        hass,
-        DOMAIN,
-        _profile_storage_issue_id(healthy_entry),
-        is_fixable=False,
-        severity=ir.IssueSeverity.ERROR,
-        translation_key=ISSUE_ID_PROFILE_STORAGE,
-    )
-    coordinator = Mock(
-        profile_storage_healthy=True,
-        async_setup=AsyncMock(),
-        async_start=Mock(),
-        async_shutdown=AsyncMock(),
-    )
-
-    with (
-        patch(
-            "custom_components.lumalou.coordinator.LumalouCoordinator",
-            return_value=coordinator,
-        ),
-        patch.object(
-            hass.config_entries,
-            "async_forward_entry_setups",
-            new=AsyncMock(),
-        ),
-    ):
-        assert await async_setup_entry(hass, healthy_entry)
-
-    registry = ir.async_get(hass)
-    assert (
-        registry.async_get_issue(DOMAIN, _profile_storage_issue_id(unhealthy_entry))
-        is not None
-    )
-    assert (
-        registry.async_get_issue(DOMAIN, _profile_storage_issue_id(healthy_entry))
-        is None
-    )
-
-
 async def test_removing_entry_only_deletes_its_own_profile_issue(
     hass: HomeAssistant,
 ) -> None:
@@ -155,10 +70,10 @@ async def test_removing_entry_only_deletes_its_own_profile_issue(
         ir.async_create_issue(
             hass,
             DOMAIN,
-            _profile_storage_issue_id(entry),
+            _restore_issue_id(entry),
             is_fixable=False,
-            severity=ir.IssueSeverity.ERROR,
-            translation_key=ISSUE_ID_PROFILE_STORAGE,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_ID_PROFILE_RESTORE_NEEDED,
         )
 
     with patch(
@@ -168,13 +83,9 @@ async def test_removing_entry_only_deletes_its_own_profile_issue(
 
     remove_store.assert_awaited_once_with()
     registry = ir.async_get(hass)
+    assert registry.async_get_issue(DOMAIN, _restore_issue_id(removed_entry)) is None
     assert (
-        registry.async_get_issue(DOMAIN, _profile_storage_issue_id(removed_entry))
-        is None
-    )
-    assert (
-        registry.async_get_issue(DOMAIN, _profile_storage_issue_id(retained_entry))
-        is not None
+        registry.async_get_issue(DOMAIN, _restore_issue_id(retained_entry)) is not None
     )
 
 

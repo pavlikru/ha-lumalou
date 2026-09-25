@@ -51,7 +51,6 @@ from custom_components.lumalou.models import (
     RevisionConflictError,
 )
 from custom_components.lumalou.restore import build_restore_steps
-from custom_components.lumalou.storage import ProfileStorageError, ProfileStore
 from tests.test_restore import complete_profile
 
 FINGERPRINT = "a" * 64
@@ -148,7 +147,6 @@ def rig():
         journal.append(("save", deepcopy(record)))
 
     store.async_save = AsyncMock(side_effect=save)
-    store.async_recover = AsyncMock(side_effect=save)
     background_tasks = []
 
     def create_background_task(hass, coro, name, *, eager_start=True):
@@ -391,21 +389,6 @@ async def test_public_offline_profile_edit_merges_complex_blocks_without_ble(rig
     }
 
 
-async def test_public_offline_profile_edit_requires_loaded_healthy_store(rig):
-    coordinator = rig.coordinator
-    with pytest.raises(HomeAssistantError, match="requires recovery"):
-        await coordinator.async_edit_profile({"volume": 3}, expected_revision=0)
-
-    rig.store.async_load.side_effect = ProfileStorageError("Synthetic corruption")
-    await coordinator.async_setup()
-    with pytest.raises(HomeAssistantError, match="requires recovery"):
-        await coordinator.async_edit_profile({"volume": 3}, expected_revision=0)
-
-    rig.store.async_save.assert_not_awaited()
-    rig.discovery.assert_not_called()
-    rig.client_factory.assert_not_called()
-
-
 async def test_public_offline_profile_edit_requires_a_complete_profile(rig):
     """Editors never fabricate blocks: a device read must come first."""
     coordinator = rig.coordinator
@@ -451,44 +434,6 @@ async def test_public_offline_profile_edit_rejects_stale_concurrent_revision(rig
         "volume": 3,
     }
     assert rig.store.async_save.await_count == 1
-    rig.discovery.assert_not_called()
-    rig.client_factory.assert_not_called()
-
-
-async def test_cancelled_public_offline_edit_never_touches_ble(rig):
-    """A Store-safe completed commit is still published before cancellation."""
-    coordinator = rig.coordinator
-    rig.store.async_load.return_value = ProfileRecord(
-        desired_profile=complete_profile()
-    )
-    await coordinator.async_setup()
-    save_started = asyncio.Event()
-    release_save = asyncio.Event()
-
-    async def cancellation_safe_save(_record):
-        commit = asyncio.create_task(release_save.wait())
-        save_started.set()
-        try:
-            await asyncio.shield(commit)
-        except asyncio.CancelledError:
-            await commit
-            raise
-
-    rig.store.async_save.side_effect = cancellation_safe_save
-    edit = asyncio.create_task(
-        coordinator.async_edit_profile({"volume": 3}, expected_revision=0)
-    )
-    await save_started.wait()
-    edit.cancel()
-    release_save.set()
-
-    with pytest.raises(asyncio.CancelledError):
-        await edit
-    assert coordinator.profile_record.desired_profile == {
-        **complete_profile(),
-        "volume": 3,
-    }
-    assert coordinator.profile_record.revision == 1
     rig.discovery.assert_not_called()
     rig.client_factory.assert_not_called()
 
@@ -774,26 +719,19 @@ async def test_restore_planning_rejects_incomplete_profile_before_read(rig):
     rig.store.async_save.assert_not_awaited()
 
 
-@pytest.mark.parametrize("gate", ["unloaded", "storage", "maintenance", "identity"])
+@pytest.mark.parametrize("gate", ["maintenance", "identity"])
 async def test_restore_planning_gates_before_device_read(rig, gate):
     """No restore preview may open BLE with unavailable state or identity."""
     coordinator = rig.coordinator
-    expected_error = "Saved profile requires recovery first"
-    if gate == "unloaded":
-        pass
-    elif gate == "storage":
-        rig.store.async_load.side_effect = ProfileStorageError("synthetic corruption")
-        await coordinator.async_setup()
+    await coordinator.async_setup()
+    if gate == "maintenance":
+        coordinator._profile_record = replace(
+            coordinator.profile_record, maintenance=True
+        )
+        expected_error = "maintenance mode"
     else:
-        await coordinator.async_setup()
-        if gate == "maintenance":
-            coordinator._profile_record = replace(
-                coordinator.profile_record, maintenance=True
-            )
-            expected_error = "maintenance mode"
-        else:
-            coordinator.device_fingerprint = None
-            expected_error = "device identity was enrolled"
+        coordinator.device_fingerprint = None
+        expected_error = "device identity was enrolled"
 
     with pytest.raises(HomeAssistantError, match=expected_error):
         await coordinator.async_plan_profile_restore(expected_revision=0)
@@ -828,19 +766,13 @@ async def test_restore_planning_rechecks_maintenance_after_read(rig):
     assert rig.store.async_save.await_count == saves_before_plan
 
 
-@pytest.mark.parametrize("invalidated", ["storage", "identity"])
-async def test_restore_planning_rechecks_storage_and_identity_after_read(
-    rig, invalidated
-):
+async def test_restore_planning_rechecks_identity_after_read(rig):
     """A preview is discarded if its read loses a precondition mid-flight."""
     coordinator = rig.coordinator
     snapshot = await verified_profile(rig)
 
     async def read_then_invalidate_gate():
-        if invalidated == "storage":
-            coordinator._storage_healthy = False
-        else:
-            coordinator.device_fingerprint = None
+        coordinator.device_fingerprint = None
         return snapshot, 1
 
     coordinator.async_read_profile_snapshot = AsyncMock(
@@ -1111,12 +1043,6 @@ async def test_restore_verification_read_failure_is_not_success(rig):
             1,
             HomeAssistantError,
             "different device",
-        ),
-        (
-            lambda c: setattr(c, "_storage_healthy", False),
-            1,
-            HomeAssistantError,
-            "recovery first",
         ),
     ],
 )
@@ -1393,69 +1319,24 @@ async def test_entry_without_bound_factory_identity_cannot_write(rig):
     rig.client_factory.assert_not_called()
 
 
-async def test_unreadable_profile_blocks_writes_not_discovery(rig):
-    rig.store.async_load.side_effect = ProfileStorageError("Synthetic corruption")
+async def test_missing_saved_profile_locks_controls(rig):
+    """Without a usable saved profile, a device read must be confirmed again."""
     await rig.coordinator.async_setup()
-    assert not rig.coordinator.profile_storage_healthy
-    assert rig.coordinator.profile_record.last_error == "storage_load"
-    with pytest.raises(HomeAssistantError, match="requires recovery"):
+
+    assert not rig.coordinator.protocol_verified
+    rig.hass.config_entries.async_update_entry.assert_called_once()
+    with pytest.raises(HomeAssistantError, match="Read and verify"):
         await rig.coordinator.async_set_volume(3)
     rig.client_factory.assert_not_called()
     rig.store.async_save.assert_not_awaited()
 
 
-async def test_setup_only_handles_profile_storage_errors(rig):
-    """Unexpected Home Assistant errors must not masquerade as recovery state."""
+async def test_setup_propagates_unexpected_store_errors(rig):
     rig.store.async_load.side_effect = HomeAssistantError("Synthetic unexpected error")
 
     with pytest.raises(HomeAssistantError, match="Synthetic unexpected error"):
         await rig.coordinator.async_setup()
 
-    assert rig.coordinator.profile_storage_healthy
-    rig.store.async_save.assert_not_awaited()
-
-
-async def test_corrupt_profile_cannot_export_empty_backup_or_overwrite_file(
-    rig, tmp_path
-):
-    """A setup fallback is diagnostic state, never a valid backup document."""
-    path = tmp_path / "lumalou.synthetic.profile"
-    corrupt_document = '{"version":1,"data":'
-    path.write_text(corrupt_document)
-
-    async def executor(function, *args):
-        return function(*args)
-
-    backend = SimpleNamespace(
-        path=str(path), key="lumalou.synthetic.profile", async_save=AsyncMock()
-    )
-    with patch("custom_components.lumalou.storage.Store", return_value=backend):
-        store = ProfileStore(
-            SimpleNamespace(async_add_executor_job=executor), "synthetic"
-        )
-    coordinator = LumalouCoordinator(rig.coordinator.hass, rig.coordinator.entry, store)
-    await coordinator.async_setup()
-    assert not coordinator.profile_storage_healthy
-    assert coordinator.profile_record.last_error == "storage_load"
-
-    with pytest.raises(HomeAssistantError, match="requires recovery"):
-        await coordinator.async_export_profile()
-
-    assert path.read_text() == corrupt_document
-    backend.async_save.assert_not_awaited()
-    rig.client_factory.assert_not_called()
-
-
-async def test_queued_export_rechecks_storage_health_under_lock(rig):
-    coordinator = rig.coordinator
-    async with coordinator._lock:
-        export = asyncio.create_task(coordinator.async_export_profile())
-        await asyncio.sleep(0)
-        assert not export.done()
-        coordinator._storage_healthy = False
-
-    with pytest.raises(HomeAssistantError, match="requires recovery"):
-        await export
     rig.store.async_save.assert_not_awaited()
 
 
@@ -1612,8 +1493,8 @@ async def test_offline_edit_is_saved_pending_and_write_failure_keeps_old_revisio
     assert coordinator.profile_record.pending
     assert coordinator.profile_record.desired_profile == {"volume": 5}
     assert coordinator.profile_record.last_error == "ble_apply"
-    rig.store.async_save.side_effect = ProfileStorageError("Synthetic disk full")
-    with pytest.raises(ProfileStorageError):
+    rig.store.async_save.side_effect = OSError("Synthetic disk full")
+    with pytest.raises(OSError):
         await coordinator.async_set_volume(6)
     assert coordinator.profile_record.revision == 1
     assert coordinator.profile_record.desired_profile == {"volume": 5}
@@ -1648,33 +1529,6 @@ async def test_disconnect_failure_does_not_mask_refresh_error(rig):
     assert coordinator._client is None
     assert not coordinator.available
     assert coordinator.data is None
-
-
-async def test_cancelled_durable_save_is_published_before_cancellation(rig):
-    """Cancellation-safe Store completion and RAM revision stay consistent."""
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    async def cancellation_safe_save(record):
-        commit = asyncio.create_task(release.wait())
-        started.set()
-        try:
-            await asyncio.shield(commit)
-        except asyncio.CancelledError:
-            await commit
-            raise
-
-    rig.store.async_save.side_effect = cancellation_safe_save
-    task = asyncio.create_task(rig.coordinator.async_set_volume(3))
-    await started.wait()
-    task.cancel()
-    release.set()
-
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert rig.coordinator.profile_record.revision == 1
-    assert rig.coordinator.profile_record.desired_profile == {"volume": 3}
-    rig.discovery.assert_not_called()
 
 
 async def test_light_settings_saved_but_off_never_erases_them(rig):
@@ -1938,71 +1792,9 @@ async def test_import_export_confirmation_conflicts_and_no_restore(rig):
         await coordinator._save_edit({"volume": 4}, expected_revision=True)
     await coordinator._save_edit({"volume": 4}, expected_revision=1)
     assert coordinator.profile_record.previous["revision"] == 1
-    coordinator._profile_loaded = True
     with pytest.raises(ProfileValidationError, match="incomplete"):
         await coordinator.async_restore_profile(2, confirmed=True)
     rig.discovery.assert_not_called()
-
-
-async def test_corrupt_storage_recovery_requires_confirmed_valid_import(rig):
-    payload = {
-        "schema_version": 1,
-        "scope": "supported_subset",
-        "profile": {"playlist": [12, 2, 2], "volume": 1},
-    }
-    rig.store.async_load.side_effect = ProfileStorageError("Synthetic corruption")
-    await rig.coordinator.async_setup()
-
-    with pytest.raises(ProfileValidationError, match="Confirm"):
-        await rig.coordinator.async_recover_profile(payload)
-    rig.store.async_recover.assert_not_awaited()
-
-    await rig.coordinator.async_recover_profile(payload, confirmed=True)
-
-    assert rig.coordinator.profile_storage_healthy
-    assert rig.coordinator.profile_record == ProfileRecord(
-        revision=1,
-        desired_profile={"playlist": [12, 2, 2], "volume": 1},
-        pending=True,
-        sync_status="pending",
-    )
-    rig.store.async_recover.assert_awaited_once_with(rig.coordinator.profile_record)
-    rig.discovery.assert_not_called()
-
-
-async def test_healthy_storage_cannot_be_replaced_through_recovery(rig):
-    payload = {
-        "schema_version": 1,
-        "scope": "supported_subset",
-        "profile": {"volume": 1},
-    }
-
-    with pytest.raises(HomeAssistantError, match="does not require recovery"):
-        await rig.coordinator.async_recover_profile(payload, confirmed=True)
-
-    rig.store.async_recover.assert_not_awaited()
-
-
-async def test_cancel_after_verified_recovery_publishes_durable_record(rig):
-    payload = {
-        "schema_version": 1,
-        "scope": "supported_subset",
-        "profile": {"volume": 3},
-    }
-    rig.store.async_load.side_effect = ProfileStorageError("Synthetic corruption")
-    await rig.coordinator.async_setup()
-    rig.store.async_recover.side_effect = asyncio.CancelledError
-
-    with pytest.raises(asyncio.CancelledError):
-        await rig.coordinator.async_recover_profile(payload, confirmed=True)
-
-    assert rig.coordinator.profile_storage_healthy
-    assert rig.coordinator.profile_record == ProfileRecord(
-        revision=1,
-        desired_profile={"volume": 3},
-        pending=True,
-        sync_status="pending",
-    )
 
 
 async def test_export_revision_and_profile_are_one_serialized_snapshot(rig):

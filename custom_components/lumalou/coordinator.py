@@ -59,7 +59,7 @@ from .restore import (
     profile_from_readback,
     set_current_date_payload,
 )
-from .storage import ProfileStorageError, ProfileStore
+from .storage import ProfileStore
 from .transport import SafeLumalouClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -123,7 +123,6 @@ _ERRORS = {
     "profile_other_device": "The saved profile was verified on a different device",
     "command_failed": "Lumalou command failed; it will not be replayed",
     "refresh_failed": "Lumalou refresh failed",
-    "profile_storage_unhealthy": "Saved profile requires recovery first",
     "clock_untrusted": "Home Assistant clock is not trustworthy",
 }
 
@@ -183,21 +182,11 @@ class LumalouCoordinator:
         self._stopped = False
         # Log device loss and return once each (quality scale).
         self._unavailable_logged = False
-        self._storage_healthy = True
-        # A public offline edit must not turn an uninitialized coordinator into
-        # a new empty profile. `async_setup` is the only point at which the
-        # existing durable revision is known.
-        self._profile_loaded = False
 
     @property
     def profile_record(self) -> ProfileRecord:
         """Return a detached saved revision so callers cannot mutate intent."""
         return deepcopy(self._profile_record)
-
-    @property
-    def profile_storage_healthy(self) -> bool:
-        """Return whether the saved profile was read successfully."""
-        return self._storage_healthy
 
     @property
     def observed_state(self) -> dict[str, int] | None:
@@ -283,21 +272,23 @@ class LumalouCoordinator:
         if not self.protocol_verified:
             raise _error("control_locked")
 
-    def _assert_profile_usable(self) -> None:
-        if not self._storage_healthy or not self._profile_loaded:
-            raise _error("profile_storage_unhealthy")
+    @callback
+    def _set_protocol_verified(self, verified: bool) -> None:
+        """Persist whether controls are unlocked for this entry."""
+        if self.protocol_verified != verified:
+            self.hass.config_entries.async_update_entry(
+                self.entry, data={**self.entry.data, CONF_PROTOCOL_VERIFIED: verified}
+            )
+            self.protocol_verified = verified
+            self._notify()
 
     async def async_setup(self) -> None:
         """Load private intent without connecting or changing the device."""
-        try:
-            self._profile_record = await self._store.async_load()
-        except ProfileStorageError:
-            self._storage_healthy = False
-            self._profile_record = replace(
-                self.profile_record, sync_status="error", last_error="storage_load"
-            )
-        else:
-            self._profile_loaded = True
+        self._profile_record = await self._store.async_load()
+        if self._profile_record.revision == 0:
+            # No usable saved profile (never read, or unreadable): keep
+            # controls locked until a device read is confirmed again.
+            self._set_protocol_verified(False)
         self._notify()
 
     # ---- Home Assistant Bluetooth callbacks and background recovery ----
@@ -518,9 +509,7 @@ class LumalouCoordinator:
         """
         need: RestoreNeeded | None = None
         if (
-            self._storage_healthy
-            and self._profile_loaded
-            and record.is_verified
+            record.is_verified
             and record.verified_fingerprint == self.device_fingerprint
             and profile_is_complete(record.desired_profile)
         ):
@@ -545,16 +534,7 @@ class LumalouCoordinator:
     # ---- Durable intent ----
 
     async def _save(self, record: ProfileRecord) -> None:
-        if not self._storage_healthy:
-            raise _error("profile_storage_unhealthy")
-        try:
-            await self._store.async_save(record)
-        except asyncio.CancelledError:
-            # ProfileStore guarantees that a started commit has finished before
-            # propagating cancellation. Publish the same durable revision in RAM.
-            self._profile_record = deepcopy(record)
-            self._notify()
-            raise
+        await self._store.async_save(record)
         self._profile_record = deepcopy(record)
         self._notify()
 
@@ -583,8 +563,6 @@ class LumalouCoordinator:
         validated_changes = validate_profile(changes)
         validate_integer(expected_revision, 0, _MAX_REVISION, "expected revision")
         async with self._profile_edit_operation():
-            if not self._storage_healthy or not self._profile_loaded:
-                raise _error("profile_storage_unhealthy")
             if not profile_is_complete(self._profile_record.desired_profile):
                 raise HomeAssistantError("Read the device profile before editing")
             # Merges only supplied logical blocks: never removes saved blocks
@@ -923,8 +901,6 @@ class LumalouCoordinator:
     async def async_export_profile(self) -> dict[str, Any]:
         """Atomically export intent and its CAS revision without identifiers."""
         async with self._operation():
-            if not self._storage_healthy:
-                raise _error("profile_storage_unhealthy")
             record = self.profile_record
             return {
                 "current_revision": record.revision,
@@ -968,8 +944,6 @@ class LumalouCoordinator:
         desired = require_complete_profile(profile)
         validate_integer(expected_revision, 0, _MAX_REVISION, "expected revision")
         async with self._profile_edit_operation():
-            if not self._storage_healthy:
-                raise _error("profile_storage_unhealthy")
             self._assert_enrolled_device()
             if self._previewed_profile is None or desired != self._previewed_profile:
                 raise HomeAssistantError("Read the device profile again to confirm it")
@@ -987,46 +961,8 @@ class LumalouCoordinator:
                 )
             )
             self._previewed_profile = None
-            if not self.protocol_verified:
-                self.hass.config_entries.async_update_entry(
-                    self.entry,
-                    data={**self.entry.data, CONF_PROTOCOL_VERIFIED: True},
-                )
-                self.protocol_verified = True
-                self._notify()
+            self._set_protocol_verified(True)
             self._schedule_recovery()
-
-    async def async_recover_profile(
-        self, payload: dict[str, Any], *, confirmed: bool = False
-    ) -> None:
-        """Replace unreadable storage only from a confirmed validated backup."""
-        if not confirmed:
-            raise ProfileValidationError("Confirm saved profile recovery")
-        desired = import_profile_payload(payload)
-        recovered = ProfileRecord(
-            revision=1,
-            desired_profile=desired,
-            pending=True,
-            sync_status="pending",
-        )
-        async with self._profile_edit_operation():
-            if self._storage_healthy:
-                raise HomeAssistantError("Saved profile does not require recovery")
-            try:
-                await self._store.async_recover(recovered)
-            except asyncio.CancelledError:
-                # ProfileStore propagates caller cancellation only after the
-                # backup, commit, and independent readback have completed.
-                self._publish_recovered(recovered)
-                raise
-            self._publish_recovered(recovered)
-
-    @callback
-    def _publish_recovered(self, record: ProfileRecord) -> None:
-        self._profile_record = deepcopy(record)
-        self._storage_healthy = True
-        self._profile_loaded = True
-        self._notify()
 
     async def async_read_profile_snapshot(self) -> tuple[dict[str, Any], int]:
         """Read + preview: all persistent blocks in one strict fresh session.
@@ -1039,8 +975,6 @@ class LumalouCoordinator:
         """
         async with self._operation():
             self._assert_enrolled_device()
-            if not self._storage_healthy:
-                raise _error("profile_storage_unhealthy")
             record = self.profile_record
             try:
                 _client, snapshot = await self._async_fresh_snapshot()
@@ -1063,7 +997,6 @@ class LumalouCoordinator:
         executor (`async_restore_profile`) re-reads the device itself.
         """
         validate_integer(expected_revision, 0, _MAX_REVISION, "expected revision")
-        self._assert_profile_usable()
         self._assert_enrolled_device()
         record = self.profile_record
         if record.maintenance:
@@ -1077,7 +1010,6 @@ class LumalouCoordinator:
             raise RevisionConflictError("The saved profile changed during readback")
 
         async with self._profile_edit_operation():
-            self._assert_profile_usable()
             record = self.profile_record
             if record.maintenance:
                 raise _error("maintenance_mode")
@@ -1099,8 +1031,8 @@ class LumalouCoordinator:
         any failure raises `ProfileRestoreError` whose `result` lists the
         applied steps and mismatching blocks. Nothing is retried here.
 
-        Requires protocol_verified, the enrolled device key, maintenance off,
-        healthy storage and a structurally complete saved revision. The
+        Requires protocol_verified, the enrolled device key, maintenance off
+        and a structurally complete saved revision. The
         revision may be a pending edit (this is how offline schedule edits
         reach the device) but never one verified on a different device key.
         Automatic restore is stricter: see `_async_recover`.
@@ -1109,7 +1041,6 @@ class LumalouCoordinator:
             raise ProfileValidationError("Confirm the profile restore")
         validate_integer(expected_revision, 0, _MAX_REVISION, "expected revision")
         async with self._device_write_operation():
-            self._assert_profile_usable()
             record = self._profile_record
             if record.maintenance:
                 raise _error("maintenance_mode")
