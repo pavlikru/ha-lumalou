@@ -705,10 +705,13 @@ async def test_reconfigure_changed_address_preserves_bound_identity_and_options(
             new_callable=AsyncMock,
             return_value=FINGERPRINT,
         ),
+        # Reconfigure reloads the entry; never start real Bluetooth here.
+        patch("custom_components.lumalou.async_setup_entry", return_value=True),
     ):
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], user_input={CONF_ADDRESS: new_address}
         )
+        await hass.async_block_till_done()
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
