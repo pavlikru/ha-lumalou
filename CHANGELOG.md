@@ -26,6 +26,17 @@ Based on a hardware check of every Bluetooth command on firmware 0.3.7.
 - The profile now also holds the light and playlist timers, volume and light
   brightness, which a power loss resets. Changes made in Home Assistant are
   kept in it.
+- Routines: **Start routine**, **Complete task** (the remote's check-mark
+  button), **Previous task** and **Cancel routine** buttons; **Routine** and
+  **Current task** sensors; a **Routine** event entity firing
+  `task_completed` (with the task), `routine_completed` and
+  `routine_cancelled`; **Routines** (automatic start), **Routine music**,
+  **Task reward sound**, **Routine reward sound** and **Routine volume**
+  configuration entities, kept in the saved profile.
+- Actions `lumalou.set_routine` (a day routine for chosen weekdays, written
+  to the device and verified) and `lumalou.start_routine` (today's routine
+  now, or other tasks just this once; today's saved routine is written back
+  when it ends, also after a reconnect or restart).
 
 ### Changed
 
@@ -45,7 +56,13 @@ Based on a hardware check of every Bluetooth command on firmware 0.3.7.
   sound leaves its light on. `pink_noise` is labelled "White noise".
 - The clock is corrected from the clock the device pushes every minute (DST,
   drift) instead of a daily reconnect.
-- The aggregate state and soother commands (`0x01`, `0x03`) are blocked.
+- The aggregate state and soother commands (`0x01`, `0x03`) and the nap
+  commands (`0x4D`, `0x4F`) are blocked. Routine start (`0x7B`) and routine
+  control (`0x6B` codes 0–4) are allowed as exact payloads after their
+  hardware check.
+- The **Daily routines** editor picks one task per step by name (each task
+  once, up to 11); a day without tasks has no routine. The **Bathroom** task
+  is now called **Toilet**.
 
 ## [0.1.0b3] - 2026-09-25
 
