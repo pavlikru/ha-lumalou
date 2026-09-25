@@ -752,8 +752,13 @@ class LumalouCoordinator:
 
     async def _async_check_clock(self) -> None:
         """Read the device clock in a fresh session and correct it if needed."""
-        async with self._device_write_operation():
-            if not self.available:
+        async with self._operation():
+            # State may have changed while this waited for the lock.
+            if (
+                not self.available
+                or not self.protocol_verified
+                or self._profile_record.maintenance
+            ):
                 return
             try:
                 # A strict session answers each query once, so start anew.
