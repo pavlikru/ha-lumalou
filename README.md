@@ -200,8 +200,10 @@ Sunday, 12-hour format), playlist, wake and bedtime times, alarms, routines,
 timers, volume and brightness. On every reconnect Home Assistant compares a
 fresh read with the saved **verified** profile:
 
-- **Reset** — the device clock shows the power-loss restart *and* the profile
-  differs. The power-loss clock is Sunday, running from 05:00 for no longer
+- **Reset** — every setting on the device is at its factory default, or the
+  device clock shows the power-loss restart, *and* the profile differs (a
+  short outage can reset the settings while the clock keeps running). The
+  power-loss clock is Sunday, running from 05:00 for no longer
   than Home Assistant has not heard from the device (at most 12 hours), more
   than 10 minutes off and not off by whole hours. An offset of whole hours
   (a DST or time zone change while Home Assistant was down) only sets the
@@ -228,7 +230,11 @@ fresh session, reads everything, corrects the clock, writes only what differs
 in a fixed order (clock settings, playlist, timers, volume and brightness,
 routine sound and volume, weekly times, alarms and routines, then the
 Ready-to-Rise and routine on/off flags), and then reads everything again in a
-new session. It counts as verified only if every block matches. It never
+new session. It counts as verified only if every block matches. Light and
+sound values the device cannot show at that moment are not compared (all of
+them while the soother runs, the brightness while the light is off); a
+mismatch is logged with the saved and the device value of each field. Light
+and sound changes made while the soother runs are not saved in the profile. It never
 writes a color and never starts sound, the soother, a nap or a routine; the
 hardware check confirmed that none of these writes switches light or sound on.
 Nothing is restored while **Maintenance** is on.

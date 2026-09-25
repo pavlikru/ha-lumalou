@@ -15,9 +15,10 @@ from .const import CONF_AUTO_RESTORE, DEFAULT_AUTO_RESTORE
 
 
 def _package_version(package: str) -> str:
+    """Read an installed package version (file I/O: run in the executor)."""
     try:
         return version(package)
-    except PackageNotFoundError:
+    except PackageNotFoundError, ValueError, OSError:
         return "unknown"
 
 
@@ -55,7 +56,11 @@ async def async_get_config_entry_diagnostics(
     return {
         "versions": {
             "home_assistant": HA_VERSION,
-            "lumalou_library": _package_version("lumalou-gld09"),
+            # Reading package metadata is blocking file I/O, which Home
+            # Assistant refuses inside the event loop.
+            "lumalou_library": await hass.async_add_executor_job(
+                _package_version, "lumalou-gld09"
+            ),
         },
         "entry": {
             "source": entry.source,

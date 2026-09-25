@@ -160,3 +160,27 @@ def test_diagnostic_values_are_json_safe() -> None:
         side_effect=PackageNotFoundError,
     ):
         assert _package_version("lumalou-gld09") == "unknown"
+
+
+async def test_library_version_is_read_outside_the_event_loop(
+    hass: HomeAssistant,
+) -> None:
+    """Hardware: the download crashed; package metadata is blocking I/O."""
+    import asyncio
+
+    def version_off_loop(package: str) -> str:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return "9.9.9"
+        raise AssertionError("package metadata read inside the event loop")
+
+    coordinator = SimpleNamespace(profile_record=ProfileRecord())
+    entry = MockConfigEntry(domain=DOMAIN, data={}, unique_id="x")
+    entry.runtime_data = LumalouRuntimeData(coordinator)
+    with patch(
+        "custom_components.lumalou.diagnostics.version", side_effect=version_off_loop
+    ):
+        diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert diagnostics["versions"]["lumalou_library"] == "9.9.9"
