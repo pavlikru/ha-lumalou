@@ -7,7 +7,6 @@ DOMAIN = "lumalou"
 ISSUE_ID_PROFILE_RESTORE_NEEDED = "profile_restore_needed"
 CONF_DEVICE_FINGERPRINT = "device_fingerprint"
 CONF_PROTOCOL_VERIFIED = "protocol_verified"
-SUPPORTED_PRODUCT_CODE = "GLD09"
 PLATFORMS = (
     Platform.BINARY_SENSOR,
     Platform.BUTTON,

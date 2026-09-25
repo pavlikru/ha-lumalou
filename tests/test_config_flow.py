@@ -25,6 +25,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType, InvalidData
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
+from lumalou.factory import InvalidFactoryTokenError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.lumalou.config_flow import (
@@ -36,10 +37,6 @@ from custom_components.lumalou.const import (
     CONF_DEVICE_FINGERPRINT,
     CONF_PROTOCOL_VERIFIED,
     DOMAIN,
-)
-from custom_components.lumalou.identity import (
-    DeviceInformation,
-    FactoryIdentityProbeError,
 )
 from custom_components.lumalou.models import (
     DAYS,
@@ -196,12 +193,7 @@ async def test_bluetooth_discovery_confirm(hass: HomeAssistant) -> None:
 
     with (
         patch(
-            "custom_components.lumalou.config_flow.async_read_device_information",
-            new_callable=AsyncMock,
-            return_value=DeviceInformation(model_number="GLD09"),
-        ),
-        patch(
-            "custom_components.lumalou.config_flow.async_read_factory_device_fingerprint",
+            "custom_components.lumalou.config_flow.async_read_device_fingerprint",
             new_callable=AsyncMock,
             return_value=FINGERPRINT,
         ),
@@ -237,12 +229,7 @@ async def test_new_entry_opens_profile_source_options_flow(
     )
     with (
         patch(
-            "custom_components.lumalou.config_flow.async_read_device_information",
-            new_callable=AsyncMock,
-            return_value=DeviceInformation(model_number="GLD09"),
-        ),
-        patch(
-            "custom_components.lumalou.config_flow.async_read_factory_device_fingerprint",
+            "custom_components.lumalou.config_flow.async_read_device_fingerprint",
             new_callable=AsyncMock,
             return_value=FINGERPRINT,
         ),
@@ -400,12 +387,7 @@ async def test_signed_device_fingerprint_needs_no_model_input(
 
     with (
         patch(
-            "custom_components.lumalou.config_flow.async_read_device_information",
-            new_callable=AsyncMock,
-            return_value=DeviceInformation(),
-        ),
-        patch(
-            "custom_components.lumalou.config_flow.async_read_factory_device_fingerprint",
+            "custom_components.lumalou.config_flow.async_read_device_fingerprint",
             new_callable=AsyncMock,
             return_value=FINGERPRINT,
         ),
@@ -435,12 +417,7 @@ async def test_distinct_signed_fingerprint_creates_distinct_entry(
     )
     with (
         patch(
-            "custom_components.lumalou.config_flow.async_read_device_information",
-            new_callable=AsyncMock,
-            return_value=DeviceInformation(),
-        ),
-        patch(
-            "custom_components.lumalou.config_flow.async_read_factory_device_fingerprint",
+            "custom_components.lumalou.config_flow.async_read_device_fingerprint",
             new_callable=AsyncMock,
             return_value=OTHER_FINGERPRINT,
         ),
@@ -456,40 +433,10 @@ async def test_distinct_signed_fingerprint_creates_distinct_entry(
     assert result["data"][CONF_PROTOCOL_VERIFIED] is False
 
 
-async def test_different_standard_model_is_rejected_before_factory_probe(
+async def test_setup_reads_the_signed_identity_once(
     hass: HomeAssistant,
 ) -> None:
-    """An explicit conflicting model is never overridden by a signed key."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_BLUETOOTH},
-        data=service_info(),
-    )
-    with (
-        patch(
-            "custom_components.lumalou.config_flow.async_read_device_information",
-            new_callable=AsyncMock,
-            return_value=DeviceInformation(model_number="GWM53"),
-        ),
-        patch(
-            "custom_components.lumalou.config_flow.async_read_factory_device_fingerprint",
-            new_callable=AsyncMock,
-        ) as factory_probe,
-    ):
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], user_input={}
-        )
-
-    assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {"base": "unsupported_product_code"}
-    factory_probe.assert_not_awaited()
-    assert not hass.config_entries.async_entries(DOMAIN)
-
-
-async def test_standard_model_still_requires_signed_factory_identity(
-    hass: HomeAssistant,
-) -> None:
-    """An unauthenticated model string is not enough to authorize control."""
+    """Only the signed factory identity is read; nothing else is probed."""
     info = service_info()
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
@@ -499,14 +446,7 @@ async def test_standard_model_still_requires_signed_factory_identity(
 
     with (
         patch(
-            "custom_components.lumalou.config_flow.async_read_device_information",
-            new_callable=AsyncMock,
-            return_value=DeviceInformation(
-                model_number="gld09", firmware_revision="1.2.3"
-            ),
-        ) as probe,
-        patch(
-            "custom_components.lumalou.config_flow.async_read_factory_device_fingerprint",
+            "custom_components.lumalou.config_flow.async_read_device_fingerprint",
             new_callable=AsyncMock,
             return_value=FINGERPRINT,
         ) as factory_probe,
@@ -522,8 +462,7 @@ async def test_standard_model_still_requires_signed_factory_identity(
         CONF_DEVICE_FINGERPRINT: FINGERPRINT,
         CONF_PROTOCOL_VERIFIED: False,
     }
-    probe.assert_awaited_once_with(info.device, "Lumalou test")
-    factory_probe.assert_awaited_once_with(info.device, "Lumalou test")
+    factory_probe.assert_awaited_once_with(hass, info.device)
 
 
 async def test_signed_fingerprint_is_not_displayed_in_confirmation(
@@ -538,12 +477,7 @@ async def test_signed_fingerprint_is_not_displayed_in_confirmation(
 
     with (
         patch(
-            "custom_components.lumalou.config_flow.async_read_device_information",
-            new_callable=AsyncMock,
-            return_value=DeviceInformation(),
-        ),
-        patch(
-            "custom_components.lumalou.config_flow.async_read_factory_device_fingerprint",
+            "custom_components.lumalou.config_flow.async_read_device_fingerprint",
             new_callable=AsyncMock,
             return_value=FINGERPRINT,
         ),
@@ -557,7 +491,7 @@ async def test_signed_fingerprint_is_not_displayed_in_confirmation(
     assert FINGERPRINT not in json.dumps(result.get("description_placeholders", {}))
 
 
-async def test_device_information_connection_error_is_retryable(
+async def test_identity_connection_error_is_retryable(
     hass: HomeAssistant,
 ) -> None:
     """A failed identity connection does not create or unlock an entry."""
@@ -568,7 +502,7 @@ async def test_device_information_connection_error_is_retryable(
     )
 
     with patch(
-        "custom_components.lumalou.config_flow.async_read_device_information",
+        "custom_components.lumalou.config_flow.async_read_device_fingerprint",
         new_callable=AsyncMock,
         side_effect=RuntimeError("synthetic connect failure"),
     ):
@@ -581,27 +515,18 @@ async def test_device_information_connection_error_is_retryable(
     assert not hass.config_entries.async_entries(DOMAIN)
 
 
-async def test_missing_device_information_automatically_attempts_factory_read(
-    hass: HomeAssistant,
-) -> None:
-    """No model number is fine when a signed factory token is available."""
+async def test_unverifiable_identity_creates_no_entry(hass: HomeAssistant) -> None:
+    """A token the library cannot authenticate never creates an entry."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": SOURCE_BLUETOOTH},
         data=service_info(),
     )
 
-    with (
-        patch(
-            "custom_components.lumalou.config_flow.async_read_device_information",
-            new_callable=AsyncMock,
-            return_value=DeviceInformation(),
-        ),
-        patch(
-            "custom_components.lumalou.config_flow.async_read_factory_device_fingerprint",
-            new_callable=AsyncMock,
-            side_effect=FactoryIdentityProbeError,
-        ) as probe,
+    with patch(
+        "custom_components.lumalou.config_flow.async_read_device_fingerprint",
+        new_callable=AsyncMock,
+        side_effect=InvalidFactoryTokenError("synthetic"),
     ):
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], user_input={}
@@ -609,7 +534,7 @@ async def test_missing_device_information_automatically_attempts_factory_read(
 
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "identity_unconfirmed"}
-    probe.assert_awaited_once()
+    assert not hass.config_entries.async_entries(DOMAIN)
 
 
 @pytest.mark.parametrize(
@@ -651,12 +576,7 @@ async def test_duplicate_discovery(hass: HomeAssistant) -> None:
     assert result["type"] is FlowResultType.FORM
     with (
         patch(
-            "custom_components.lumalou.config_flow.async_read_device_information",
-            new_callable=AsyncMock,
-            return_value=DeviceInformation(),
-        ),
-        patch(
-            "custom_components.lumalou.config_flow.async_read_factory_device_fingerprint",
+            "custom_components.lumalou.config_flow.async_read_device_fingerprint",
             new_callable=AsyncMock,
             return_value=FINGERPRINT,
         ),
@@ -688,16 +608,10 @@ async def test_same_address_with_different_fingerprint_aborts_before_probe(
         },
     ).add_to_hass(hass)
 
-    with (
-        patch(
-            "custom_components.lumalou.config_flow.async_read_device_information",
-            new_callable=AsyncMock,
-        ) as device_probe,
-        patch(
-            "custom_components.lumalou.config_flow.async_read_factory_device_fingerprint",
-            new_callable=AsyncMock,
-        ) as factory_probe,
-    ):
+    with patch(
+        "custom_components.lumalou.config_flow.async_read_device_fingerprint",
+        new_callable=AsyncMock,
+    ) as factory_probe:
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": SOURCE_BLUETOOTH},
@@ -706,7 +620,6 @@ async def test_same_address_with_different_fingerprint_aborts_before_probe(
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
-    device_probe.assert_not_awaited()
     factory_probe.assert_not_awaited()
 
 
@@ -736,12 +649,7 @@ async def test_manual_flow_also_requires_signed_identity(hass: HomeAssistant) ->
 
     with (
         patch(
-            "custom_components.lumalou.config_flow.async_read_device_information",
-            new_callable=AsyncMock,
-            return_value=DeviceInformation(model_number="GLD09"),
-        ),
-        patch(
-            "custom_components.lumalou.config_flow.async_read_factory_device_fingerprint",
+            "custom_components.lumalou.config_flow.async_read_device_fingerprint",
             new_callable=AsyncMock,
             return_value=FINGERPRINT,
         ),
@@ -802,12 +710,7 @@ async def test_reconfigure_changed_address_preserves_bound_identity_and_options(
             return_value=[info],
         ),
         patch(
-            "custom_components.lumalou.config_flow.async_read_device_information",
-            new_callable=AsyncMock,
-            return_value=DeviceInformation(),
-        ),
-        patch(
-            "custom_components.lumalou.config_flow.async_read_factory_device_fingerprint",
+            "custom_components.lumalou.config_flow.async_read_device_fingerprint",
             new_callable=AsyncMock,
             return_value=FINGERPRINT,
         ),
@@ -850,12 +753,7 @@ async def test_reconfigure_rejects_different_signed_device(
             return_value=[info],
         ),
         patch(
-            "custom_components.lumalou.config_flow.async_read_device_information",
-            new_callable=AsyncMock,
-            return_value=DeviceInformation(),
-        ),
-        patch(
-            "custom_components.lumalou.config_flow.async_read_factory_device_fingerprint",
+            "custom_components.lumalou.config_flow.async_read_device_fingerprint",
             new_callable=AsyncMock,
             return_value=OTHER_FINGERPRINT,
         ),
@@ -900,7 +798,7 @@ async def test_reconfigure_rejects_stale_candidate_without_probe(
             return_value=[],
         ),
         patch(
-            "custom_components.lumalou.config_flow.async_read_factory_device_fingerprint",
+            "custom_components.lumalou.config_flow.async_read_device_fingerprint",
             new_callable=AsyncMock,
         ) as factory_probe,
     ):
@@ -941,7 +839,7 @@ async def test_reconfigure_rejects_address_claimed_after_form_opened(
     ).add_to_hass(hass)
 
     with patch(
-        "custom_components.lumalou.config_flow.async_read_factory_device_fingerprint",
+        "custom_components.lumalou.config_flow.async_read_device_fingerprint",
         new_callable=AsyncMock,
     ) as factory_probe:
         result = await hass.config_entries.flow.async_configure(
@@ -1587,19 +1485,12 @@ async def test_basic_confirmation_retains_draft_after_cas_conflict(
     )
 
 
-def _probe_patches(fingerprint: str = FINGERPRINT):
-    """Patch both read-only identity probes and return them."""
-    return (
-        patch(
-            "custom_components.lumalou.config_flow.async_read_device_information",
-            new_callable=AsyncMock,
-            return_value=DeviceInformation(),
-        ),
-        patch(
-            "custom_components.lumalou.config_flow.async_read_factory_device_fingerprint",
-            new_callable=AsyncMock,
-            return_value=fingerprint,
-        ),
+def _probe_patch(fingerprint: str = FINGERPRINT):
+    """Patch the read-only identity probe."""
+    return patch(
+        "custom_components.lumalou.config_flow.async_read_device_fingerprint",
+        new_callable=AsyncMock,
+        return_value=fingerprint,
     )
 
 
@@ -1607,8 +1498,7 @@ async def test_repeated_discovery_does_not_start_a_second_flow(
     hass: HomeAssistant,
 ) -> None:
     """The provisional address ID deduplicates discovery flows without I/O."""
-    device_probe, factory_probe = _probe_patches()
-    with device_probe as device_mock, factory_probe as factory_mock:
+    with _probe_patch() as factory_mock:
         first = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": SOURCE_BLUETOOTH}, data=service_info()
         )
@@ -1620,7 +1510,6 @@ async def test_repeated_discovery_does_not_start_a_second_flow(
     assert second["type"] is FlowResultType.ABORT
     assert second["reason"] == "already_in_progress"
     assert len(hass.config_entries.flow.async_progress_by_handler(DOMAIN)) == 1
-    device_mock.assert_not_awaited()
     factory_mock.assert_not_awaited()
 
 
@@ -1637,15 +1526,13 @@ async def test_confirm_aborts_without_probe_if_address_was_configured_meanwhile(
         data={CONF_ADDRESS: ADDRESS, CONF_DEVICE_FINGERPRINT: OTHER_FINGERPRINT},
     ).add_to_hass(hass)
 
-    device_probe, factory_probe = _probe_patches()
-    with device_probe as device_mock, factory_probe as factory_mock:
+    with _probe_patch() as factory_mock:
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], user_input={}
         )
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
-    device_mock.assert_not_awaited()
     factory_mock.assert_not_awaited()
 
 
@@ -1663,10 +1550,8 @@ async def test_manual_setup_proceeds_while_discovery_is_pending(
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": SOURCE_USER}
         )
-    device_probe, factory_probe = _probe_patches()
     with (
-        device_probe,
-        factory_probe,
+        _probe_patch(),
         patch("custom_components.lumalou.async_setup_entry", return_value=True),
     ):
         result = await hass.config_entries.flow.async_configure(
@@ -1690,7 +1575,7 @@ async def test_manual_setup_probe_failure_returns_to_device_choice(
         )
         with (
             patch(
-                "custom_components.lumalou.config_flow.async_read_device_information",
+                "custom_components.lumalou.config_flow.async_read_device_fingerprint",
                 new_callable=AsyncMock,
                 side_effect=OSError("synthetic"),
             ),
@@ -1721,14 +1606,12 @@ async def test_reconfigure_address_change_keeps_registry_identifiers(
         "light", DOMAIN, f"{FINGERPRINT}_light", config_entry=entry
     )
 
-    device_probe, factory_probe = _probe_patches()
     with (
         patch(
             "homeassistant.components.bluetooth.async_discovered_service_info",
             return_value=[service_info(address=new_address)],
         ),
-        device_probe,
-        factory_probe,
+        _probe_patch(),
         patch("custom_components.lumalou.async_setup_entry", return_value=True),
     ):
         result = await hass.config_entries.flow.async_init(
@@ -1895,7 +1778,7 @@ async def test_reconfigure_probe_failure_keeps_the_form(hass: HomeAssistant) -> 
             DOMAIN, context={"source": SOURCE_RECONFIGURE, "entry_id": entry.entry_id}
         )
         with patch(
-            "custom_components.lumalou.config_flow.async_read_device_information",
+            "custom_components.lumalou.config_flow.async_read_device_fingerprint",
             new_callable=AsyncMock,
             side_effect=OSError("synthetic"),
         ):

@@ -8,7 +8,9 @@ hook, and restricts which characteristics and opcodes can ever be used.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
+from contextlib import suppress
 from functools import partial
 from uuid import UUID
 
@@ -20,16 +22,18 @@ from homeassistant.components import bluetooth
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
-from lumalou.client import LumalouClient, ResponseEnvelope
+from lumalou.client import FACTORY, LumalouClient, ResponseEnvelope
+from lumalou.factory import parse_factory_device_fingerprint
 
 from .const import (
     ALLOWED_REQUEST_OPCODES,
     ALLOWED_SEND_OPCODES,
+    CONNECT_TIMEOUT,
     FORBIDDEN_OPCODES,
     WRITE_CHARACTERISTICS,
 )
 
-_FACTORY_CHARACTERISTICS = frozenset({"4cea0004-c678-4202-b5d3-712dbb5e5b14"})
+_FACTORY_CHARACTERISTICS = frozenset({FACTORY})
 _RX_CHARACTERISTICS = frozenset({"4cea0003-c678-4202-b5d3-712dbb5e5b14"})
 
 
@@ -178,3 +182,21 @@ class SafeLumalouClient(LumalouClient):
         """Permit only the read-only queries used by strict readback."""
         _require_opcode(app_data, ALLOWED_REQUEST_OPCODES)
         return await super().request(app_data, expected_opcode, timeout)
+
+
+async def async_read_device_fingerprint(hass: HomeAssistant, device: BLEDevice) -> str:
+    """Read only the FACTORY token and return its authenticated key fingerprint.
+
+    Nothing is written to the device. The token never leaves this function;
+    the library raises ``InvalidFactoryTokenError`` (a ``ValueError``) when it
+    cannot authenticate it. Any other error means the read itself failed.
+    """
+    transport = RestrictedLumalouTransport(hass, device)
+    try:
+        async with asyncio.timeout(CONNECT_TIMEOUT):
+            await transport.connect()
+            token = bytes(await transport.read_gatt_char(FACTORY))
+    finally:
+        with suppress(Exception):
+            await transport.disconnect()
+    return parse_factory_device_fingerprint(token)

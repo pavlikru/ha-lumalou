@@ -23,12 +23,6 @@ from .const import (
     CONF_PROTOCOL_VERIFIED,
     DEFAULT_AUTO_RESTORE,
     DOMAIN,
-    SUPPORTED_PRODUCT_CODE,
-)
-from .identity import (
-    FactoryIdentityProbeError,
-    async_read_device_information,
-    async_read_factory_device_fingerprint,
 )
 from .models import (
     DAYS,
@@ -38,6 +32,7 @@ from .models import (
     profile_is_complete,
     validate_profile,
 )
+from .transport import async_read_device_fingerprint
 
 CONF_CONFIRM = "confirm"
 MANUFACTURER_ID = 950
@@ -257,22 +252,13 @@ class LumalouConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def _async_probe(
         self, info: BluetoothServiceInfoBleak
     ) -> tuple[str | None, dict[str, str]]:
-        """Verify the selected signed device key without guessing a SKU."""
-        name = _device_title(info)
+        """Read the signed device key that binds every later session."""
         try:
-            identity = await async_read_device_information(info.device, name)
+            fingerprint = await async_read_device_fingerprint(self.hass, info.device)
+        except ValueError:
+            return None, {"base": "identity_unconfirmed"}
         except Exception:
             return None, {"base": "cannot_connect"}
-        detected = (identity.model_number or "").strip().upper()
-        if detected and detected != SUPPORTED_PRODUCT_CODE:
-            return None, {"base": "unsupported_product_code"}
-
-        # Device Information is only a conflict check. The signed key binds
-        # every later session to the device selected and confirmed by the user.
-        try:
-            fingerprint = await async_read_factory_device_fingerprint(info.device, name)
-        except FactoryIdentityProbeError:
-            return None, {"base": "identity_unconfirmed"}
         return fingerprint, {}
 
     def _discovered_candidates(
