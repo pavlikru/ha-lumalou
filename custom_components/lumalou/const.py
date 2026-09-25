@@ -78,6 +78,10 @@ DEFAULT_LIGHT_BRIGHTNESS = 5
 # The device clock has only hour/minute/second/weekday. Deviations within this
 # window are BLE/processing latency, not a reset clock.
 CLOCK_SYNC_TOLERANCE = 60
+# After a failed automatic clock write, reconnects and the daily check skip the
+# write for this long (seconds) instead of retrying it on every recovery pass.
+# The clock-sync button and a profile restore still write immediately.
+CLOCK_SYNC_RETRY_INTERVAL = 60 * 60
 # Automatic restore attempts per detected power-loss/reset event.
 AUTO_RESTORE_MAX_ATTEMPTS = 2
 WRITE_CHARACTERISTICS = frozenset(

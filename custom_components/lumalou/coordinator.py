@@ -24,6 +24,7 @@ from lumalou.responses import CurrentDate
 
 from .const import (
     AUTO_RESTORE_MAX_ATTEMPTS,
+    CLOCK_SYNC_RETRY_INTERVAL,
     CLOCK_SYNC_TOLERANCE,
     CONF_AUTO_RESTORE,
     CONF_DEVICE_FINGERPRINT,
@@ -74,6 +75,10 @@ _STATE_RANGES = {
     "currentStage": (0, 3),
     "clockFormat": (0, 1),
 }
+
+
+class ClockSyncError(HomeAssistantError):
+    """Writing the device clock failed; the session that sent it is gone."""
 
 
 class ProfileRestoreError(HomeAssistantError):
@@ -159,6 +164,10 @@ class LumalouCoordinator:
         self.last_restore_result: ProfileRestoreResult | None = None
         self.last_clock_offset: int | None = None
         self.last_clock_sync: datetime | None = None
+        # Event-loop time before which automatic clock writes are skipped
+        # after one failed (a failed write retires its session).
+        self._clock_sync_retry_at = 0.0
+        self._clock_check_tasks: set[asyncio.Task[Any]] = set()
         self._restore_needed: RestoreNeeded | None = None
         # Last strict read offered for confirmation; only it can be committed.
         self._previewed_profile: dict[str, Any] | None = None
@@ -185,6 +194,13 @@ class LumalouCoordinator:
     def profile_record(self) -> ProfileRecord:
         """Return a detached saved revision so callers cannot mutate intent."""
         return deepcopy(self._profile_record)
+
+    @property
+    def clock_sync_paused(self) -> bool:
+        """Return whether automatic clock writes pause after a failed one."""
+        return self._clock_sync_retry_at > 0 and (
+            asyncio.get_running_loop().time() < self._clock_sync_retry_at
+        )
 
     @property
     def auto_restore_enabled(self) -> bool:
@@ -374,14 +390,24 @@ class LumalouCoordinator:
             )
 
     @callback
-    def _async_handle_session_lost(self, generation: int) -> None:
+    def _async_handle_session_lost(
+        self, generation: int, reason: BaseException | None = None
+    ) -> None:
         """React to a remote link loss of the live session (e.g. power loss).
 
         The upstream client has already invalidated and cleans up its own
         transport. A short power cycle may never make HA mark the device
         unavailable, so schedule recovery once it advertises again.
         """
-        if self._stopped or generation != self._generation or not self.available:
+        if self._stopped or generation != self._generation:
+            return
+        _LOGGER.debug(
+            "%s session ended: %s: %s",
+            self.device_name,
+            type(reason).__name__,
+            reason,
+        )
+        if not self.available:
             return
         self.available = False
         self.data = None
@@ -416,6 +442,13 @@ class LumalouCoordinator:
         if self._recovery_task is not None:
             self._recovery_task.cancel()
             self._recovery_task = None
+
+    @callback
+    def _cancel_background_device_work(self) -> None:
+        """Cancel automatic Bluetooth work: recovery and clock checks."""
+        self._cancel_recovery()
+        for task in tuple(self._clock_check_tasks):
+            task.cancel()
 
     @callback
     def _create_background_task(
@@ -472,9 +505,16 @@ class LumalouCoordinator:
         async with self._device_write_operation():
             try:
                 client, snapshot = await self._async_fresh_snapshot()
-                clock_synced = await self._async_sync_clock_if_needed(
-                    client, snapshot.clock, snapshot.read_at
-                )
+                try:
+                    clock_synced = await self._async_sync_clock_if_needed(
+                        client, snapshot.clock, snapshot.read_at, automatic=True
+                    )
+                except ClockSyncError:
+                    # The failed write retired the session and further
+                    # automatic clock writes are paused: read once more
+                    # without it, so recovery itself still completes.
+                    client, snapshot = await self._async_fresh_snapshot()
+                    clock_synced = False
             except Exception as err:
                 await self._disconnect()
                 raise HomeAssistantError("Lumalou recovery failed") from err
@@ -611,8 +651,8 @@ class LumalouCoordinator:
             device,
             expected_device_fingerprint=self.device_fingerprint,
             on_state=lambda state: self._receive(generation, state),
-            disconnected_callback=lambda _client: self._async_handle_session_lost(
-                generation
+            disconnected_callback=lambda lost: self._async_handle_session_lost(
+                generation, getattr(lost, "last_error", None)
             ),
         )
         self._client = client
@@ -745,17 +785,52 @@ class LumalouCoordinator:
         return client, await self._read_snapshot(client)
 
     async def _async_sync_clock_if_needed(
-        self, client: SafeLumalouClient, clock: CurrentDate, read_at: datetime
+        self,
+        client: SafeLumalouClient,
+        clock: CurrentDate,
+        read_at: datetime,
+        *,
+        automatic: bool = False,
     ) -> bool:
-        """Correct the device clock from HA local time beyond a small tolerance."""
+        """Correct the device clock from HA local time beyond a small tolerance.
+
+        A failed write raises ``ClockSyncError``. When ``automatic`` (recovery
+        and the daily check), it also pauses automatic writes for
+        ``CLOCK_SYNC_RETRY_INTERVAL`` so a write that keeps failing is not
+        repeated on every recovery pass.
+        """
         if _trusted_now() is None:
             _LOGGER.warning("Home Assistant clock is not trustworthy; not syncing")
             return False
         self.last_clock_offset = clock_offset_seconds(clock, read_at)
         if self.last_clock_offset <= CLOCK_SYNC_TOLERANCE:
             return False
+        if automatic and self.clock_sync_paused:
+            _LOGGER.debug(
+                "Not correcting the %s clock (%s s off) after a recent failure",
+                self.device_name,
+                self.last_clock_offset,
+            )
+            return False
         now = dt_util.now()
-        await client.send(set_current_date_payload(now), timeout=RESPONSE_TIMEOUT)
+        try:
+            await client.send(set_current_date_payload(now), timeout=RESPONSE_TIMEOUT)
+        except Exception as err:
+            if automatic:
+                self._clock_sync_retry_at = (
+                    asyncio.get_running_loop().time() + CLOCK_SYNC_RETRY_INTERVAL
+                )
+                _LOGGER.warning(
+                    "Could not correct the %s clock (%s s off): %s: %s; retrying "
+                    "automatically in %s minutes or with the clock sync button",
+                    self.device_name,
+                    self.last_clock_offset,
+                    type(err).__name__,
+                    err,
+                    CLOCK_SYNC_RETRY_INTERVAL // 60,
+                )
+            raise ClockSyncError("Lumalou clock sync failed") from err
+        self._clock_sync_retry_at = 0.0
         self.last_clock_sync = now
         self.last_clock_offset = 0
         return True
@@ -768,9 +843,11 @@ class LumalouCoordinator:
         catches DST changes and drift while one session stays open.
         """
         if self.available and self.protocol_verified and not self._stopped:
-            self._create_background_task(
+            task = self._create_background_task(
                 self._async_check_clock(), "lumalou clock check"
             )
+            self._clock_check_tasks.add(task)
+            task.add_done_callback(self._clock_check_tasks.discard)
 
     async def _async_check_clock(self) -> None:
         """Read the device clock in a fresh session and correct it if needed."""
@@ -792,7 +869,7 @@ class LumalouCoordinator:
                 if not isinstance(device_clock, CurrentDate):
                     raise HomeAssistantError("Current date response is not typed")
                 await self._async_sync_clock_if_needed(
-                    client, device_clock, dt_util.now()
+                    client, device_clock, dt_util.now(), automatic=True
                 )
                 await self._request_fresh_state(client)
             except Exception:
@@ -874,10 +951,16 @@ class LumalouCoordinator:
                 raise _error("clock_untrusted")
             await self._transient([set_current_date_payload(now)])
             self.last_clock_sync = now
+            self._clock_sync_retry_at = 0.0
 
     async def async_set_maintenance(self, enabled: bool) -> None:
         if type(enabled) is not bool:
             raise ProfileValidationError("Invalid maintenance state")
+        if enabled:
+            # Never wait behind background Bluetooth work (a recovery pass
+            # can hold the lock through a full connect budget): cancel it
+            # first; its cancellation tears its session down.
+            self._cancel_background_device_work()
         async with self._operation():
             await self._save(replace(self.profile_record, maintenance=enabled))
             self._recovery_failures = 0
@@ -964,10 +1047,13 @@ class LumalouCoordinator:
             try:
                 _client, snapshot = await self._async_fresh_snapshot()
             except Exception as err:
-                raise _error("profile_read_failed") from err
-            finally:
                 await self._disconnect()
+                raise _error("profile_read_failed") from err
+            # Keep this session: it already delivered a fresh GLOBAL_STATE and
+            # keeps pushing updates. Closing it only forced an immediate
+            # reconnect (recovery) to read the same state again.
             self._previewed_profile = deepcopy(snapshot.profile)
+            # No-op while the kept session is available.
             self._schedule_recovery()
             return snapshot.profile, record.revision
 

@@ -39,7 +39,8 @@ of [`stramanu/lumalou`](https://github.com/stramanu/lumalou).
   off: on every reconnect, once a day at 03:05 and when the Home Assistant
   time zone changes.
 - **Maintenance** switch that releases the Bluetooth connection so the official
-  app or another client can connect.
+  app or another client can connect. Turning it on cancels a running
+  reconnect or clock check instead of waiting for it.
 - Apple Home through Home Assistant's HomeKit Bridge (see below).
 - Redacted diagnostics, Repairs, English and Russian translations.
 
@@ -140,7 +141,10 @@ reads the state. Afterwards every reconnect reads the complete profile in one
 session, sets the device clock if it is more than 60 seconds off, and compares
 the profile with the saved one. While a session stays open, the clock is also
 checked once a day at 03:05 local time and when the Home Assistant time zone
-changes (DST, drift); this briefly reconnects. When Home Assistant reports the
+changes (DST, drift); this briefly reconnects. If an automatic clock write
+fails, a warning is logged, the reconnect reads the device again without it,
+and automatic clock writes pause for an hour (the **Synchronize clock** button
+still writes at once). When Home Assistant reports the
 device gone, entities become unavailable; loss and return are logged once at
 info level.
 
