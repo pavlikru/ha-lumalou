@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import glob
 import hashlib
 import json
 import os
@@ -71,6 +72,13 @@ def _create_recovery_backup(path: str) -> None:
     except BaseException:
         backup.unlink(missing_ok=True)
         raise
+
+
+def _remove_backups(path: str) -> None:
+    """Delete this entry's migration/recovery backups next to its Store file."""
+    source = Path(path)
+    for backup in source.parent.glob(f"{glob.escape(source.name)}.*.backup"):
+        backup.unlink(missing_ok=True)
 
 
 class ProfileStore:
@@ -192,6 +200,12 @@ class ProfileStore:
                     ) from err
             if cancelled:
                 raise asyncio.CancelledError
+
+    async def async_remove(self) -> None:
+        """Delete the entry's private profile and its backups (entry removal)."""
+        async with self._lock:
+            await self._store.async_remove()
+            await self.hass.async_add_executor_job(_remove_backups, self._store.path)
 
     async def _async_commit(self, data: dict) -> None:
         """Write and independently verify one document while caller owns the lock."""

@@ -161,8 +161,12 @@ async def test_removing_entry_only_deletes_its_own_profile_issue(
             translation_key=ISSUE_ID_PROFILE_STORAGE,
         )
 
-    await async_remove_entry(hass, removed_entry)
+    with patch(
+        "custom_components.lumalou.ProfileStore.async_remove", new=AsyncMock()
+    ) as remove_store:
+        await async_remove_entry(hass, removed_entry)
 
+    remove_store.assert_awaited_once_with()
     registry = ir.async_get(hass)
     assert (
         registry.async_get_issue(DOMAIN, _profile_storage_issue_id(removed_entry))
@@ -253,3 +257,19 @@ async def test_callback_start_failure_cleans_up(hass: HomeAssistant) -> None:
 
     assert entry.runtime_data.coordinator is coordinator
     coordinator.async_shutdown.assert_awaited_once_with()
+
+
+async def test_removing_entry_deletes_only_its_private_profile_store(
+    hass: HomeAssistant,
+) -> None:
+    """HA convention: entry removal leaves no orphaned .storage profile."""
+    entry = MockConfigEntry(domain=DOMAIN, data={"address": "removed-device"})
+    backend = Mock(async_remove=AsyncMock(), path="/nonexistent/lumalou.profile")
+
+    with patch(
+        "custom_components.lumalou.storage.Store", return_value=backend
+    ) as store_class:
+        await async_remove_entry(hass, entry)
+
+    assert store_class.call_args.args[2] == f"lumalou.{entry.entry_id}.profile"
+    backend.async_remove.assert_awaited_once_with()
