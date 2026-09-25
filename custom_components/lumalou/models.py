@@ -200,6 +200,40 @@ def _routine(value: Any, day: str) -> dict[str, Any]:
     }
 
 
+def routine_from_tasks(time: dict[str, int] | None, tasks: list[int]) -> dict[str, Any]:
+    """Build one day routine: one task per step, in the given order.
+
+    Tasks are ids 1..11 without duplicates (the device reports task status by
+    task id). No tasks means no routine that day, so the time is dropped. A
+    routine without a time only starts manually.
+    """
+    if not isinstance(tasks, list) or len(tasks) > 12:
+        raise ProfileValidationError("A routine holds at most 12 tasks")
+    for task in tasks:
+        validate_integer(task, 1, 11, "routine task")
+    if len(set(tasks)) != len(tasks):
+        raise ProfileValidationError("A routine task can appear only once")
+    slots: list[dict[str, int] | None] = [
+        {"step": step, "task": task} for step, task in enumerate(tasks, 1)
+    ]
+    return _routine(
+        {
+            "time": time if tasks else None,
+            "slots": slots + [None] * (12 - len(slots)),
+        },
+        "edited",
+    )
+
+
+def routine_task_ids(routine: dict[str, Any]) -> list[int]:
+    """Return a day routine's named tasks in slot order."""
+    return [
+        slot["task"]
+        for slot in routine["slots"]
+        if slot is not None and slot["task"] != 0
+    ]
+
+
 def _routines(value: Any) -> dict[str, dict[str, Any]]:
     data = _strict_mapping(value, set(DAYS), "daily routines")
     return {day: _routine(data[day], day) for day in DAYS}

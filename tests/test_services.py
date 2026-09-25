@@ -24,6 +24,8 @@ from custom_components.lumalou.services import (
     SERVICE_EXPORT_PROFILE,
     SERVICE_IMPORT_PROFILE,
     SERVICE_RESTORE_PROFILE,
+    SERVICE_SET_ROUTINE,
+    SERVICE_START_ROUTINE,
     async_setup_services,
 )
 
@@ -49,6 +51,16 @@ def loaded_entry(hass: HomeAssistant) -> tuple[MockConfigEntry, SimpleNamespace]
                 verified=True,
             )
         ),
+        async_set_routines=AsyncMock(
+            return_value=ProfileRestoreResult(
+                revision=5,
+                automatic=False,
+                planned_steps=("routines.monday",),
+                applied_steps=("routines.monday",),
+                verified=True,
+            )
+        ),
+        async_start_routine=AsyncMock(),
     )
 
     async def import_profile(*args, **kwargs):
@@ -229,6 +241,8 @@ async def test_removed_duplicate_actions_are_not_registered(
         SERVICE_EXPORT_PROFILE,
         SERVICE_IMPORT_PROFILE,
         SERVICE_RESTORE_PROFILE,
+        SERVICE_SET_ROUTINE,
+        SERVICE_START_ROUTINE,
     }
 
 
@@ -354,3 +368,142 @@ async def test_other_restore_errors_propagate(hass: HomeAssistant) -> None:
             {ATTR_CONFIG_ENTRY_ID: entry.entry_id},
             blocking=True,
         )
+
+
+async def test_set_routine_maps_days_time_and_ordered_tasks(
+    hass: HomeAssistant,
+) -> None:
+    """Task keys become device ids in the given order; days are deduplicated."""
+    entry, coordinator = loaded_entry(hass)
+    async_setup_services(hass)
+
+    response = await hass.services.async_call(
+        DOMAIN,
+        SERVICE_SET_ROUTINE,
+        {
+            ATTR_CONFIG_ENTRY_ID: entry.entry_id,
+            "days": ["monday", "tuesday", "monday"],
+            "time": "20:00",
+            "tasks": ["brush_teeth", "toilet", "story"],
+        },
+        blocking=True,
+        return_response=True,
+    )
+
+    coordinator.async_set_routines.assert_awaited_once_with(
+        ["monday", "tuesday"], {"hour": 20, "minute": 0}, [3, 4, 7]
+    )
+    assert response == {
+        "revision": 5,
+        "verified": True,
+        "applied_steps": ["routines.monday"],
+    }
+
+    # Without tasks there is no routine on that day; no time is needed.
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_SET_ROUTINE,
+        {ATTR_CONFIG_ENTRY_ID: entry.entry_id, "days": "sunday", "tasks": []},
+        blocking=True,
+    )
+    coordinator.async_set_routines.assert_awaited_with(["sunday"], None, [])
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"days": [], "tasks": ["meal"], "time": "20:00"},
+        {"days": ["someday"], "tasks": ["meal"], "time": "20:00"},
+        {"days": ["monday"], "tasks": ["nap"], "time": "20:00"},
+        {"days": ["monday"], "tasks": ["meal"], "time": "25:00"},
+    ],
+)
+async def test_set_routine_schema_rejects_bad_input(
+    hass: HomeAssistant, data: dict
+) -> None:
+    entry, coordinator = loaded_entry(hass)
+    async_setup_services(hass)
+
+    with pytest.raises(vol.Invalid):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_SET_ROUTINE,
+            {ATTR_CONFIG_ENTRY_ID: entry.entry_id, **data},
+            blocking=True,
+        )
+    coordinator.async_set_routines.assert_not_awaited()
+
+
+async def test_set_routine_translates_validation_and_restore_errors(
+    hass: HomeAssistant,
+) -> None:
+    entry, coordinator = loaded_entry(hass)
+    async_setup_services(hass)
+    call = {
+        ATTR_CONFIG_ENTRY_ID: entry.entry_id,
+        "days": ["monday"],
+        "tasks": ["meal", "meal"],
+    }
+    coordinator.async_set_routines.side_effect = ProfileValidationError("dup")
+    with pytest.raises(ServiceValidationError) as err:
+        await hass.services.async_call(DOMAIN, SERVICE_SET_ROUTINE, call, blocking=True)
+    assert err.value.translation_key == "invalid_routine"
+
+    coordinator.async_set_routines.side_effect = ProfileRestoreError(
+        "failed",
+        ProfileRestoreResult(
+            revision=5,
+            automatic=False,
+            planned_steps=("routines.monday",),
+            applied_steps=(),
+            verified=False,
+            error="restore_write",
+        ),
+    )
+    with pytest.raises(HomeAssistantError) as err:
+        await hass.services.async_call(DOMAIN, SERVICE_SET_ROUTINE, call, blocking=True)
+    assert err.value.translation_key == "restore_write"
+    assert err.value.translation_placeholders == {
+        "applied": "0",
+        "planned": "1",
+        "count": "0",
+    }
+
+
+async def test_start_routine_with_and_without_tasks(hass: HomeAssistant) -> None:
+    entry, coordinator = loaded_entry(hass)
+    async_setup_services(hass)
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_START_ROUTINE,
+        {ATTR_CONFIG_ENTRY_ID: entry.entry_id},
+        blocking=True,
+    )
+    coordinator.async_start_routine.assert_awaited_once_with(None)
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_START_ROUTINE,
+        {ATTR_CONFIG_ENTRY_ID: entry.entry_id, "tasks": ["tidy_up", "story"]},
+        blocking=True,
+    )
+    coordinator.async_start_routine.assert_awaited_with([8, 7])
+
+    with pytest.raises(vol.Invalid):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_START_ROUTINE,
+            {ATTR_CONFIG_ENTRY_ID: entry.entry_id, "tasks": []},
+            blocking=True,
+        )
+
+    coordinator.async_start_routine.side_effect = ProfileValidationError("dup")
+    with pytest.raises(ServiceValidationError) as err:
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_START_ROUTINE,
+            {ATTR_CONFIG_ENTRY_ID: entry.entry_id, "tasks": ["meal", "meal"]},
+            blocking=True,
+        )
+    assert err.value.translation_key == "invalid_routine"

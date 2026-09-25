@@ -20,7 +20,9 @@ from homeassistant.util import dt as dt_util
 from lumalou import commands  # type: ignore[attr-defined]
 from lumalou.advertisement import MANUFACTURER_ID, parse_advertisement
 from lumalou.client import FreshSessionRequiredError, ResponseEnvelope
+from lumalou.profile import RoutineMusicSettings
 from lumalou.responses import CurrentDate
+from lumalou.schedules import RoutineTaskStatus
 
 from .const import (
     AUTO_RESTORE_MAX_ATTEMPTS,
@@ -29,6 +31,7 @@ from .const import (
     CONF_AUTO_RESTORE,
     CONF_DEVICE_FINGERPRINT,
     CONF_PROTOCOL_VERIFIED,
+    CONF_TEMPORARY_ROUTINE_DAY,
     CONNECT_TIMEOUT,
     DEFAULT_AUTO_RESTORE,
     DOMAIN,
@@ -39,6 +42,9 @@ from .const import (
     RECOVERY_MAX_COOLDOWN,
     RESET_CLOCK_OFFSET,
     RESPONSE_TIMEOUT,
+    ROUTINE_OPERATION_MODE,
+    ROUTINE_START_DELAY,
+    ROUTINE_TASKS,
     STATE_CONFIRM_TIMEOUT,
 )
 from .models import (
@@ -51,6 +57,7 @@ from .models import (
     import_profile_payload,
     profile_is_complete,
     require_complete_profile,
+    routine_from_tasks,
     validate_integer,
     validate_profile,
 )
@@ -60,6 +67,8 @@ from .restore import (
     build_restore_steps,
     changed_blocks,
     clock_offset_seconds,
+    day_routine_payload,
+    device_weekday,
     profile_from_readback,
     set_current_date_payload,
 )
@@ -69,6 +78,20 @@ from .transport import SafeLumalouClient
 _LOGGER = logging.getLogger(__name__)
 _MAX_REVISION = 2**63 - 1
 _CURRENT_DATE = 0x13
+_ROUTINE_TASK_STATUS = 0x94
+# ROUTINE_TASK_STATUS nibble values (hardware): index = task id - 1.
+_TASK_CURRENT = 1
+_TASK_DONE = 2
+# Routine settings profile key -> GLOBAL_STATE field.
+_ROUTINE_SETTINGS = {
+    "enabled": "routineModeStatus",
+    "music": "routineMusicStatus",
+    "task_reward_sfx": "taskRewardSfx",
+    "routine_reward_sfx": "routineRewardSfx",
+    "volume": "routineVolume",
+}
+# Written together by one SET_ROUTINE_MUSIC_STATUS command.
+_ROUTINE_SOUNDS = frozenset({"music", "task_reward_sfx", "routine_reward_sfx"})
 # Light and sound profile key -> (GLOBAL_STATE field, maximum, setter).
 _LEVELS: dict[str, tuple[str, int, Callable[[int], bytes]]] = {
     "volume": ("currentVolume", 9, commands.set_volume),
@@ -129,12 +152,20 @@ _ERRORS = {
     "profile_other_device": "The saved profile was verified on a different device",
     "command_failed": "Lumalou command failed; it will not be replayed",
     "clock_untrusted": "Home Assistant clock is not trustworthy",
+    "routine_running": "A Lumalou routine is already running",
+    "routine_not_running": "No Lumalou routine is running",
 }
 
 
 # Caused by the entry's state, which the user can change; not a device fault.
 _USER_STATE_ERRORS = frozenset(
-    {"maintenance_mode", "control_locked", "clock_untrusted"}
+    {
+        "maintenance_mode",
+        "control_locked",
+        "clock_untrusted",
+        "routine_running",
+        "routine_not_running",
+    }
 )
 
 
@@ -142,6 +173,15 @@ def _error(key: str) -> HomeAssistantError:
     """Build a translated user-facing error with an English log message."""
     error = ServiceValidationError if key in _USER_STATE_ERRORS else HomeAssistantError
     return error(_ERRORS[key], translation_domain=DOMAIN, translation_key=key)
+
+
+def _all_tasks_done(status: RoutineTaskStatus) -> bool:
+    """Return whether a routine reached its final step (N+1): all tasks done."""
+    return (
+        status.current_step > 0
+        and _TASK_CURRENT not in status.task_states
+        and _TASK_DONE in status.task_states
+    )
 
 
 def _trusted_now() -> datetime | None:
@@ -200,6 +240,16 @@ class LumalouCoordinator:
         self._stopped = False
         # Log device loss and return once each (quality scale).
         self._unavailable_logged = False
+        # Latest pushed ROUTINE_TASK_STATUS of the live session (runtime only).
+        self.routine_status: RoutineTaskStatus | None = None
+        # The running routine reached its final step in this session.
+        self._routine_finished = False
+        self._routine_listeners: set[Callable[[str, dict[str, str]], None]] = set()
+        self._routine_task: asyncio.Task[Any] | None = None
+        # Weekday whose device routine is temporarily replaced by a manually
+        # started routine; kept in entry data so a restart still restores it.
+        day = entry.data.get(CONF_TEMPORARY_ROUTINE_DAY)
+        self._temporary_routine_day: str | None = day if day in DAYS else None
 
     @property
     def profile_record(self) -> ProfileRecord:
@@ -247,6 +297,51 @@ class LumalouCoordinator:
         ):
             return None
         return need
+
+    @property
+    def temporary_routine_active(self) -> bool:
+        """Return whether a one-off routine still replaces a saved day routine."""
+        return self._temporary_routine_day is not None
+
+    @property
+    def routine_phase(self) -> str | None:
+        """Return off, ready (silent preview), in_progress or completed."""
+        if self.data is None:
+            return None
+        if self.data["operationMode"] != ROUTINE_OPERATION_MODE:
+            return "off"
+        if (status := self.routine_status) is None:
+            return None
+        if status.current_step == 0:
+            return "ready"
+        return "completed" if _all_tasks_done(status) else "in_progress"
+
+    @property
+    def current_task(self) -> str | None:
+        """Return the current task key, or "none" outside a task."""
+        if self.data is None:
+            return None
+        if self.data["operationMode"] != ROUTINE_OPERATION_MODE:
+            return "none"
+        if (status := self.routine_status) is None:
+            return None
+        for task, state in zip(ROUTINE_TASKS, status.task_states, strict=False):
+            if state == _TASK_CURRENT:
+                return task
+        return "none"
+
+    @callback
+    def async_add_routine_listener(
+        self, listener: Callable[[str, dict[str, str]], None]
+    ) -> Callable[[], None]:
+        """Register for routine events (task and routine completion)."""
+        self._routine_listeners.add(listener)
+        return lambda: self._routine_listeners.discard(listener)
+
+    @callback
+    def _fire_routine_event(self, event_type: str, **attributes: str) -> None:
+        for listener in tuple(self._routine_listeners):
+            listener(event_type, attributes)
 
     @callback
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
@@ -550,18 +645,26 @@ class LumalouCoordinator:
                     # without it, so recovery itself still completes.
                     client, snapshot = await self._async_fresh_snapshot()
                     clock_synced = False
+                if (
+                    self._temporary_routine_day is not None
+                    and snapshot.state["operationMode"] != ROUTINE_OPERATION_MODE
+                ):
+                    # A one-off routine ended while disconnected.
+                    await self._async_write_back_routine(client, snapshot.profile)
             except Exception as err:
                 await self._disconnect()
                 raise HomeAssistantError("Lumalou recovery failed") from err
             record = self._profile_record
+            # A one-off routine that still runs is not a profile change.
+            observed = self._with_saved_routine(snapshot.profile)
             if (
                 not record.is_verified
                 and record.verified_fingerprint in (None, self.device_fingerprint)
-                and record.desired_profile == snapshot.profile
+                and record.desired_profile == observed
             ):
                 await self._save(self._as_verified(record))
                 record = self._profile_record
-            need = self._detect_restore_needed(record, snapshot.profile, reset=reset)
+            need = self._detect_restore_needed(record, observed, reset=reset)
             if need is None or not need.reset or not self.auto_restore_enabled:
                 return
             if need.auto_restore_attempts >= AUTO_RESTORE_MAX_ATTEMPTS:
@@ -613,6 +716,78 @@ class LumalouCoordinator:
             self._restore_needed = need
             self._notify()
         return need
+
+    def _saved_routine(self, day: str) -> dict[str, Any] | None:
+        """Return the saved routine of one day, if a complete profile exists."""
+        profile = self._profile_record.desired_profile
+        return profile["routines"][day] if profile_is_complete(profile) else None
+
+    def _with_saved_routine(self, observed: dict[str, Any]) -> dict[str, Any]:
+        """Return a device read with a one-off routine's day as saved."""
+        day = self._temporary_routine_day
+        if day is None or (saved := self._saved_routine(day)) is None:
+            return observed
+        result = deepcopy(observed)
+        result["routines"][day] = deepcopy(saved)
+        return result
+
+    @callback
+    def _set_temporary_routine_day(self, day: str | None) -> None:
+        """Persist which day a one-off routine replaced (None: nothing)."""
+        if day == self._temporary_routine_day:
+            return
+        self._temporary_routine_day = day
+        data = {
+            key: value
+            for key, value in self.entry.data.items()
+            if key != CONF_TEMPORARY_ROUTINE_DAY
+        }
+        if day is not None:
+            data[CONF_TEMPORARY_ROUTINE_DAY] = day
+        self.hass.config_entries.async_update_entry(self.entry, data=data)
+
+    async def _async_write_back_routine(
+        self, client: SafeLumalouClient, observed: dict[str, Any] | None = None
+    ) -> None:
+        """Write the saved routine over a one-off routine's day.
+
+        ``observed`` is a fresh device read of this session: the write is
+        skipped when the device already has the saved routine, and the read
+        is updated to what the device now has.
+        """
+        day = self._temporary_routine_day
+        assert day is not None
+        saved = self._saved_routine(day)
+        if saved is not None and (
+            observed is None or observed["routines"][day] != saved
+        ):
+            self._previewed_profile = None
+            await client.send(day_routine_payload(day, saved), timeout=RESPONSE_TIMEOUT)
+            if observed is not None:
+                observed["routines"][day] = deepcopy(saved)
+        self._set_temporary_routine_day(None)
+
+    async def _async_end_temporary_routine(self) -> None:
+        """After a one-off routine ended, put the saved day routine back.
+
+        A failed write drops the session; recovery writes it on reconnect.
+        """
+        async with self._operation():
+            client = self._client
+            if (
+                self._temporary_routine_day is None
+                or client is None
+                or self.data is None
+                or self.data["operationMode"] == ROUTINE_OPERATION_MODE
+                or not self.protocol_verified
+                or self._profile_record.maintenance
+            ):
+                return
+            try:
+                await self._async_write_back_routine(client)
+            except Exception:
+                _LOGGER.debug("Restoring the saved routine failed", exc_info=True)
+                await self._disconnect()
 
     async def _async_close_detached(self, client: SafeLumalouClient) -> None:
         """Close a detached session after any active serialized operation."""
@@ -668,7 +843,13 @@ class LumalouCoordinator:
             not low <= state[key] <= high for key, (low, high) in _STATE_RANGES.items()
         ):
             return
-        self.data = dict(state)
+        previous, self.data = self.data, dict(state)
+        if (
+            previous is not None
+            and previous["operationMode"] == ROUTINE_OPERATION_MODE
+            and state["operationMode"] != ROUTINE_OPERATION_MODE
+        ):
+            self._routine_ended()
         self.available = True
         self._state_event.set()
         if self._unavailable_logged:
@@ -677,13 +858,67 @@ class LumalouCoordinator:
         self._notify()
 
     @callback
-    def _on_response(self, generation: int, envelope: ResponseEnvelope) -> None:
-        """Keep the device clock the session sees; correct drift it shows.
+    def _routine_ended(self) -> None:
+        """A routine left routine mode (7 -> other) in this live session.
 
-        The device pushes CURRENT_DATE at least every minute, so DST changes
-        and drift are caught without reconnecting.
+        A routine that never reached its final step was cancelled (cancel
+        command, or ended on the device). A one-off routine gives its day
+        back to the saved routine.
+        """
+        if not self._routine_finished:
+            self._fire_routine_event("routine_cancelled")
+        self._routine_finished = False
+        self.routine_status = None
+        if self._temporary_routine_day is not None and self._routine_task is None:
+            task = self._create_background_task(
+                self._async_end_temporary_routine(), "lumalou routine write-back"
+            )
+            self._routine_task = task
+            task.add_done_callback(self._routine_task_done)
+
+    @callback
+    def _routine_task_done(self, task: asyncio.Task[Any]) -> None:
+        if self._routine_task is task:
+            self._routine_task = None
+
+    @callback
+    def _take_routine_status(self, status: RoutineTaskStatus) -> None:
+        """Derive routine events from consecutive pushed task statuses.
+
+        A task nibble going current -> done is a completed task; the final
+        step (no current task, some done) completes the routine. Events are
+        only derived while a routine runs and from two frames of one session.
+        """
+        previous, self.routine_status = self.routine_status, status
+        running = (
+            self.data is not None
+            and self.data["operationMode"] == ROUTINE_OPERATION_MODE
+        )
+        if running and previous is not None:
+            for task, before, after in zip(
+                ROUTINE_TASKS, previous.task_states, status.task_states, strict=False
+            ):
+                if before == _TASK_CURRENT and after == _TASK_DONE:
+                    self._fire_routine_event("task_completed", task=task)
+        if running and not self._routine_finished and _all_tasks_done(status):
+            self._routine_finished = True
+            self._fire_routine_event("routine_completed")
+        self._notify()
+
+    @callback
+    def _on_response(self, generation: int, envelope: ResponseEnvelope) -> None:
+        """Track routine progress and the device clock the session sees.
+
+        The device pushes ROUTINE_TASK_STATUS on every routine change and
+        CURRENT_DATE at least every minute, so DST changes and drift are
+        caught without reconnecting.
         """
         if self._stopped or generation != self._generation:
+            return
+        if envelope.opcode == _ROUTINE_TASK_STATUS:
+            status = envelope.decode()
+            if isinstance(status, RoutineTaskStatus):
+                self._take_routine_status(status)
             return
         if envelope.opcode != _CURRENT_DATE:
             return
@@ -795,6 +1030,9 @@ class LumalouCoordinator:
         self._generation += 1
         self.available = False
         self.data = None
+        # Routine progress is only compared within one session.
+        self.routine_status = None
+        self._routine_finished = False
         client, self._client = self._client, None
         if client is not None:
             self._reconnect_at = asyncio.get_running_loop().time() + RECONNECT_DELAY
@@ -1076,6 +1314,158 @@ class LumalouCoordinator:
         async with self._device_write_operation():
             await self._write(commands.turn_off_audio())
 
+    # ---- Routines ----
+
+    async def async_set_routine_settings(self, **changes: Any) -> None:
+        """Change routine settings; the others come from the device state.
+
+        ``enabled`` (automatic start at the scheduled time) is a boolean;
+        ``music``, ``task_reward_sfx`` and ``routine_reward_sfx`` are 0/1 (one
+        device command writes all three); ``volume`` is 0..9.
+        """
+        if not changes or set(changes) - set(_ROUTINE_SETTINGS):
+            raise ProfileValidationError("Invalid routine settings")
+        for key, value in changes.items():
+            if key == "enabled":
+                if type(value) is not bool:
+                    raise ProfileValidationError("Invalid routine mode")
+            else:
+                validate_integer(value, 0, 9 if key == "volume" else 1, key)
+        async with self._device_write_operation():
+            state = self._live_state()
+            target: dict[str, Any] = {
+                key: state[field] for key, field in _ROUTINE_SETTINGS.items()
+            }
+            target["enabled"] = bool(target["enabled"])
+            target.update(changes)
+            keys = set(changes)
+            payloads = []
+            if "enabled" in keys:
+                payloads.append(commands.set_routine_status(target["enabled"]))
+            if keys & _ROUTINE_SOUNDS:
+                keys |= _ROUTINE_SOUNDS
+                payloads.append(
+                    commands.set_routine_music_settings(
+                        RoutineMusicSettings(
+                            target["music"],
+                            target["task_reward_sfx"],
+                            target["routine_reward_sfx"],
+                        )
+                    )
+                )
+            if "volume" in keys:
+                payloads.append(commands.set_routine_volume(target["volume"]))
+            await self._write_setting(
+                payloads,
+                {_ROUTINE_SETTINGS[key]: int(target[key]) for key in keys},
+                "routine_settings",
+                {key: target[key] for key in keys},
+            )
+
+    async def async_routine_control(self, control: int) -> None:
+        """Send one routine control code to the running routine.
+
+        0 completes the current task (the remote's check-mark button),
+        1 goes back one task, 4 cancels the routine.
+        """
+        validate_integer(control, 0, 4, "routine control")
+        async with self._device_write_operation():
+            if self._live_state()["operationMode"] != ROUTINE_OPERATION_MODE:
+                raise _error("routine_not_running")
+            await self._write(commands.routine_control(control))
+
+    async def async_start_routine(self, tasks: list[int] | None = None) -> None:
+        """Start today's routine now, like the scheduled start.
+
+        Starting shows a silent preview; the first "complete task" makes task
+        1 current with its music. With ``tasks``, today's routine is replaced
+        by them (keeping today's time) only until this routine ends: the
+        saved routine is written back when the device leaves routine mode, or
+        on the next connection.
+        """
+        if tasks is not None:
+            if not tasks:
+                raise ProfileValidationError("A routine needs at least one task")
+            routine_from_tasks(None, tasks)
+        async with self._device_write_operation():
+            if self._live_state()["operationMode"] == ROUTINE_OPERATION_MODE:
+                raise _error("routine_running")
+            temporary: tuple[str, dict[str, Any]] | None = None
+            if tasks is not None:
+                if (now := _trusted_now()) is None:
+                    raise _error("clock_untrusted")
+                day = DAYS[device_weekday(now)]
+                if (saved := self._saved_routine(day)) is None:
+                    raise _error("control_locked")
+                routine = routine_from_tasks(saved["time"], tasks)
+                if routine != saved:
+                    temporary = (day, routine)
+            if (previous := self._temporary_routine_day) is not None:
+                # An earlier one-off routine was not written back yet.
+                if (saved_previous := self._saved_routine(previous)) is not None:
+                    await self._write(day_routine_payload(previous, saved_previous))
+                self._set_temporary_routine_day(None)
+            if temporary is not None:
+                # Recorded first: whatever happens next, the saved routine is
+                # written back.
+                self._set_temporary_routine_day(temporary[0])
+                await self._write(day_routine_payload(*temporary))
+            await self._write(commands.start_routine_mode())
+            await asyncio.sleep(ROUTINE_START_DELAY)
+            await self._write(commands.routine_control(0))
+
+    async def async_set_routines(
+        self,
+        days: list[str],
+        time: dict[str, int] | None,
+        tasks: list[int],
+    ) -> ProfileRestoreResult:
+        """Save day routines and write them to Lumalou, verified by a fresh read.
+
+        Uses the profile restore path: a new session reads the device, the
+        saved profile gets the new routines (the everyday light and sound
+        levels are taken from the device), and the blocks that differ are
+        written and verified. No tasks means no routine on those days.
+        """
+        if tasks and time is None:
+            raise ProfileValidationError("A routine with tasks needs a start time")
+        routine = routine_from_tasks(time, tasks)
+        if (
+            not isinstance(days, list)
+            or not days
+            or any(day not in DAYS for day in days)
+        ):
+            raise ProfileValidationError("Invalid routine days")
+        async with self._device_write_operation():
+            record = self._profile_record
+            if record.verified_fingerprint not in (None, self.device_fingerprint):
+                raise _error("profile_other_device")
+            if not profile_is_complete(record.desired_profile):
+                raise _error("control_locked")
+            try:
+                client, snapshot = await self._async_fresh_snapshot()
+                clock_synced = await self._async_sync_clock_if_needed(
+                    client, snapshot.clock, snapshot.read_at
+                )
+            except Exception as err:
+                await self._disconnect()
+                raise _error("profile_read_failed") from err
+            if snapshot.state["operationMode"] == ROUTINE_OPERATION_MODE:
+                raise _error("routine_running")
+            desired = deepcopy(record.desired_profile)
+            for day in days:
+                desired["routines"][day] = deepcopy(routine)
+            desired[LIVE_BLOCK] = deepcopy(snapshot.profile[LIVE_BLOCK])
+            if desired != record.desired_profile:
+                await self._save(_new_revision(record, desired))
+            return await self._async_restore(
+                self._profile_record,
+                client,
+                snapshot,
+                automatic=False,
+                clock_synced=clock_synced,
+            )
+
     async def async_sync_clock(self) -> None:
         """Explicit action only; never send a stored or naive host timestamp."""
         async with self._device_write_operation():
@@ -1164,6 +1554,8 @@ class LumalouCoordinator:
                 raise RevisionConflictError("The saved profile changed")
             await self._save(self._as_verified(_new_revision(old, desired)))
             self._previewed_profile = None
+            # The user chose the device read as it is.
+            self._set_temporary_routine_day(None)
             self._set_protocol_verified(True)
             self._schedule_recovery()
 
@@ -1285,6 +1677,8 @@ class LumalouCoordinator:
             )
         await self._save(self._as_verified(self._profile_record))
         self._restore_needed = None
+        # The device now has every saved routine, one-off or not.
+        self._set_temporary_routine_day(None)
         self.last_restore_result = result(verified=True)
         self._notify()
         return self.last_restore_result

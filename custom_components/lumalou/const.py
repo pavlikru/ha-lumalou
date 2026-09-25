@@ -11,6 +11,7 @@ CONF_PROTOCOL_VERIFIED = "protocol_verified"
 PLATFORMS = (
     Platform.BINARY_SENSOR,
     Platform.BUTTON,
+    Platform.EVENT,
     Platform.LIGHT,
     Platform.MEDIA_PLAYER,
     Platform.NUMBER,
@@ -42,13 +43,41 @@ RECONNECT_DELAY = 1.5
 # the push that confirms a setting before it is saved to the profile.
 STATE_CONFIRM_TIMEOUT = 3
 # Aggregate SET_GLOBAL_STATE 0x01 and SET_GLOBAL_ON 0x03 (soother),
-# SEND_PAIRING_COMPLETE 0x34 and SET_TIME_PRESCALER 0x52 are never sent.
-FORBIDDEN_OPCODES = frozenset({0x01, 0x03, 0x34, 0x52})
+# SEND_PAIRING_COMPLETE 0x34, nap start 0x4D and nap alarm 0x4F, and
+# SET_TIME_PRESCALER 0x52 are never sent.
+FORBIDDEN_OPCODES = frozenset({0x01, 0x03, 0x34, 0x4D, 0x4F, 0x52})
+# Routine start 0x7B and routine control 0x6B are live controls since the
+# hardware validation (docs/hardware-validation.md): start only enters routine
+# mode with a silent icon preview (step 0), control codes 0..4 are what the
+# remote's check-mark button and the app do (complete task, previous task,
+# restart, complete all, cancel), and cancel silently returns to normal mode.
+# Only these exact payloads are ever sent.
+EXACT_SEND_PAYLOADS: dict[int, frozenset[bytes]] = {
+    0x7B: frozenset({bytes([0x7B])}),
+    0x6B: frozenset(bytes([0x6B, code]) for code in range(5)),
+}
 # Live controls: clock 0x30, volume 0x37, audio off 0x38, brightness 0x3A,
-# colour 0x3C, light off 0x3E, play 0x3F, playlist timer 0x42, light timer 0x6C
-# (0x53 is the state request). No firmware, nap or routine activation.
+# colour 0x3C, light off 0x3E, play 0x3F, playlist timer 0x42, light timer 0x6C,
+# routine mode status 0x58, routine music/rewards 0x69, routine volume 0x77,
+# routine start 0x7B and routine control 0x6B (0x53 is the state request).
+# No firmware or nap commands.
 ALLOWED_OPCODES = frozenset(
-    {0x30, 0x37, 0x38, 0x3A, 0x3C, 0x3E, 0x3F, 0x42, 0x53, 0x6C}
+    {
+        0x30,
+        0x37,
+        0x38,
+        0x3A,
+        0x3C,
+        0x3E,
+        0x3F,
+        0x42,
+        0x53,
+        0x58,
+        0x69,
+        0x6C,
+        0x77,
+        *EXACT_SEND_PAYLOADS,
+    }
 )
 # Profile setters used by the restore executor (clock settings 0x79 also by
 # the clock entities): playlist 0x40, ready-to-rise status 0x44/times 0x46,
@@ -76,8 +105,7 @@ PROFILE_SETTER_OPCODES = frozenset(
         0x79,
     }
 )
-# Never nap start/alarm 0x4D/0x4F, routine start or control 0x7B/0x6B, or
-# anything firmware/DFU related.
+# Never nap start/alarm 0x4D/0x4F or anything firmware/DFU related.
 ALLOWED_SEND_OPCODES = ALLOWED_OPCODES | PROFILE_SETTER_OPCODES
 # Read-only queries used by strict readback (never the nap alarm queries,
 # which time out on the device): global state 0x53, current date 0x31,
@@ -102,6 +130,28 @@ RESET_CLOCK_OFFSET = 10 * 60
 CLOCK_SYNC_RETRY_INTERVAL = 60 * 60
 # Automatic restore attempts per detected power-loss/reset event.
 AUTO_RESTORE_MAX_ATTEMPTS = 2
+# Entry data key: weekday whose device routine is temporarily replaced by a
+# manually started routine; the saved routine is written back when it ends.
+CONF_TEMPORARY_ROUTINE_DAY = "temporary_routine_day"
+# GLOBAL_STATE operationMode while a routine runs (preview or tasks).
+ROUTINE_OPERATION_MODE = 7
+# A manual start shows a silent preview (step 0); the first "complete task"
+# after this pause makes task 1 current with its music, like a scheduled start.
+ROUTINE_START_DELAY = 1.0
+# Routine task ids 1..11 as translation keys (device face icons).
+ROUTINE_TASKS = (
+    "get_dressed",
+    "wash_up",
+    "brush_teeth",
+    "toilet",
+    "backpack",
+    "meal",
+    "story",
+    "tidy_up",
+    "heart",
+    "swirl",
+    "star",
+)
 WRITE_CHARACTERISTICS = frozenset(
     {
         "4cea0002-c678-4202-b5d3-712dbb5e5b14",

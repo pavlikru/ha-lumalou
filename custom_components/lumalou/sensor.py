@@ -1,4 +1,4 @@
-"""Lumalou diagnostic sensors."""
+"""Lumalou routine and diagnostic sensors."""
 
 from __future__ import annotations
 
@@ -7,16 +7,23 @@ from typing import Any
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.const import EntityCategory
 
+from .const import ROUTINE_TASKS
 from .entity import LumalouEntity
 from .models import SYNC_STATUSES
 
 PARALLEL_UPDATES = 0
+ROUTINE_PHASES = ("off", "ready", "in_progress", "completed")
 
 
 async def async_setup_entry(hass: Any, entry: Any, async_add_entities: Any) -> None:
-    """Set up diagnostic sensors."""
+    """Set up routine and diagnostic sensors."""
     async_add_entities(
-        [LumalouFirmwareSensor(entry), LumalouProfileSyncStatusSensor(entry)]
+        [
+            LumalouFirmwareSensor(entry),
+            LumalouProfileSyncStatusSensor(entry),
+            LumalouRoutineSensor(entry),
+            LumalouCurrentTaskSensor(entry),
+        ]
     )
 
 
@@ -52,3 +59,36 @@ class LumalouProfileSyncStatusSensor(LumalouEntity, SensorEntity):
     @property
     def native_value(self) -> str:
         return self.coordinator.profile_record.sync_status
+
+
+class LumalouRoutineSensor(LumalouEntity, SensorEntity):
+    """Routine progress from pushed GLOBAL_STATE and task status.
+
+    ``ready`` is the silent preview (all icons blink) before the first task.
+    """
+
+    _attr_translation_key = "routine"
+    _attr_device_class = SensorDeviceClass.ENUM
+
+    def __init__(self, entry: Any) -> None:
+        super().__init__(entry)
+        self._attr_options = list(ROUTINE_PHASES)
+
+    @property
+    def native_value(self) -> str | None:
+        return self.coordinator.routine_phase
+
+
+class LumalouCurrentTaskSensor(LumalouEntity, SensorEntity):
+    """The routine task the device currently shows."""
+
+    _attr_translation_key = "current_task"
+    _attr_device_class = SensorDeviceClass.ENUM
+
+    def __init__(self, entry: Any) -> None:
+        super().__init__(entry)
+        self._attr_options = ["none", *ROUTINE_TASKS]
+
+    @property
+    def native_value(self) -> str | None:
+        return self.coordinator.current_task

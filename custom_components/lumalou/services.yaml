@@ -37,3 +37,75 @@ restore_profile:
         number:
           min: 0
           mode: box
+
+set_routine:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: lumalou
+    days:
+      required: true
+      selector:
+        select:
+          multiple: true
+          translation_key: weekday
+          options:
+            - sunday
+            - monday
+            - tuesday
+            - wednesday
+            - thursday
+            - friday
+            - saturday
+    time:
+      required: false
+      example: "20:00"
+      selector:
+        time:
+    tasks:
+      required: true
+      example: "[brush_teeth, toilet, story]"
+      selector:
+        select:
+          multiple: true
+          translation_key: routine_task
+          options:
+            - get_dressed
+            - wash_up
+            - brush_teeth
+            - toilet
+            - backpack
+            - meal
+            - story
+            - tidy_up
+            - heart
+            - swirl
+            - star
+
+start_routine:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: lumalou
+    tasks:
+      required: false
+      selector:
+        select:
+          multiple: true
+          translation_key: routine_task
+          options:
+            - get_dressed
+            - wash_up
+            - brush_teeth
+            - toilet
+            - backpack
+            - meal
+            - story
+            - tidy_up
+            - heart
+            - swirl
+            - star

@@ -16,11 +16,11 @@ in one deterministic write order:
 6. ``ready_to_rise.enabled``, ``routine_settings.enabled`` - activation flags
    last, only after every schedule they activate has been written.
 
-Light colour, play/stop, soother, nap and routine start are never part of a
-restore, so it never turns light or sound on. Current device time is not part
-of the profile either; callers set it from Home Assistant before step 1,
-after a fresh read. Only steps whose logical value differs from the fresh
-device readback are produced.
+Light colour, play/stop, soother, nap, routine start and routine control are
+never part of a restore, so it never turns light or sound on. Current device
+time is not part of the profile either; callers set it from Home Assistant
+before step 1, after a fresh read. Only steps whose logical value differs
+from the fresh device readback are produced.
 """
 
 from __future__ import annotations
@@ -225,6 +225,11 @@ def _routine(value: dict[str, Any]) -> DailyRoutine:
     )
 
 
+def day_routine_payload(day: str, routine: dict[str, Any]) -> bytes:
+    """Build the setter for one validated logical day routine."""
+    return bytes(commands.set_day_routine(day, _routine(routine)))
+
+
 def build_restore_steps(desired: Any, observed: Any) -> tuple[RestoreStep, ...]:
     """Return the minimal ordered setter writes that turn observed into desired."""
     want = require_complete_profile(desired)
@@ -319,8 +324,7 @@ def build_restore_steps(desired: Any, observed: Any) -> tuple[RestoreStep, ...]:
         if differs("routines", day):
             steps.append(
                 RestoreStep(
-                    f"routines.{day}",
-                    commands.set_day_routine(day, _routine(want["routines"][day])),
+                    f"routines.{day}", day_routine_payload(day, want["routines"][day])
                 )
             )
 

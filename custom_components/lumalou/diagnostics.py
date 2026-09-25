@@ -73,6 +73,8 @@ async def async_get_config_entry_diagnostics(
                 "last_clock_offset",
                 "last_clock_sync",
                 "clock_sync_paused",
+                "temporary_routine_active",
+                "routine_phase",
             ),
         ),
         "restore": {
