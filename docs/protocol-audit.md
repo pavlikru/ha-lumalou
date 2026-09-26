@@ -9,6 +9,12 @@ integration is installable, functional, or ready for automatic restoration. The
 library is an independent MIT-licensed reverse-engineering project, not a Mattel
 library. Its documented model is GLD09; GWM53 compatibility is unverified.
 
+> [!NOTE]
+> This is a historical pre-implementation audit. The integration has since been
+> released and validated on hardware; see
+> [hardware-validation.md](hardware-validation.md) for the current, verified
+> device behaviour.
+
 ## Pinned evidence
 
 | Source | Audited identity |
