@@ -113,7 +113,7 @@ replace the earlier design assumptions.
   icons disappear, mode 0).
 - After codes 1, 2 and 3 the device sends a bare `01 50` frame on the
   application route. `lumalou-gld09` 0.2.1 rejected it and ended the
-  session; 0.3.0, which the integration requires, ignores it.
+  session; 0.3.0 and later ignore it.
 - A routine sets no light color or brightness; its visuals are the face
   icons plus music and reward sounds.
 - Routine music, task reward sound and routine reward sound are 0/1; routine

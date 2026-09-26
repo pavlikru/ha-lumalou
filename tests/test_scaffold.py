@@ -1,4 +1,4 @@
-"""Tests for the initial repository scaffold."""
+"""Tests for the manifest, HACS metadata and brand assets."""
 
 from __future__ import annotations
 
@@ -35,11 +35,11 @@ def test_manifest_uses_released_upstream_library() -> None:
     """Require an exact version of the upstream protocol library."""
     requirements = load_manifest()["requirements"]
 
-    assert requirements == ["lumalou-gld09==0.3.0"]
+    assert requirements == ["lumalou-gld09==0.3.1"]
 
 
 def test_hacs_metadata_uses_current_supported_fields() -> None:
-    """Use branch sources until a ZIP-bearing release exists."""
+    """Keep hacs.json to the fields HACS currently supports."""
     assert json.loads(HACS_PATH.read_text(encoding="utf-8")) == {
         "name": "Lumalou",
         "homeassistant": "2026.9.0",

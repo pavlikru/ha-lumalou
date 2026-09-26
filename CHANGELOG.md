@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-25
+
+Maintenance release. Requires Home Assistant 2026.9.0 or newer and
+`lumalou-gld09` 0.3.1.
+
+### Changed
+
+- Requires `lumalou-gld09` 0.3.1. The library API is unchanged from 0.3.0;
+  the release adds a `--yes` confirmation to the CLI `send` command, a
+  security policy and CI on Python 3.10 to 3.14.
+
+### Documentation
+
+- `AGENTS.md` describes the released, hardware-validated integration, the
+  release process and the current checks; `CONTRIBUTING.md` asks for a pull
+  request with green CI before tagging a release.
+- `docs/protocol-audit.md` is marked as a historical pre-implementation audit.
+
 ## [0.1.1] - 2026-09-25
 
 Fixes from setting up routine automations on hardware (firmware 0.3.7).
@@ -378,7 +396,8 @@ Hardware validation: summary of passed phases (anonymized).
 Requires Home Assistant 2026.9.0 or newer and lumalou-gld09==0.2.0.
 -->
 
-[Unreleased]: https://github.com/pavlikru/ha-lumalou/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/pavlikru/ha-lumalou/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/pavlikru/ha-lumalou/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.1
 [0.1.0]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0
 [0.1.0b8]: https://github.com/pavlikru/ha-lumalou/releases/tag/v0.1.0b8
