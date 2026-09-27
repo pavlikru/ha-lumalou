@@ -1714,6 +1714,23 @@ class LumalouCoordinator:
             if not await self._state_confirms(
                 {"operationMode": ROUTINE_OPERATION_MODE}
             ):
+                # Not yet understood on hardware; log what the device showed.
+                live = self.data or {}
+                _LOGGER.warning(
+                    "%s did not start the routine; live state: %s",
+                    self.device_name,
+                    {
+                        field: live.get(field)
+                        for field in (
+                            "operationMode",
+                            "activityState",
+                            "currentStage",
+                            "musicStatus",
+                            "lightStatus",
+                            ROUTINE_SETTING_FIELDS["enabled"],
+                        )
+                    },
+                )
                 if temporary is not None:
                     # A failed write drops the session; recovery writes it.
                     with suppress(HomeAssistantError):

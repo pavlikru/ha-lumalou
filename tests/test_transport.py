@@ -9,6 +9,7 @@ from uuid import UUID
 
 import pytest
 from bleak.backends.device import BLEDevice
+from bleak.exc import BleakCharacteristicNotFoundError
 from bleak_retry_connector import (
     BLEAK_SAFETY_TIMEOUT,
     MAX_CONNECT_ATTEMPTS,
@@ -48,6 +49,7 @@ def backend():
         start_notify=AsyncMock(),
         write_gatt_char=AsyncMock(),
         write_gatt_descriptor=AsyncMock(),
+        clear_cache=AsyncMock(return_value=True),
     )
 
 
@@ -156,6 +158,96 @@ async def test_read_and_notify_permissions_are_separate_and_fail_closed(
 
     for method in vars(backend).values():
         method.assert_not_called()
+
+
+_GATT_OPERATIONS = {
+    "read_gatt_char": (FACTORY,),
+    "start_notify": (RX, Mock()),
+    "write_gatt_char": (TX, b"payload"),
+}
+
+
+async def _call(transport, operation: str):
+    arguments = _GATT_OPERATIONS[operation]
+    if operation == "write_gatt_char":
+        return await transport.write_gatt_char(*arguments, response=False)
+    return await getattr(transport, operation)(*arguments)
+
+
+@pytest.mark.parametrize("operation", sorted(_GATT_OPERATIONS))
+async def test_missing_characteristic_clears_the_stale_gatt_cache(
+    backend, ha_bluetooth, operation
+):
+    """A partial BlueZ service cache is dropped so the next connect rediscovers."""
+    transport = await _connected_transport(ha_bluetooth)
+    missing = BleakCharacteristicNotFoundError(_GATT_OPERATIONS[operation][0])
+    getattr(backend, operation).side_effect = missing
+
+    with pytest.raises(BleakCharacteristicNotFoundError) as err:
+        await _call(transport, operation)
+
+    assert err.value is missing
+    backend.clear_cache.assert_awaited_once_with()
+    backend.disconnect.assert_not_awaited()  # Session teardown stays upstream's.
+
+
+@pytest.mark.parametrize("operation", sorted(_GATT_OPERATIONS))
+async def test_failed_cache_clear_does_not_mask_the_original_error(
+    backend, ha_bluetooth, operation
+):
+    transport = await _connected_transport(ha_bluetooth)
+    missing = BleakCharacteristicNotFoundError(_GATT_OPERATIONS[operation][0])
+    getattr(backend, operation).side_effect = missing
+    backend.clear_cache.side_effect = OSError("synthetic clear failure")
+
+    with pytest.raises(BleakCharacteristicNotFoundError) as err:
+        await _call(transport, operation)
+
+    assert err.value is missing
+    backend.clear_cache.assert_awaited_once_with()
+
+
+@pytest.mark.parametrize("operation", sorted(_GATT_OPERATIONS))
+async def test_other_gatt_errors_keep_the_service_cache(
+    backend, ha_bluetooth, operation
+):
+    transport = await _connected_transport(ha_bluetooth)
+    getattr(backend, operation).side_effect = OSError("synthetic link loss")
+
+    with pytest.raises(OSError, match="synthetic link loss"):
+        await _call(transport, operation)
+
+    backend.clear_cache.assert_not_awaited()
+
+
+@pytest.mark.parametrize("operation", sorted(_GATT_OPERATIONS))
+async def test_allowlist_rejection_never_clears_the_cache(
+    backend, ha_bluetooth, operation
+):
+    transport = await _connected_transport(ha_bluetooth)
+    for method in (
+        backend.read_gatt_char,
+        backend.start_notify,
+        backend.write_gatt_char,
+    ):
+        method.side_effect = BleakCharacteristicNotFoundError(DFU_SERVICE)
+    arguments = (DFU_SERVICE, *_GATT_OPERATIONS[operation][1:])
+    kwargs = {"response": True} if operation == "write_gatt_char" else {}
+
+    with pytest.raises(HomeAssistantError, match="Unsupported Lumalou GATT"):
+        await getattr(transport, operation)(*arguments, **kwargs)
+
+    for method in vars(backend).values():
+        method.assert_not_called()
+
+
+async def test_unconnected_transport_never_clears_the_cache(backend, ha_bluetooth):
+    transport = RestrictedLumalouTransport(HASS, DEVICE)
+
+    with pytest.raises(HomeAssistantError, match="not connected"):
+        await transport.read_gatt_char(FACTORY)
+
+    backend.clear_cache.assert_not_awaited()
 
 
 async def test_unapproved_gatt_apis_are_not_forwarded(backend, ha_bluetooth):
@@ -305,6 +397,46 @@ async def test_wrong_device_key_is_rejected_before_session_writes(
     assert not client.connected
     backend.start_notify.assert_not_awaited()
     backend.write_gatt_char.assert_not_awaited()
+    backend.disconnect.assert_awaited_once()
+
+
+@pytest.mark.parametrize("missing_uuid", [FACTORY, RX])
+async def test_upstream_handshake_on_a_stale_cache_clears_it_and_fails(
+    backend, ha_bluetooth, missing_uuid
+):
+    """The real upstream handshake surfaces the error after the cache is cleared."""
+    backend.read_gatt_char.return_value = _token()
+    missing = BleakCharacteristicNotFoundError(missing_uuid)
+    if missing_uuid == FACTORY:
+        backend.read_gatt_char.side_effect = missing
+    else:
+        backend.start_notify.side_effect = missing
+    client = SafeLumalouClient(HASS, DEVICE, expected_device_fingerprint=FINGERPRINT)
+
+    with (
+        patch(
+            "lumalou.client.parse_factory_device_fingerprint", return_value=FINGERPRINT
+        ),
+        pytest.raises(BleakCharacteristicNotFoundError) as err,
+    ):
+        await client.connect(timeout=5)
+
+    assert err.value is missing
+    assert not client.connected
+    backend.clear_cache.assert_awaited_once_with()
+    backend.write_gatt_char.assert_not_awaited()
+    backend.disconnect.assert_awaited_once()
+
+
+async def test_fingerprint_probe_on_a_stale_cache_clears_it(backend, ha_bluetooth):
+    missing = BleakCharacteristicNotFoundError(FACTORY)
+    backend.read_gatt_char.side_effect = missing
+
+    with pytest.raises(BleakCharacteristicNotFoundError) as err:
+        await async_read_device_fingerprint(HASS, DEVICE)
+
+    assert err.value is missing
+    backend.clear_cache.assert_awaited_once_with()
     backend.disconnect.assert_awaited_once()
 
 

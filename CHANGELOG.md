@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-09-27
+
+Bug-fix release. Requires Home Assistant 2026.9.0 or newer and
+`lumalou-gld09` 0.3.1.
+
+### Fixed
+
+- Lumalou stayed unavailable after a reconnect when BlueZ kept a stale
+  link or GATT service cache for it: every attempt connected and failed with
+  "Characteristic ... was not found", until BlueZ was reset by hand. A
+  missing characteristic now clears the device from BlueZ's GATT cache, so
+  the next automatic retry reconnects and rediscovers all services. This also
+  covers the identity check when adding the device.
+- **Start routine** failing with "Lumalou did not start the routine" now logs
+  a warning with the device's live mode, activity, stage, music, light and
+  routine-mode state, so the cause can be diagnosed. Behaviour is unchanged.
+
 ## [0.1.2] - 2026-09-25
 
 Maintenance release. Requires Home Assistant 2026.9.0 or newer and
