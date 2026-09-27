@@ -14,6 +14,9 @@ All notable changes to this project are documented here. The format follows
   cache was cleared by hand. A missing characteristic now clears the device's
   GATT cache, so the next automatic retry rediscovers all services. This also
   covers the identity check when adding the device.
+- **Start routine** failing with "Lumalou did not start the routine" now logs
+  a warning with the device's live mode, activity, stage, music, light and
+  routine-mode state, so the cause can be diagnosed. Behaviour is unchanged.
 
 ## [0.1.2] - 2026-09-25
 

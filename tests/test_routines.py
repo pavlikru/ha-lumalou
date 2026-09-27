@@ -668,17 +668,34 @@ async def test_undecodable_task_status_is_ignored(rig):
     assert rig.coordinator.routine_status is None
 
 
-async def test_start_that_the_device_does_not_take_puts_the_day_back(rig):
+async def test_start_that_the_device_does_not_take_puts_the_day_back(rig, caplog):
     """No pushed routine mode after 0x7B: no first-task command, day restored."""
     coordinator = rig.coordinator
     await verified_with_routine(rig)
     rig.settings.push = False
     start = len(rig.journal)
+    caplog.set_level("WARNING", logger="custom_components.lumalou.coordinator")
 
     with pytest.raises(HomeAssistantError) as err:
         await coordinator.async_start_routine([8, 7])
 
     assert err.value.translation_key == "routine_not_started"
+    # The live state is logged so the next occurrence can be diagnosed.
+    [record] = [r for r in caplog.records if "did not start the routine" in r.message]
+    assert record.levelname == "WARNING"
+    live_state = record.args[1]
+    assert set(live_state) == {
+        "operationMode",
+        "activityState",
+        "currentStage",
+        "musicStatus",
+        "lightStatus",
+        "routineModeStatus",
+    }
+    assert live_state["operationMode"] != 7
+    assert live_state["routineModeStatus"] == 1
+    assert record.message.startswith("Test Lumalou did not start the routine")
+    assert rig.device.address not in caplog.text
     assert sends(rig, start) == [
         day_routine_payload(
             "sunday", routine_from_tasks({"hour": 20, "minute": 0}, [8, 7])
