@@ -9,14 +9,17 @@ hook, and restricts which characteristics and opcodes can ever be used.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+import logging
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from functools import partial
+from typing import TypeVar
 from uuid import UUID
 
 from bleak import BleakClient
 from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.backends.device import BLEDevice
+from bleak.exc import BleakCharacteristicNotFoundError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 from homeassistant.components import bluetooth
 from homeassistant.core import HomeAssistant
@@ -33,6 +36,9 @@ from .const import (
     GATT_TIMEOUT,
     WRITE_CHARACTERISTICS,
 )
+
+_LOGGER = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 _FACTORY_CHARACTERISTICS = frozenset({FACTORY})
 _RX_CHARACTERISTICS = frozenset({"4cea0003-c678-4202-b5d3-712dbb5e5b14"})
@@ -89,7 +95,7 @@ class RestrictedLumalouTransport:
         self._hass = hass
         self._device = device
         self._disconnected_callback = disconnected_callback
-        self.__client: BleakClient | None = None
+        self.__client: BleakClientWithServiceCache | None = None
 
     def _current_device(self) -> BLEDevice | None:
         return bluetooth.async_ble_device_from_address(
@@ -115,15 +121,40 @@ class RestrictedLumalouTransport:
         if client is not None:
             await client.disconnect()
 
-    def _connected_client(self) -> BleakClient:
+    def _connected_client(self) -> BleakClientWithServiceCache:
         if self.__client is None:
             raise HomeAssistantError("Lumalou transport is not connected")
         return self.__client
 
+    async def _gatt(
+        self, operation: Callable[[BleakClientWithServiceCache], Awaitable[_T]]
+    ) -> _T:
+        """Run one allowlisted GATT operation; drop a stale service cache.
+
+        ``establish_connection`` reuses BlueZ's cached services when they look
+        valid. A partial cache without the Lumalou characteristics would then
+        fail every reconnect. Clearing it forces full service discovery on the
+        next connect; the original error still ends this session.
+        """
+        client = self._connected_client()
+        try:
+            return await operation(client)
+        except BleakCharacteristicNotFoundError:
+            _LOGGER.debug("Lumalou characteristic missing; clearing the GATT cache")
+            try:
+                await client.clear_cache()
+            except Exception as err:
+                _LOGGER.debug(
+                    "Clearing the Lumalou GATT cache failed: %s: %s",
+                    type(err).__name__,
+                    err,
+                )
+            raise
+
     async def read_gatt_char(self, characteristic: str) -> bytearray:
         """Permit the factory-token read, never DFU or arbitrary reads."""
         uuid = _allowed_uuid(characteristic, _FACTORY_CHARACTERISTICS)
-        return await self._connected_client().read_gatt_char(uuid)
+        return await self._gatt(lambda client: client.read_gatt_char(uuid))
 
     async def start_notify(
         self,
@@ -132,14 +163,16 @@ class RestrictedLumalouTransport:
     ) -> None:
         """Permit RX subscription without adding RX to the write allowlist."""
         uuid = _allowed_uuid(characteristic, _RX_CHARACTERISTICS)
-        await self._connected_client().start_notify(uuid, callback)
+        await self._gatt(lambda client: client.start_notify(uuid, callback))
 
     async def write_gatt_char(
         self, characteristic: str, data: bytes, *, response: bool
     ) -> None:
         """Fail closed before backend I/O unless this is SESSION or TX."""
         uuid = _allowed_uuid(characteristic, WRITE_CHARACTERISTICS)
-        await self._connected_client().write_gatt_char(uuid, data, response=response)
+        await self._gatt(
+            lambda client: client.write_gatt_char(uuid, data, response=response)
+        )
 
 
 class SafeLumalouClient(LumalouClient):

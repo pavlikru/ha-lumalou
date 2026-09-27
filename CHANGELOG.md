@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Lumalou stayed unavailable after a reconnect when BlueZ held a stale,
+  partial GATT service cache for it: every attempt connected with the cached
+  services and failed with "Characteristic ... was not found", until the
+  cache was cleared by hand. A missing characteristic now clears the device's
+  GATT cache, so the next automatic retry rediscovers all services. This also
+  covers the identity check when adding the device.
+
 ## [0.1.2] - 2026-09-25
 
 Maintenance release. Requires Home Assistant 2026.9.0 or newer and
